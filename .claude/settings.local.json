@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pip install -r requirements.txt)",
+      "Bash(python test_stub.py)",
+      "Bash(python test_parallel.py)",
+      "Bash(python test_scheduler.py)",
+      "Bash(python test_reducer.py)"
+    ]
+  }
+}
