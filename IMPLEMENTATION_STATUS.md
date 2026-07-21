@@ -82,10 +82,14 @@
 - [x] 平行分支：plan/scaffold 同時觸發，implement 等兩者完成
 - [x] Retry 迴圈：run_tests → conditional → debug/give_up → implement (或 END)
 - [x] ModuleScheduler 邏輯
-  - Module 依賴排序
+  - Module 依賴排序（topological）
   - Task 依賴滿足檢查
-  - Regression 偵測
+  - Regression 偵測（check_upstream_regression）
 - [x] Reducer 累加（completed_tasks, failed_tasks, partial_reports）
+- [x] 跨 module 依賴解鎖路徑（驗證多 module 依賴鏈正常運作）
+  - module A (無依賴) → module B (依賴 A) → module C (依賴 B)
+  - mark_module_verified() 被正確呼叫
+  - 依賴未滿足的下游 module task 不進入就緒佇列
 
 ---
 
@@ -135,6 +139,12 @@
 - [ ] 測試 DB schema 來源（Java ddl-auto vs 手動 dump）
   - 影響 Spec Agent 啟動 Java 服務前的準備步驟
   - 決定後更新五、環境建立
+
+### 介面統一
+- [x] FillResult 定義統一在 `translator_cli.client.FillResult` class
+  - 屬性存取：`.success` (不是 `["success"]`)
+  - `translator_cli.types` 只 re-export，避免重複定義
+  - implement_node.py 目前 stub 用字典，待接上真實 translator-cli 時改屬性存取
 
 ### 外部依賴
 - Node.js 工具（全域安裝或 npx）
