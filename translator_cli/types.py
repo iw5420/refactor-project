@@ -1,11 +1,8 @@
 """
 translator-cli 的型別定義
+
+FillResult 定義統一在 client.py，此模組只 re-export
 """
-from typing import TypedDict
+from translator_cli.client import FillResult
 
-
-class FillResult(TypedDict):
-    """fill_function() 的回傳型別"""
-    success: bool
-    error: str | None
-    diff: str  # 用於 regression 偵測
+__all__ = ["FillResult"]

@@ -21,6 +21,7 @@ async def _run_one_task(task: dict) -> dict:
     """stub: 模擬呼叫 translator-cli.fill_function()"""
     async with MODEL_SEMAPHORE:
         # TODO: 呼叫 await translator_cli.fill_function(...)
+        # TODO: 改成 result.success 屬性存取（目前用字典寫法是 stub，會改）
         # 見 03a/03b
         return {
             "success": True,
@@ -30,13 +31,22 @@ async def _run_one_task(task: dict) -> dict:
 
 
 def _partial_verify(module: str, db, verifier) -> dict:
-    """stub: 模擬局部驗證"""
-    # TODO: 實作 db.apply_seed() 與 verifier.verify_module()
-    # 見 02a/02b
+    """stub: 模擬局部驗證（固定回傳 pass）
+
+    TODO: 實作 db.apply_seed() 與 verifier.verify_module()
+    見 02a/02b
+    """
+    # db.apply_seed("fixtures/seed.sql", tables_to_truncate=verifier.tables)
+    # report = verifier.verify_module(
+    #     collection_path="postman/collection_readonly.json",
+    #     module_filter=module,
+    # )
+    # return report
+
+    # stub：固定回傳 pass
     return {
-        "module": module,
         "status": "pass",
-        "regression": False,
+        "details": {},
     }
 
 
@@ -57,12 +67,12 @@ async def run(state: RefactorState) -> RefactorState:
         already_verified_modules=already_verified_modules,
     )
 
-    # TODO: 初始化 db 與 verifier
-    # db = DbEnvironment(test_dsn=state.get("test_dsn"))
-    # verifier = GoldenVerifier(
-    #     python_base_url=state.get("python_base_url"),
-    #     golden_dir="fixtures/golden",
-    # )
+    # TODO: 引入 DbEnvironment 與 GoldenVerifier（見 02a/02b）
+    # from refactor_harness.db_env import DbEnvironment
+    # from refactor_harness.verifier import GoldenVerifier
+    # 暫時用 None stub，實際實作時替換
+    db = None
+    verifier = None
 
     completed, failed, partial_reports = [], [], []
 
@@ -88,20 +98,18 @@ async def run(state: RefactorState) -> RefactorState:
         # 一般完工觸發的局部驗證
         for module in touched_modules:
             if scheduler.module_ready_for_verification(module):
-                # report = _partial_verify(module, db, verifier)
-                # report["regression"] = False
-                # partial_reports.append({"module": module, "report": report})
-                # scheduler.mark_module_verified(module, passed=report["status"] == "pass")
-                pass
+                report = _partial_verify(module, db, verifier)
+                report["regression"] = False
+                partial_reports.append({"module": module, "report": report})
+                scheduler.mark_module_verified(module, passed=report["status"] == "pass")
 
         # regression 觸發的重驗
         for module, status in list(scheduler.module_status.items()):
             if status == "needs_reverify":
-                # report = _partial_verify(module, db, verifier)
-                # report["regression"] = True
-                # partial_reports.append({"module": module, "report": report})
-                # scheduler.mark_module_verified(module, passed=report["status"] == "pass")
-                pass
+                report = _partial_verify(module, db, verifier)
+                report["regression"] = True
+                partial_reports.append({"module": module, "report": report})
+                scheduler.mark_module_verified(module, passed=report["status"] == "pass")
 
     blocked_modules = [m for m, s in scheduler.module_status.items() if s == "pending"]
     failed_modules = [m for m, s in scheduler.module_status.items() if s == "failed"]

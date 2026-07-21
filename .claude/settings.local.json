@@ -5,7 +5,8 @@
       "Bash(python test_stub.py)",
       "Bash(python test_parallel.py)",
       "Bash(python test_scheduler.py)",
-      "Bash(python test_reducer.py)"
+      "Bash(python test_reducer.py)",
+      "Bash(python test_multimodule.py)"
     ]
   }
 }
