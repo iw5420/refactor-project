@@ -6,7 +6,26 @@
       "Bash(python test_parallel.py)",
       "Bash(python test_scheduler.py)",
       "Bash(python test_reducer.py)",
-      "Bash(python test_multimodule.py)"
+      "Bash(python test_multimodule.py)",
+      "Bash(python -m py_compile refactor_harness/core/postman_runner.py refactor_harness/core/masker.py refactor_harness/core/diff_engine.py refactor_harness/core/route_mapper.py refactor_harness/core/reporter.py)",
+      "Bash(python -m py_compile refactor_harness/fixtures/db_env.py refactor_harness/recorder/golden_writer.py refactor_harness/verifier/comparator.py refactor_harness/verifier/mutation_verifier.py)",
+      "Bash(python -c \"from refactor_harness.core.postman_runner import run_newman, make_case_id, get_module; print\\('✓ postman_runner imports OK'\\)\")",
+      "Bash(python -c \"from refactor_harness.core.postman_runner import run_newman, make_case_id, get_module; print\\('OK'\\)\")",
+      "Bash(python -c \"from refactor_harness.core.masker import ResponseMasker; from refactor_harness.core.diff_engine import DiffEngine; print\\('OK'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"from refactor_harness.core.masker import ResponseMasker; from refactor_harness.core.diff_engine import DiffEngine; from refactor_harness.recorder.golden_writer import GoldenRecorder; print\\('OK'\\)\")",
+      "Bash(python -m pip list)",
+      "Bash(pip --version)",
+      "Bash(pip list *)",
+      "Bash(python -c \"import deepdiff; print\\(deepdiff.__version__\\)\")",
+      "Bash(conda install *)",
+      "Bash(python -c \"from refactor_harness.core.masker import ResponseMasker; from refactor_harness.core.diff_engine import DiffEngine; from refactor_harness.fixtures.db_env import DbEnvironment; print\\('All imports OK'\\)\")",
+      "Bash(python -c \"from refactor_harness.core.postman_runner import run_newman; from refactor_harness.recorder.golden_writer import GoldenRecorder; from refactor_harness.verifier.comparator import GoldenVerifier; from refactor_harness.verifier.mutation_verifier import MutationVerifier; print\\('All verifier imports OK'\\)\")",
+      "Bash(grep -n \"^COPY\\\\|\\\\\\\\\\\\\\\\\\\\.\" fixtures/seed.sql)",
+      "Bash(python -c ' *)",
+      "Bash(grep -n \"^COPY\\\\|\\\\\\\\\\\\\\\\copy\\\\|\\\\\\\\\\\\\\\\i \\\\|\\\\\\\\\\\\\\\\set\" fixtures/seed.sql)",
+      "Bash(JAVA_BASE_URL=http://localhost:8080 python -c ' *)",
+      "Bash(unset JAVA_BASE_URL)"
     ]
   }
 }

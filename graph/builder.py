@@ -15,7 +15,7 @@ from graph.nodes import (
     debug_node,
     give_up_node,
 )
-from refactor_harness.langgraph_nodes import (
+from refactor_harness.langgraph_nodes.test_nodes import (
     record_golden_output,
     run_postman_tests,
     should_debug_or_done,

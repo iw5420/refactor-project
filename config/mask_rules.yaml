@@ -1,0 +1,20 @@
+masked_fields:
+  - created_at
+  - updated_at
+  - deleted_at
+  - request_id
+  - trace_id
+  - session_id
+  - token
+  - access_token
+  - refresh_token
+
+masked_fields_mutation_only:
+  - id
+  - order_id
+  - user_id
+
+masked_patterns:
+  - "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}"   # ISO datetime
+  - "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"          # UUID v4
+  - "^Bearer\\s"                                       # Bearer token

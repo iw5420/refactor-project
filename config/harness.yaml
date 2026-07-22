@@ -1,0 +1,49 @@
+databases:
+  production:
+    dsn: "postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM"
+  test:
+    # 正常執行時由呼叫端傳入 state["test_dsn"]，這裡僅為 fallback 預設值
+    dsn: "postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM_TEST"
+    tables_to_truncate:
+      - answer
+      - backuser
+      - exam
+      - exam_component_config
+      - examkind
+      - school
+      - users
+
+services:
+  java:
+    base_url: "http://localhost:8080"
+    db_env_var: "SPRING_DATASOURCE_URL"
+  python:
+    base_url: "http://localhost:8000"
+    db_env_var: "DATABASE_URL"
+
+collections:
+  readonly:
+    path: "postman/collection_readonly.json"
+    seed_strategy: "once_before_all"
+  mutation:
+    path: "postman/collection_mutation.json"
+    seed_strategy: "before_each_folder"
+
+diff_rules:
+  ignore_order_at: []
+    # 範例：
+    # - "root['data']['items']"
+
+# route → Python 原始碼對應表
+# ⚠️  此區段由 Agent ③（架構設計 Agent）自動產生並寫入，不應手動維護
+route_to_file_mapping:
+  "GET_api_v1_users":
+    - "app/routers/user_router.py"
+    - "app/services/user_service.py"
+    - "app/repositories/user_repository.py"
+  "GET_api_v1_users_{id}":
+    - "app/routers/user_router.py"
+    - "app/services/user_service.py"
+  "POST_api_v1_orders":
+    - "app/routers/order_router.py"
+    - "app/services/order_service.py"
