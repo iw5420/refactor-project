@@ -75,7 +75,11 @@ httpx==0.28.1
 ANTHROPIC_API_KEY=
 JAVA_BASE_URL=http://localhost:8080
 PYTHON_BASE_URL=http://localhost:8000
-OLLAMA_BASE_URL=http://<另一台Mac的IP>:11434
+
+# 本地模型（v3.4）：另一台 Mac 上 ollama 前面掛了 nginx 做 token 驗證，
+# ollama 本身不對外開放，OLLAMA_BASE_URL 指向的是 nginx 的 port，不是 ollama 原生的 11434。
+OLLAMA_BASE_URL=http://<另一台Mac的IP>:<nginx對外port>/v1
+OLLAMA_API_KEY=<與另一台 Mac 上 nginx 設定的 token 一致>
 
 # 測試 DB（見 00 五）：獨立於正式/開發 DB，命名加 _TEST；
 # 下面三個變數指向同一顆測試 DB，格式依各自工具而定。
@@ -89,6 +93,8 @@ DATABASE_URL=postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM_TEST
 ```
 
 > `SPRING_DATASOURCE_*` 是 [A] Spec Agent／⑥ 啟動 Java 服務（`subprocess.Popen`，見八）時帶入的環境變數，Spring Boot 會自動覆蓋 `spring.datasource.*`，不需改 `application.properties`。
+>
+> `OLLAMA_API_KEY`（v3.4 新增）：translator-cli 呼叫 `OLLAMA_BASE_URL` 時，須在 request header 帶上 `Authorization: Bearer {OLLAMA_API_KEY}`，讓另一台 Mac 上的 nginx 驗證通過後才轉發給 ollama。這個變數只在 translator-cli 內部使用，不放進 `RefactorState`（與 `OLLAMA_BASE_URL` 同一類——性質同 `DATABASE_URL`，是外部工具自己讀的環境變數，不是 Orchestrator 決策要用的資料，見三章 State 設計）。實際 header 組裝與 request schema 見 `03a_translator_cli_architecture.md`。
 
 ### 初始化步驟
 
@@ -640,7 +646,7 @@ async def run(state: RefactorState) -> dict:
 | npm 全域安裝路徑 | `openapi-to-postmanv2`、`newman` 全域安裝後，Windows 的可執行檔路徑與 Unix 不同 | 呼叫時一律用 `npx <工具名>` 而非假設全域指令已在 PATH，`npx` 在兩平台行為一致 |
 | Java 啟動指令 | `java -jar app.jar` 本身跨平台，但背景執行/關閉的方式不同（`&` vs Windows 無等價語法） | 一律用 Python 的 `subprocess.Popen` 管理 Java/Python 服務的啟動與終止，不透過 shell 的背景執行語法 |
 | 換行符（CRLF/LF） | git snapshot + AST 插入（translator-cli）對 CRLF 敏感，Windows checkout 預設可能轉換換行符 | 專案根目錄加 `.gitattributes` 統一鎖定 `* text=auto eol=lf`，翻譯後的 Python 檔案一律用 LF |
-| ollama 連線 | 兩機器間的 HTTP 連線與作業系統無關，但防火牆預設規則不同 | Windows 需確認防火牆對內部網段的對應 port 開放 inbound |
+| ollama 連線 | 兩機器間的 HTTP 連線與作業系統無關，但防火牆預設規則不同；v3.4 後中間多一層 nginx 做 token 驗證，開放的 port 是 nginx 的 port，不是 ollama 原生的 `11434` | Windows 需確認防火牆對內部網段的對應 port（nginx 的對外 port）開放 inbound；另確認 `.env` 的 `OLLAMA_API_KEY` 與另一台 Mac 上 nginx 設定的 token 一致，否則會收到 401 而非連線逾時，兩者的除錯方向不同 |
 | asyncio + subprocess | `implement_node`／`DbEnvironment` 用 asyncio 呼叫 subprocess（`npx`、`psql` 等）時，Windows 在事件迴圈關閉階段偶爾會拋出無害但擾人的 `RuntimeError: Event loop is closed` | Python 3.8+ 在 Windows 上預設已是 `ProactorEventLoop`（支援 subprocess），通常不需要手動設定；若遇到此類訊息干擾（或懷疑被其他套件改了 policy），可在 `main.py` 入口顯式加上 `asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())` 保險 |
 
 > translator-cli 內部的 AST 處理、git snapshot 細節屬於 `03a_translator_cli_architecture.md` 的範圍，這裡只列 LangGraph Orchestrator 層級會直接踩到的坑。
