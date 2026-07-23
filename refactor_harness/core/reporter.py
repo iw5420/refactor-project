@@ -1,5 +1,12 @@
 class HarnessReporter:
-    def build_report(self, results: list[dict]) -> dict:
+    def build_report(self, results: list[dict], excluded_folders: list[str] | None = None) -> dict:
+        """
+        excluded_folders：因 Recorder 錄製時判定為 tainted 而整個 folder 未參與
+        這次驗證的情境（見 02a 三章「Mutation 錄製異常偵測」、四章「排除已知
+        異常的 folder」、九章「excluded_folders 欄位」）。這些 case 不計入
+        summary／failures／passed_cases 既有的計算邏輯——本方法其餘分類行為
+        完全不變，excluded_folders 只是額外附加的頂層欄位。
+        """
         passed = [r for r in results if r["passed"]]
         failed = [r for r in results if not r["passed"]]
 
@@ -24,7 +31,8 @@ class HarnessReporter:
                 }
                 for f in failed
             ],
-            "passed_cases": [p["case_id"] for p in passed]
+            "passed_cases": [p["case_id"] for p in passed],
+            "excluded_folders": excluded_folders or []
         }
 
     def _classify_failure(self, result: dict) -> str:

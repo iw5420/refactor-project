@@ -5,3 +5,4 @@ python-dotenv==1.2.2
 httpx==0.28.1
 psycopg2-binary>=2.9.9
 deepdiff>=8.0.0
+pytest>=8.0.0

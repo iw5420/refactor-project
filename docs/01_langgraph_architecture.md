@@ -1,13 +1,10 @@
 # LangGraph 實作細節：Java → Python 重構 Orchestrator
 
-> 本文件承接 `00_refactor_architecture.md` 的整體架構，是 LangGraph 實作面的細節文件，範疇見一。
-> Harness（Agent ②/⑥）的實作見 `02a_harness_architecture.md` + `02b_harness_code.md`；translator-cli（Agent ④/⑤ 呼叫本地模型的橋接工具）的實作見 `03a_translator_cli_architecture.md` + `03b_translator_cli_code.md`。本文件的 node 只示範「怎麼呼叫」，不重複這兩份文件已定義的內部邏輯。
-
 ---
 
 ## 一、本文件的定位
 
-00 的九、State 設計與「LangGraph 圖的節點與邊」只描述了應該有哪些節點、邊怎麼接；本文件補三個 00 沒展開的實作問題：
+00 的一、整體流程概覽（流程圖＋各階段對應文件表）只勾勒整體流程與 Agent 職責邊界，State 完整定義與 Graph 節點/邊建構整段都在本文件（00 九章目前只留一段指向本文件的摘要，不重複列表）。本文件補三個更深一層的實作問題：
 
 1. State 的實際型別（尤其 `python_structure` 需精確到檔案路徑＋函式簽名）
 2. ③ 完成後的平行分支、⑤ 的 module 排程在 LangGraph 裡具體怎麼寫
@@ -28,8 +25,8 @@ refactor-project/
 │   └── nodes/
 │       ├── __init__.py
 │       ├── parse_node.py         # ① 解析 Agent（Claude API）
-│       ├── spec_node.py          # [A] Spec Agent（程式邏輯）
-│       ├── collection_node.py    # [B] Collection Agent（程式邏輯 + LLM）
+│       ├── spec_node.py          # [A] Spec Agent（程式邏輯，見 03a/03b）
+│       ├── collection_node.py    # [B] Collection Agent（程式邏輯 + LLM，見 03a/03b）
 │       ├── design_node.py        # ③ 架構設計 Agent（Claude API）
 │       ├── plan_node.py          # [P] Plan Agent（Claude API）
 │       ├── scaffold_node.py      # ④ 骨架實作 Agent（translator-cli，骨架生成模式，非填空模式，見四備註）
@@ -38,12 +35,18 @@ refactor-project/
 │       └── give_up_node.py       # 超過重試次數的收尾（通知人工）
 │
 ├── refactor_harness/            # 見 02a / 02b（Agent ②/⑥ 與共用核心）
-├── translator_cli/              # 見 03a / 03b（Agent ④/⑤ 呼叫本地模型）
+├── spec_collection_agent/       # 見 03a / 03b（[A]/[B] Agent 核心邏輯）
+├── translator_cli/              # 見 04a / 04b（Agent ④/⑤ 呼叫本地模型）
 │
 ├── config/
 │   ├── harness.yaml
 │   └── mask_rules.yaml
-├── postman/                     # Agent B 產出的兩份 Collection
+├── specs/
+│   └── openapi.json             # [A] 落地檔案，見 03a 二
+├── postman/                     # [B] 產出，見 03a 三
+│   ├── collection_readonly.json
+│   ├── collection_mutation.json
+│   └── unfilled_endpoints.json
 ├── fixtures/
 │   ├── seed.sql
 │   └── golden/
@@ -53,7 +56,7 @@ refactor-project/
 └── .gitignore
 ```
 
-**設計原則**：`graph/` 只放 LangGraph 相關的組裝邏輯與 node 定義；每個 Agent 實際呼叫的「重活」（Harness 比對、translator-cli 呼叫）都委派給 `refactor_harness/` 和 `translator_cli/` 這兩個獨立套件，node 函式本身盡量薄，方便 stub-first 開發（見七）。
+**設計原則**：`graph/` 只放 LangGraph 相關的組裝邏輯與 node 定義；每個 Agent 實際呼叫的「重活」（Harness 比對、[A]/[B] 的 OpenAPI/Collection 處理、translator-cli 呼叫）都委派給 `refactor_harness/`、`spec_collection_agent/`、`translator_cli/` 這三個獨立套件，node 函式本身盡量薄，方便 stub-first 開發（見七）。
 
 ### requirements.txt（核心依賴，鎖定版本）
 
@@ -74,6 +77,7 @@ httpx==0.28.1
 ```
 ANTHROPIC_API_KEY=
 JAVA_BASE_URL=http://localhost:8080
+JAVA_JAR_PATH=../lang-exam-api-refactor/target/app.jar
 PYTHON_BASE_URL=http://localhost:8000
 
 # 本地模型（v3.4）：另一台 Mac 上 ollama 前面掛了 nginx 做 token 驗證，
@@ -92,9 +96,11 @@ SPRING_DATASOURCE_PASSWORD=password
 DATABASE_URL=postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM_TEST
 ```
 
-> `SPRING_DATASOURCE_*` 是 [A] Spec Agent／⑥ 啟動 Java 服務（`subprocess.Popen`，見八）時帶入的環境變數，Spring Boot 會自動覆蓋 `spring.datasource.*`，不需改 `application.properties`。
+> `JAVA_JAR_PATH` 用相對於 `refactor-project/` 的相對路徑（見 03a 二「路徑格式」），不是絕對路徑，避免 `.env` 換機器/換使用者就失效。
 >
-> `OLLAMA_API_KEY`（v3.4 新增）：translator-cli 呼叫 `OLLAMA_BASE_URL` 時，須在 request header 帶上 `Authorization: Bearer {OLLAMA_API_KEY}`，讓另一台 Mac 上的 nginx 驗證通過後才轉發給 ollama。這個變數只在 translator-cli 內部使用，不放進 `RefactorState`（與 `OLLAMA_BASE_URL` 同一類——性質同 `DATABASE_URL`，是外部工具自己讀的環境變數，不是 Orchestrator 決策要用的資料，見三章 State 設計）。實際 header 組裝與 request schema 見 `03a_translator_cli_architecture.md`。
+> `SPRING_DATASOURCE_*` 是 [A] Spec Agent／② 測試 Agent 啟動 Java 服務（`subprocess.Popen`，見八）時帶入的環境變數，Spring Boot 會自動覆蓋 `spring.datasource.*`，不需改 `application.properties`（⑥ 測試執行 Agent 操作的是 Python 服務，用不到這組 JDBC 格式的變數）。
+>
+> `OLLAMA_API_KEY`（v3.4 新增）：translator-cli 呼叫 `OLLAMA_BASE_URL` 時，須在 request header 帶上 `Authorization: Bearer {OLLAMA_API_KEY}`，讓另一台 Mac 上的 nginx 驗證通過後才轉發給 ollama。這個變數只在 translator-cli 內部使用，不放進 `RefactorState`（與 `OLLAMA_BASE_URL` 同一類——性質同 `DATABASE_URL`，是外部工具自己讀的環境變數，不是 Orchestrator 決策要用的資料，見三章 State 設計）。實際 header 組裝與 request schema 見 `04a_translator_cli_architecture.md`。
 
 ### 初始化步驟
 
@@ -111,7 +117,7 @@ git init
 
 ## 三、State Schema 設計
 
-00 的九、State 表格列出了 13 個欄位，這裡用 `TypedDict` 定義實際結構。關鍵決策：
+State 欄位對應到 00 一章「各階段對應文件表」列出的各個 Agent，這裡用 `TypedDict` 定義實際結構，是欄位定義的唯一來源（00 九章不重複列表）。關鍵決策：
 
 - 用 `TypedDict` 而非 Pydantic——State 是普通 dict，不需要額外的 serialize/validate 開銷
 - `completed_tasks`、`failed_tasks`、`partial_reports` 是逐 task 累積寫入的（見六），掛 `Annotated[list, operator.add]` reducer
@@ -226,7 +232,7 @@ class RefactorState(TypedDict):
     retry_count: int
 ```
 
-> `partial_reports`／`blocked_modules`／`failed_modules` 不在 00 的核心 State 表格裡，是排程實作（見六）新增的內部欄位。`partial_reports` 是逐次累加的事件記錄，掛 reducer 正確；`blocked_modules`／`failed_modules` 是每次結束當下的狀態快照，不掛 reducer、由 `implement_node.run()` 整包覆蓋。兩者讓 `run_tests`／`debug` 能區分「程式碼根本沒被排到」和「程式碼確實跑過但驗證沒過」，決定要不要消耗 `retry_count`（見六）。
+> `partial_reports`／`blocked_modules`／`failed_modules` 是排程實作（見六）新增的內部欄位，00 的流程圖層級不會細到列出這幾個欄位（00 九章已不重複列 State 欄位，見一）。`partial_reports` 是逐次累加的事件記錄，掛 reducer 正確；`blocked_modules`／`failed_modules` 是每次結束當下的狀態快照，不掛 reducer、由 `implement_node.run()` 整包覆蓋。兩者讓 `run_tests`／`debug` 能區分「程式碼根本沒被排到」和「程式碼確實跑過但驗證沒過」，決定要不要消耗 `retry_count`（見六）。
 
 ---
 
@@ -235,8 +241,8 @@ class RefactorState(TypedDict):
 | Node 名稱 | 對應 Agent | 型態 | 檔案 |
 |---|---|---|---|
 | `parse` | ① 解析 Agent | Claude API | `nodes/parse_node.py` |
-| `extract_spec` | [A] Spec Agent | 程式邏輯 | `nodes/spec_node.py` |
-| `gen_collection` | [B] Collection Agent | 程式邏輯 + LLM | `nodes/collection_node.py` |
+| `extract_spec` | [A] Spec Agent | 程式邏輯 | `nodes/spec_node.py`（見 03a/03b） |
+| `gen_collection` | [B] Collection Agent | 程式邏輯 + LLM | `nodes/collection_node.py`（見 03a/03b） |
 | `record_tests` | ② 測試 Agent | 程式邏輯（Harness） | `refactor_harness/langgraph_nodes/test_nodes.py`（見 02b） |
 | `design` | ③ 架構設計 Agent | Claude API | `nodes/design_node.py` |
 | `plan` | [P] Plan Agent | Claude API | `nodes/plan_node.py` |
@@ -246,7 +252,7 @@ class RefactorState(TypedDict):
 | `debug` | ⑦ Debug Agent | Claude API | `nodes/debug_node.py` |
 | `give_up` | — | 程式邏輯 | `nodes/give_up_node.py` |
 
-> **`scaffold` 與 `implement` 呼叫 translator-cli 的兩種不同模式，不是同一支 API**：`implement`（⑤）用「填空模式」`fill_function()`——目標檔案與空函式簽名已存在，模型只回傳單一函式本體，用 AST 插入。`scaffold`（④）從無到有建立目錄、檔案、class、空函式簽名，沒有既有結構可插入，因此呼叫另一個「骨架生成模式」介面（如 `translator_cli.generate_scaffold(python_structure)`，整檔輸出）。精確介面定義見 `03a_translator_cli_architecture.md`，這裡先釘死「不是同一個契約」，避免誤用 `fill_function()` 處理不存在的檔案。
+> **`scaffold` 與 `implement` 呼叫 translator-cli 的兩種不同模式，不是同一支 API**：`implement`（⑤）用「填空模式」`fill_function()`——目標檔案與空函式簽名已存在，模型只回傳單一函式本體，用 AST 插入。`scaffold`（④）從無到有建立目錄、檔案、class、空函式簽名，沒有既有結構可插入，因此呼叫另一個「骨架生成模式」介面（如 `translator_cli.generate_scaffold(python_structure)`，整檔輸出）。精確介面定義見 `04a_translator_cli_architecture.md`，這裡先釘死「不是同一個契約」，避免誤用 `fill_function()` 處理不存在的檔案。
 
 ---
 
@@ -463,7 +469,7 @@ import asyncio
 from graph.state import RefactorState
 from graph.scheduler import ModuleScheduler
 from translator_cli import client as translator_cli
-from translator_cli.types import FillResult                  # 見 03a/03b：{success, error, diff, ...}
+from translator_cli.types import FillResult                  # 見 04a/04b：{success, error, diff, ...}
 from refactor_harness.verifier.comparator import GoldenVerifier
 from refactor_harness.fixtures.db_env import DbEnvironment
 
@@ -646,10 +652,9 @@ async def run(state: RefactorState) -> dict:
 | npm 全域安裝路徑 | `openapi-to-postmanv2`、`newman` 全域安裝後，Windows 的可執行檔路徑與 Unix 不同 | 呼叫時一律用 `npx <工具名>` 而非假設全域指令已在 PATH，`npx` 在兩平台行為一致 |
 | Java 啟動指令 | `java -jar app.jar` 本身跨平台，但背景執行/關閉的方式不同（`&` vs Windows 無等價語法） | 一律用 Python 的 `subprocess.Popen` 管理 Java/Python 服務的啟動與終止，不透過 shell 的背景執行語法 |
 | 換行符（CRLF/LF） | git snapshot + AST 插入（translator-cli）對 CRLF 敏感，Windows checkout 預設可能轉換換行符 | 專案根目錄加 `.gitattributes` 統一鎖定 `* text=auto eol=lf`，翻譯後的 Python 檔案一律用 LF |
-| ollama 連線 | 兩機器間的 HTTP 連線與作業系統無關，但防火牆預設規則不同；v3.4 後中間多一層 nginx 做 token 驗證，開放的 port 是 nginx 的 port，不是 ollama 原生的 `11434` | Windows 需確認防火牆對內部網段的對應 port（nginx 的對外 port）開放 inbound；另確認 `.env` 的 `OLLAMA_API_KEY` 與另一台 Mac 上 nginx 設定的 token 一致，否則會收到 401 而非連線逾時，兩者的除錯方向不同 |
 | asyncio + subprocess | `implement_node`／`DbEnvironment` 用 asyncio 呼叫 subprocess（`npx`、`psql` 等）時，Windows 在事件迴圈關閉階段偶爾會拋出無害但擾人的 `RuntimeError: Event loop is closed` | Python 3.8+ 在 Windows 上預設已是 `ProactorEventLoop`（支援 subprocess），通常不需要手動設定；若遇到此類訊息干擾（或懷疑被其他套件改了 policy），可在 `main.py` 入口顯式加上 `asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())` 保險 |
 
-> translator-cli 內部的 AST 處理、git snapshot 細節屬於 `03a_translator_cli_architecture.md` 的範圍，這裡只列 LangGraph Orchestrator 層級會直接踩到的坑。
+> translator-cli 內部的 AST 處理、git snapshot 細節屬於 `04a_translator_cli_architecture.md` 的範圍，這裡只列 LangGraph Orchestrator 層級會直接踩到的坑。
 
 ---
 
@@ -686,7 +691,3 @@ if __name__ == "__main__":
 
 - 執行：`python main.py`
 - 圖形檢視：LangGraph 內建 `graph.get_graph().draw_mermaid()` 可輸出 Mermaid 語法，貼到任何 Mermaid renderer 檢查平行分支與 retry 迴圈接線是否符合預期——建議在 stub 階段（見七）就先跑一次，比跑完整流程更快發現接錯線的問題。
-
----
-
-*架構與流程的整體定位見 `00_refactor_architecture.md`；Harness 與 translator-cli 的內部邏輯分別見 02 系列與 03 系列文件。*

@@ -209,5 +209,10 @@ LangGraph 在同一個 superstep 平行呼叫兩者，兩者都完成後觸發 `
 
 ---
 
-*最後更新：2026-07-21*  
+### Harness 修正記錄
+- [x] Mutation 錄製異常偵測（非預期 status code 判定、tainted folder 排除、`excluded_folders` 串接進 report）— 對照 `02a`/`02b` 最新版更新 `golden_writer.py`／`mutation_verifier.py`／`reporter.py`／`test_nodes.py`，新增 `tests/refactor_harness/` 單元測試（4 pass）
+
+---
+
+*最後更新：2026-07-23*  
 *下一個里程碑：實作 02a/02b（Harness 詳細設計與程式碼）*

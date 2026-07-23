@@ -36,16 +36,28 @@
 
 **核心原則**：「測試夾住重構」— 先記錄 Java 服務的現有行為（golden output），重構完成後驗證 Python 服務的行為與之一致。
 
-**Harness 的位置**：Harness 不是一個獨立的 Agent，而是橫跨整個流程的基礎設施層，由 Agent ② 和 Agent ⑥ 共同承擔，兩端共用同一套邏輯（Masker、DiffEngine、Reporter）以確保錄製與驗證標準一致。Agent ⑦ 讀取 Harness 產出的結構化 report 進行 Debug。
-→ 完整設計見 `02a_harness_architecture.md`。
+**各階段對應文件**：
+
+| 階段 | 功能簡述 | 對應文件 |
+|---|---|---|
+| ① 解析 Agent | 解析 Java 專案，輸出模組清單、業務邏輯摘要、API 對應表 | TODO（見下方開發順序第 4 項） |
+| [A] Spec Agent | 啟動 Java 服務，取得 OpenAPI 3.0 JSON | `03a_spec_collection_agent_architecture.md` |
+| [B] Collection Agent | 將 OpenAPI 轉換為兩份 Postman Collection | `03a_spec_collection_agent_architecture.md` |
+| ② 測試 Agent（Harness 錄製端） | 對 Java 服務執行 Postman，記錄 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
+| ③ 架構設計 Agent | 輸出 Python 專案結構、模組 interface、route_to_file_mapping | TODO |
+| [P] Plan Agent | 產出 Agent ⑤ 的 task list | TODO |
+| ④ 骨架實作 Agent | 建立目錄與骨架（translator-cli「骨架生成模式」） | `04a_translator_cli_architecture.md` / `04b_translator_cli_code.md` |
+| ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（translator-cli「填空模式」） | `04a_translator_cli_architecture.md` / `04b_translator_cli_code.md` |
+| ⑥ 測試執行 Agent（Harness 驗證端） | 對 Python 服務執行 Postman，比對 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
+| ⑦ Debug Agent | 分析 diff、定位問題，回饋給 ⑤ | TODO |
 
 ### 預計開發順序
 
 上面的流程圖是**執行期**的順序（跑起來之後 pipeline 怎麼走），但**開發期**不是照這個順序從頭做到尾——Agent ⑤ 會直接呼叫 Harness（`refactor_harness` 套件），所以 Harness 必須比 ⑤ 早準備好；Harness 的驗證端又需要真實的 Postman Collection 與 Python 服務才能完整跑通，這兩者本質上要等 pipeline 後段才會出現。實際規劃的開發順序：
 
 1. **Harness（02）**：程式碼先寫完，其中不依賴外部服務的純邏輯模組（Masker、DiffEngine、RouteMapper 等）可以先用假資料單元測試
-2. **[A] Spec Agent / [B] Collection Agent**：儘快接上，讓 Harness 的錄製端（Agent ②）能吃到真實 Postman Collection、對真實 Java 服務做完整驗證，不用一直依賴手動準備的替代資料
-3. **translator-cli（03）**：與 1、2 沒有相依關係，可平行進行，唯一限制是要在 ④／⑤ 開始前完成
+2. **[A] Spec Agent / [B] Collection Agent（03）**：儘快接上，讓 Harness 的錄製端（Agent ②）能吃到真實 Postman Collection、對真實 Java 服務做完整驗證，不用一直依賴手動準備的替代資料
+3. **translator-cli（04）**：與 1、2 沒有相依關係，可平行進行，唯一限制是要在 ④／⑤ 開始前完成
 4. **① ③ ⑤ ⑦ ＋ [P]（Claude API prompt 設計）**：放最後做，不是因為不重要，而是這塊目前完全沒有 prompt 雛型，需要最多來回調整與測試——等 1～3 這些機械部分都穩定，才不會一邊調 prompt 一邊還在改底層工具介面，兩邊互相干擾
 5. **LangGraph 整合測試**：`01` 七章的 stub-first 策略，確認整張圖的節點、平行分支、retry 迴圈都接對，再逐一把 stub 換成真實實作
 
@@ -80,9 +92,9 @@ Orchestrator 是**純 Python 程式邏輯，不是 Agent**。
 | 任務 | 模型 | 位置 | 理由 |
 |---|---|---|---|
 | 解析、規劃、設計、Debug | Claude API | 雲端 | 擅長理解需求、設計拆分、複雜推理 |
-| 程式碼實作 | qwen2.5-coder:32b | 另一台 Mac（本地，M4 Pro Max） | 省費用，程式碼任務重複性高 |
+| 程式碼實作 | qwen2.5-coder:32b | 另一台 Mac（本地） | 省費用，程式碼任務重複性高 |
 
-> **硬體限制**：M4 Pro Max 跑單一 qwen2.5-coder:32b 已達飽和，無法水平擴展成多實例。因此 Agent ④/⑤ 對本地模型的**實際生成請求需序列化（併發數=1）**，LangGraph 排程層仍可讓多個 task 同時處於就緒佇列以保留彈性，但不代表平行會讓總耗時變短——詳見七/⑤。
+> **硬體限制**：該機器跑單一 qwen2.5-coder:32b 已達飽和，無法水平擴展成多實例。因此 Agent ④/⑤ 對本地模型的**實際生成請求需序列化（併發數=1）**，LangGraph 排程層仍可讓多個 task 同時處於就緒佇列以保留彈性，但不代表平行會讓總耗時變短——詳見七/⑤。
 >
 > **排程順序**：module 間的依賴關係直接沿用 Agent ① `module_list` 的「依賴的其他模組」欄位，排程時優先讓同一 module 的 task 連續完成並通過局部驗證後，才釋放依賴它的下游 module——避免上游局部驗證 fail 時，下游已完成的產物一併作廢，回滾成本過高。
 
@@ -99,7 +111,7 @@ LangGraph 呼叫本地模型完成程式碼填寫的橋接工具，取代通用�
 
 > **連線方式**：translator-cli 不是直接打 ollama，中間多掛一層 **nginx 反向代理**做 token 驗證——本地模型機器對外只開放 nginx 的 port，nginx 驗證 `Authorization: Bearer <token>` 通過後才轉發給後面的 ollama；ollama 本身沒有變、還是同一顆 `qwen2.5-coder:32b`。詳見四、環境架構。
 
-→ 完整設計（adapter 介面、delimiter 契約、git snapshot 流程、衝突偵測）見 `03a_translator_cli_architecture.md`。
+→ 完整設計（adapter 介面、delimiter 契約、git snapshot 流程、衝突偵測）見 `04a_translator_cli_architecture.md`。
 
 ### OpenAPI 工具鏈
 
@@ -107,16 +119,17 @@ LangGraph 呼叫本地模型完成程式碼填寫的橋接工具，取代通用�
 - **openapi-to-postmanv2**：將 OpenAPI JSON 轉換為 Postman Collection
 - **newman**：在 LangGraph 中執行 Postman Collection
 
-→ 各工具的具體版本、安裝方式見「五、環境建立」；OpenAPI → Collection 的轉換流程細節見 `02a_harness_architecture.md`。
+→ 各工具的具體版本、安裝方式見「五、環境建立」；OpenAPI → Collection 的轉換流程細節見 `03a_spec_collection_agent_architecture.md`。
 
 ---
 
 ## 四、環境架構
 
 ```
-你的電腦（RT-AC51U，i7-11700B，32GB RAM）
+你的電腦（Orchestrator 所在機器）
 ├── LangGraph Orchestrator（輕量 Python 流程控制）
 ├── Claude API 呼叫（雲端，解析/設計/Debug Agent）
+├── Java／Python 服務（本機執行：[A] 啟動的 java -jar、日後 Python 服務同樣跑在這台機器）
 └── translator-cli（subprocess 呼叫）→ HTTP（帶 Authorization: Bearer <token>）→ 另一台 Mac
                                         └── nginx（反向代理，驗證 token）
                                              └── ollama（僅接受來自 nginx 的本機轉發）
@@ -148,7 +161,7 @@ LangGraph 呼叫本地模型完成程式碼填寫的橋接工具，取代通用�
 - 確認 git 已初始化 Python 專案目錄，作為 translator-cli 寫入前後 snapshot 的版控基礎
 - 確認 `.env` 的 `OLLAMA_API_KEY` 與另一台 Mac 上 nginx 設定的 token 一致
 
-→ translator-cli 的安裝與設定細節見 `03a_translator_cli_architecture.md`。
+→ translator-cli 的安裝與設定細節見 `04a_translator_cli_architecture.md`。
 
 **Java 專案端（一次性準備）**
 - 在 `pom.xml` 加入 `springdoc-openapi-ui 1.7.0` 依賴（**保留作為長期文件用途，不在產出 Collection 後移除**）——目前 Java 專案是 **Spring Boot 2.7.11**，springdoc-openapi v1.7.0 是最後一版支援 Spring Boot 2.x／1.x 的 OSS 版本；`springdoc-openapi-starter-webmvc-ui` 這個 artifact 是給 Spring Boot 3.x（Jakarta EE 9、Java 17+）用的，兩者不可互換，用錯會導致 `UnsupportedClassVersionError`（class file 版本不符）
@@ -171,7 +184,7 @@ TEST_DB_DSN=postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM_TEST
 SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:5432/MOC_MATSUEXAM_TEST
 ```
 
-- **Schema 來源（已確認）**：`MOC_MATSUEXAM_TEST` 已建立。Java 專案的資料表是手動 SQL 建的，不是 Hibernate/JPA `ddl-auto` 自動建表，因此 schema 需要手動同步（例如整顆複製正式 DB：`pg_dump MOC_MATSUEXAM | psql MOC_MATSUEXAM_TEST`，schema 與資料一併到位）。`fixtures/seed.sql` 另外手動準備一份可重複套用的最小資料集（見上方「Java 專案端」），供每次驗證前 truncate + 重灌用。
+- **Schema 來源（已確認）**：`MOC_MATSUEXAM_TEST` 已建立。Java 專案的資料表是手動 SQL 建的，不是 Hibernate/JPA `ddl-auto` 自動建表，因此 schema 需要手動同步（例如整顆複製正式 DB：`pg_dump MOC_MATSUEXAM | psql MOC_MATSUEXAM_TEST`，schema 與資料一併到位）；資料則交給 `fixtures/seed.sql`（見上方「Java 專案端」）處理，機制同前，不重複。
 - **切換方式**：不改 `application.properties`，改用 Spring Boot 環境變數覆蓋（`SPRING_DATASOURCE_URL` 等會自動對應 `spring.datasource.*`）。[A] Spec Agent 啟動 Java 服務固定帶入：
 
 ```bash
@@ -209,7 +222,7 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 啟動 Java 服務（連接測試用 DB，直接 `java -jar` 執行已打包的 jar，不需 Maven build 這一步），呼叫其 `/v3/api-docs` endpoint 取得完整 OpenAPI 3.0 spec，存成 `openapi.json`。全程不解析任何 Java 原始碼。
 
-→ 具體步驟、啟動方式、URL 見 `02a_harness_architecture.md`。
+→ 具體步驟、啟動方式、URL 見 `03a_spec_collection_agent_architecture.md`。
 
 ---
 
@@ -221,7 +234,7 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 - **輸出**：`postman/collection_readonly.json`、`postman/collection_mutation.json`
 
-→ 轉換流程、LLM 填值邏輯、鏈式依賴處理見 `02a_harness_architecture.md`。
+→ 轉換流程、LLM 填值邏輯、鏈式依賴處理見 `03a_spec_collection_agent_architecture.md`。
 
 ---
 
@@ -275,13 +288,13 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 依 task list 逐一呼叫 translator-cli 實作業務邏輯，每次 task 鎖定單一函式。
 
-**排程 vs. 執行併發**：多個 module 的 task 可以同時處於「就緒可排程」狀態（同一 module 內仍依 `depends_on` 序列執行），但對本地模型的**實際生成請求序列化，併發數固定為 1**——因為 M4 Pro Max 跑單一 qwen2.5-coder:32b 已飽和，無法水平擴展。也就是說平行帶來的效益是「排程更有彈性、模組完成順序不死板卡住」，而不是「總耗時等比例縮短」；總耗時大致等於所有 task 的模型生成時間總和。排程順序須依 module 間依賴圖決定，優先完成同一 module 再釋放下游，見三/LLM 分工。
+**排程 vs. 執行併發**：多個 module 的 task 可以同時處於「就緒可排程」狀態（同一 module 內仍依 `depends_on` 序列執行），但對本地模型的**實際生成請求序列化，併發數固定為 1**（硬體限制見三/LLM 分工）。也就是說平行帶來的效益是「排程更有彈性、模組完成順序不死板卡住」，而不是「總耗時等比例縮短」；總耗時大致等於所有 task 的模型生成時間總和。排程順序須依 module 間依賴圖決定，優先完成同一 module 再釋放下游。
 
 驗證分兩個層級，觸發時機不同：
 - **task 完成**：僅觸發 translator-cli 內建的語法驗證（AST parse），確認寫入沒有破壞語法，不觸發 API 級測試
 - **module 完成**（該 module 底下所有 task 都已完成）：才觸發該 module 的局部驗證，跑此 module 的 golden cases——因為 API 呼叫鏈往往橫跨 repository/service/router 多個函式，過早以單一 task 觸發 API 測試會產生大量「依賴鏈未接完」的假失敗
 
-→ translator-cli 的填空契約、AST 插入機制、request queue 序列化設計見 `03a_translator_cli_architecture.md`；局部驗證與全量驗證的兩層架構見 `02a_harness_architecture.md`。
+→ translator-cli 的填空契約、AST 插入機制、request queue 序列化設計見 `04a_translator_cli_architecture.md`；局部驗證與全量驗證的兩層架構見 `02a_harness_architecture.md`。
 
 ---
 
@@ -329,41 +342,21 @@ Agent 間使用結構化 JSON 傳遞，不使用自然語言，避免資訊失�
 
 ---
 
-## 九、LangGraph 狀態（State）設計
+## 九、LangGraph 狀態與圖結構
 
-| 欄位 | 產出者 | 說明 |
-|---|---|---|
-| `module_list` | Agent ① | 模組清單與依賴關係 |
-| `api_to_python_target` | Agent ① | API ↔ Python 檔案對應表 |
-| `openapi_spec` | Agent A | `/v3/api-docs` 的完整 OpenAPI JSON |
-| `collection_readonly_path` | Agent B | readonly collection 的檔案路徑 |
-| `collection_mutation_path` | Agent B | mutation collection 的檔案路徑 |
-| `golden_output` | Agent ② | golden output 的摘要（詳細內容在檔案系統） |
-| `python_structure` | Agent ③ | Python 專案目錄結構與 interface 定義（精確到檔案路徑＋函式簽名，為 [P] 與 ④ 的權威規格，見七/③） |
-| `route_to_file_mapping` | Agent ③ | API → Python 檔案 mapping，寫入 harness.yaml |
-| `task_list` | [P] Plan Agent | 含 module 欄位的 task 清單 |
-| `completed_tasks` | Agent ⑤ | 已完成的 task id |
-| `failed_tasks` | Agent ⑤ | 失敗的 task id |
-| `test_results` | Agent ⑥ | Harness report（pass/fail + diff） |
-| `retry_count` | Orchestrator | 目前重試次數，上限設為 3，超過則通知人工 |
+Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_project_path` 開始解析，一路累積到 ⑥ 產出 `test_results` 結束。State 的完整型別定義（`RefactorState`，含每個欄位由誰產出、型別是什麼）、圖的節點/邊實際建構（[P]/④ 平行分支、⑤ 的 module 排程器、retry 迴圈的 conditional edge）都屬於實作細節，不在此重複列表，一律以 01 為準——避免兩邊各自維護同一份欄位清單、日後漏同步。
 
-### LangGraph 圖的節點與邊
-
-主流程：parse（①）→ extract_spec（A）→ gen_collection（B）→ record_tests（②）→ design（③）。
-
-③ 完成後，plan（[P]）和 scaffold（④）**平行執行**，兩者都完成後才進入 implement（⑤）。
-
-⑤ 完成後進入 run_tests（⑥），接條件邊：測試全過 → 結束；有失敗且未超過重試次數 → debug（⑦）→ implement（⑤）；超過重試次數 → 結束並通知人工。
+→ 完整設計見 `01_langgraph_architecture.md`。
 
 ---
 
 ## 十、待決定事項
 
-以下事項已定案，內容已併入對應章節，不再於此重複列出：Python 技術選型（見三）、ORM 選擇（見三）、平行 Agent 的執行策略（見七/⑤）、最大重試次數設 3（見九 `retry_count`）、translator-cli 連接另一台 Mac 沿用原 aider 的 HTTP 連線方式、但實際連線經 nginx 反向代理＋token 驗證轉發給 ollama（見三、四、五）、springdoc-openapi 保留（見五）、Java 專案啟動方式為 `java -jar`（見五、七/[A]）、測試 DB 命名與切換方式（見五）、Python 服務 DB 連線變數統一為 `DATABASE_URL`（見五）、測試 DB 的 schema 來源（手動 SQL 建表、已透過複製正式 DB 解決，見五）。
+以下事項已定案，內容已併入對應章節，不再於此重複列出：Python 技術選型（見三）、ORM 選擇（見三）、平行 Agent 的執行策略（見七/⑤）、最大重試次數設 3（見 01 三章 `RefactorState.retry_count`）、translator-cli 連接另一台 Mac 沿用原 aider 的 HTTP 連線方式、但實際連線經 nginx 反向代理＋token 驗證轉發給 ollama（見三、四、五）、springdoc-openapi 保留（見五）、Java 專案啟動方式為 `java -jar`（見五、七/[A]）、測試 DB 命名與切換方式（見五）、Python 服務 DB 連線變數統一為 `DATABASE_URL`（見五）、測試 DB 的 schema 來源（手動 SQL 建表、已透過複製正式 DB 解決，見五）。
 
 尚待定案：
 
-- [ ] translator-cli 的 git commit 顆粒度與平行寫入的鎖機制，細節待 `03a_translator_cli_architecture.md` 定案
+- [ ] translator-cli 的 git commit 顆粒度與平行寫入的鎖機制，細節待 `04a_translator_cli_architecture.md` 定案
 
 ---
 
@@ -371,13 +364,15 @@ Agent 間使用結構化 JSON 傳遞，不使用自然語言，避免資訊失�
 
 | 文件 | 內容 |
 |---|---|
-| `00_refactor_architecture.md`（本文件） | 整體流程、Agent 職責邊界、資料流、State 設計 |
+| `00_refactor_architecture.md`（本文件） | 整體流程、Agent 職責邊界、資料流 |
 | `01_langgraph_architecture.md` | LangGraph 實作細節：State schema 的實際型別定義、graph 的 node/edge 建構、[P]/④ 平行分支與 ⑤ module 排程器實作、conditional edge（retry 迴圈）、stub-first 開發策略、跨平台（含 Windows）注意事項、專案初始化 |
 | `02a_harness_architecture.md` | Harness 詳細設計：Recorder / Verifier、Masker、DiffEngine、Report 格式、DB 環境、Route Mapping 演算法 |
 | `02b_harness_code.md` | Harness 各模組的實際程式碼實作 |
-| `03a_translator_cli_architecture.md` | translator-cli 詳細設計：填空契約、AST 插入機制、git snapshot 流程、衝突偵測、目標語言 adapter 介面 |
-| `03b_translator_cli_code.md` | translator-cli 的實際程式碼實作 |
+| `03a_spec_collection_agent_architecture.md` | [A] Spec Agent / [B] Collection Agent 詳細設計：Java 服務啟動與 `/v3/api-docs` 擷取步驟、OpenAPI → Postman Collection 轉換流程、LLM 填值邏輯、鏈式依賴處理 |
+| `03b_spec_collection_agent_code.md` | [A] Spec Agent / [B] Collection Agent 的實際程式碼實作 |
+| `04a_translator_cli_architecture.md` | translator-cli 詳細設計：填空契約、AST 插入機制、git snapshot 流程、衝突偵測、目標語言 adapter 介面 |
+| `04b_translator_cli_code.md` | translator-cli 的實際程式碼實作 |
 
 ---
 
-*本文件為整體架構概覽，只保留「架構、流程、基礎設定」，各 Agent 的實作細節、演算法、程式碼一律留在對應細節文件，避免重複維護，隨實作推進持續更新。*
+*各 Agent 的實作細節、演算法、程式碼一律留在對應細節文件，避免重複維護；本文件隨實作推進持續更新。*

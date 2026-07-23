@@ -22,6 +22,9 @@ def record_golden_output(state: RefactorState) -> RefactorState:
     """
     分別呼叫 record()（readonly）與 record_mutation()（mutation），兩者的 DB
     reset 策略不同，已封裝在 GoldenRecorder 內部。
+
+    test_dsn 傳入 state["test_dsn"]，確保 Recorder 與 run_postman_tests 的
+    Verifier 連到同一顆測試 DB（見 02a 十四章）。
     """
     recorder = GoldenRecorder(
         java_base_url=JAVA_BASE_URL,
@@ -45,6 +48,11 @@ def record_golden_output(state: RefactorState) -> RefactorState:
 def run_postman_tests(state: RefactorState) -> RefactorState:
     """
     readonly 與 mutation 的原始結果合併後只呼叫一次 build_report()。
+
+    mutation_verifier.verify_all_raw() 內部已自動排除 tainted folder（見
+    MutationVerifier、02a 四章「排除已知異常的 folder」）；跑完後透過
+    get_excluded_folders() 取得這次實際跳過的 folder 清單，一併傳進
+    build_report()，讓最終 report 帶有 excluded_folders 欄位（見 02a 九章）。
     """
     db = DbEnvironment(test_dsn=state["test_dsn"])
     db.apply_seed("fixtures/seed.sql", tables_to_truncate=TABLES)
@@ -62,7 +70,10 @@ def run_postman_tests(state: RefactorState) -> RefactorState:
     )
     mutation_raw = mutation_verifier.verify_all_raw()
 
-    report = HarnessReporter().build_report(readonly_raw + mutation_raw)
+    report = HarnessReporter().build_report(
+        readonly_raw + mutation_raw,
+        excluded_folders=mutation_verifier.get_excluded_folders(),
+    )
 
     return {**state, "test_results": report}
 

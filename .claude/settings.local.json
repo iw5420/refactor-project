@@ -25,7 +25,11 @@
       "Bash(python -c ' *)",
       "Bash(grep -n \"^COPY\\\\|\\\\\\\\\\\\\\\\copy\\\\|\\\\\\\\\\\\\\\\i \\\\|\\\\\\\\\\\\\\\\set\" fixtures/seed.sql)",
       "Bash(JAVA_BASE_URL=http://localhost:8080 python -c ' *)",
-      "Bash(unset JAVA_BASE_URL)"
+      "Bash(unset JAVA_BASE_URL)",
+      "Bash(python -m py_compile refactor_harness/recorder/golden_writer.py refactor_harness/verifier/mutation_verifier.py refactor_harness/core/reporter.py refactor_harness/langgraph_nodes/test_nodes.py)",
+      "Bash(python -c \"import pytest; print\\(pytest.__version__\\)\")",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m py_compile refactor_harness/recorder/golden_writer.py refactor_harness/verifier/mutation_verifier.py refactor_harness/core/reporter.py refactor_harness/langgraph_nodes/test_nodes.py refactor_harness/verifier/comparator.py refactor_harness/core/masker.py refactor_harness/core/diff_engine.py refactor_harness/core/route_mapper.py refactor_harness/core/postman_runner.py refactor_harness/fixtures/db_env.py)"
     ]
   }
 }

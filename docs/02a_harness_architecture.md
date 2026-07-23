@@ -103,6 +103,38 @@ item name 與 URL path 可能含有檔名非法字元（`:`、`?`、`*`、`/`、
 
 Content-Type 是 JSON 但 body 為空（如 `204 No Content` 或部分 DELETE 回應）的情況，golden 明確存成 `body: null`，**不會**被 fallback 成空物件 `{}`——「沒有 body」和「回傳了 `{}`」是兩種不同語意，混為一談會掩蓋「Java 回 204 無 body、Python 誤回 200＋`{}`」這類真實差異。驗證端讀取 actual response 時採用相同規則，兩端對稱。
 
+### Mutation 錄製異常偵測（非預期 Status Code 與鏈式牽連）
+
+`collection_mutation.json` 設計上是「業務情境的快樂路徑」（見六章設計約定），不是拿來測錯誤路徑用的。但 [B] 的 LLM 填值邏輯不保證填出的值一定通過 Java 端的業務規則檢查（唯一鍵衝突、狀態機不允許的操作等）。若不做任何處理，這種情況下 Java 回傳的 4xx/5xx 會被**原樣錄成 golden output**——之後只要 Python 端剛好對同一份輸入也回傳類似的錯誤（不論是正確重現了業務規則，還是恰好用不相干的理由觸發了同一種錯誤），這個 case 就會「通過」，但從未真正測試過原本想驗證的行為。這是與 `03a_spec_collection_agent_architecture.md` 三章「LLM 填值邏輯」同性質的 False Pass 風險，只是發生的位置在錄製端而非填值端。Recorder 因此對 mutation collection 套用以下規則：
+
+**判斷基準**：只在 `record_mutation()`（`context="mutation"`）套用，`record()`（readonly）不受影響——readonly 的 path 參數用的是 `seed.sql` 既有資料（見 `03a_spec_collection_agent_architecture.md` 三章「LLM 填值邏輯」），理論上不會觸發業務規則錯誤，沒有同等風險。若某個 request 的 status code 不落在 `200 <= code < 300`（含 204）範圍內，視為非預期，**不寫入 golden**，改記錄進 `_metadata.json` 的新清單（格式見下）。
+
+> 更精準的判斷基準（依 openapi_spec 宣告的主要成功 response code，而非一律採 2xx）需要 [B] 在 Postman item 上多標註一個欄位才做得到，屬於跨文件的介面擴充，這次不處理，列入十六章待實作清單供未來評估。
+
+**鏈式牽連**：六章的設計約定是「一個頂層 folder＝一條自洽鏈式情境」，folder 內的 request 可能互相依賴（producer 的 response 欄位餵給 consumer）。若 folder 內任何一個 request 觸發上述異常，代表它之後注入的 test script（`pm.environment.set(...)`）很可能沒有正確捕捉到值——error body 通常沒有預期欄位，環境變數最終會被設成字面字串 `"undefined"`——folder 內後續依賴它的 request 即使自己的 status code 正常，也是建立在不可信的前提上。因此**整個 folder 都不寫入 golden**，不細究 folder 內哪些 case 個別正常：這是「頂層 folder＝一條不可分割的情境」這個既有約定的自然延伸，不是新規則。
+
+`_metadata.json` 格式擴充（新增 `tainted_folders`，與既有的 `skipped` 性質相同——都是「Recorder 主動判斷不該當 golden、記錄下來供人工複查」，差別只在 `skipped` 是單一 case、`tainted_folders` 是整個 folder）：
+
+```json
+{
+  "recorded_at": "...",
+  "total_cases": 40,
+  "cases": [...],
+  "skipped": [...],
+  "tainted_folders": [
+    {
+      "folder": "order_lifecycle",
+      "anomalies": [
+        {"case_id": "create_order_POST_api_v1_orders", "status_code": 400, "body_preview": "..."}
+      ],
+      "excluded_case_ids": ["create_order_POST_api_v1_orders", "get_order_GET_api_v1_orders_{id}"]
+    }
+  ]
+}
+```
+
+錄製完成後應檢查這份清單是否為空；若非空，通常代表 [B] 的填值邏輯需要調整，而不是 Harness 本身有問題。
+
 → 實作見：`recorder/golden_writer.py`（`record`／`record_mutation`／`write_metadata`，`02b_harness_code.md`）
 
 ---
@@ -137,12 +169,20 @@ Content-Type 是 JSON 但 body 為空（如 `204 No Content` 或部分 DELETE �
 
 `MutationVerifier`（mutation）：
 
-- `verify_all()`／`verify_all_raw()`：逐頂層 folder 執行整份 mutation collection。
-- `verify_one(folder_name)`：單獨執行某一條鏈式情境（除錯用）。
+- `verify_all()`／`verify_all_raw()`：逐頂層 folder 執行整份 mutation collection，**自動排除**三章「Mutation 錄製異常偵測」記錄在 `tainted_folders` 的 folder（見下方）。
+- `verify_one(folder_name)`：單獨執行某一條鏈式情境（除錯用），**不**自動排除——除錯時可能就是想看某個被標記 tainted 的 folder 實際執行狀況，這裡刻意不套用 `verify_all_raw()` 的排除邏輯。
 
 > **合併時的注意事項**：`build_report()` 只能對「未分類的原始結果」呼叫一次。已分類 report 中 failure 物件的欄位名稱與原始結果不同（如 `status_code_match` vs `status_match`），把已分類物件再丟回 `build_report()` 會因讀不到預期欄位而靜默誤判。因此合併 readonly＋mutation 時一律走 `*_raw()` 收集原始結果、最後統一分類。
 
 > **通過標準**：不論 readonly 或 mutation，單一 case 要同時滿足「status code 相符」與「body diff 為空」才算 `passed`，兩者是 AND 關係，不是只看其中一個——例如 Java 回 404、Python 回 200 但 body 都是空物件的情境，若只看 body diff 會被誤判為通過。
+
+### 排除已知異常的 folder
+
+`MutationVerifier` 初始化時讀取 `fixtures/golden/_metadata.json` 的 `tainted_folders`，取得對應的 folder 名稱清單；`verify_all_raw()` 逐 folder 執行時，若該 folder 在清單內，直接跳過（不執行 newman、不產生任何比對結果）。這是必要的，不是選配：若不跳過，這些 case 會因為找不到 golden，被既有的 `golden_not_found` 分類誤判成失敗——但那不是 Python 端的問題，是這個 case 從錄製當下就沒有被判定為可信的 golden。
+
+`_metadata.json` 不存在時（例如尚未跑過 `record_golden_output`）視為沒有任何 tainted folder，不拋例外——這是正常的初次執行情境，不是異常。
+
+被跳過的 folder 名稱另外收集，交由呼叫端（`run_postman_tests`，見十二章）附加進最終 report 的 `excluded_folders` 欄位（見九章），讓人在看 report 時能一眼看出「這次驗證少測了哪些情境、為什麼」，不會誤以為 `pass_rate` 100% 代表全部涵蓋。
 
 → 實作見：`verifier/comparator.py`、`verifier/mutation_verifier.py`（`02b_harness_code.md`）
 
@@ -309,6 +349,7 @@ Agent ⑦（Debug Agent）的輸入是結構化的 JSON report，格式設計讓
     }
   ]
   passed_cases: [case_id, ...]
+  excluded_folders: [folder_name, ...]   ← 見「excluded_folders 欄位」一節，預設空陣列
 }
 ```
 
@@ -328,6 +369,10 @@ Agent ⑦（Debug Agent）的輸入是結構化的 JSON report，格式設計讓
 ### 合併範圍
 
 全量驗證的 report **同時涵蓋 readonly 與 mutation 兩份 collection 的 case**（合併機制見四）。`summary`／`status`／`failures` 的結構不變，Debug Agent 不需要區分來源即可處理。route 解析邏輯統一放在 `core/route_mapper.py`（`RouteMapper`），`GoldenVerifier` 與 `MutationVerifier` 共用同一份，mutation failure 的 `related_files` 能正常解析。
+
+### excluded_folders 欄位
+
+Report 頂層另有一個 `excluded_folders` 欄位（預設空陣列），列出因三章「Mutation 錄製異常偵測」被判定為 tainted、整個 folder 未參與這次驗證的情境（見四章「排除已知異常的 folder」）。這些 case **不計入** `summary` 的統計，也不出現在 `failures`——它們既不是通過也不是失敗，是「這次沒測」。`excluded_folders` 非空時代表 [B] 的填值邏輯有 case 需要人工複查，通常應優先處理，而不是放著等它自己消失。
 
 → 實作見：`core/reporter.py`（`02b_harness_code.md`）
 
@@ -457,12 +502,12 @@ implement（Agent ⑤，內部呼叫，非獨立 node，見十三章 + 01 六章
 
 run_tests（Agent ⑥，對應 run_postman_tests，全量驗證）
   apply_seed → GoldenVerifier.verify_raw(collection_readonly.json)
-  MutationVerifier.verify_all_raw()                        ← 內部逐頂層 folder apply_seed
-  build_report(readonly_raw + mutation_raw)                ← 合併後只分類一次（見四）
-  → state["test_results"]
+  MutationVerifier.verify_all_raw()                        ← 內部逐頂層 folder apply_seed，自動排除 tainted_folders（見四、九）
+  build_report(readonly_raw + mutation_raw, excluded=mutation_verifier 的排除清單)
+  → state["test_results"]（含 excluded_folders 欄位）
 ```
 
-> `record_golden_output`／`run_postman_tests` 是 00 九、State 表格與 01 四章沿用的 node 名稱（`record_tests`／`run_tests`）；module 級局部驗證不是獨立 node，是 `implement` node 內部依排程觸發的呼叫，不出現在圖的節點清單中。
+> `record_golden_output`／`run_postman_tests` 是 01 四章沿用的 node 名稱（`record_tests`／`run_tests`）；module 級局部驗證不是獨立 node，是 `implement` node 內部依排程觸發的呼叫，不出現在圖的節點清單中。
 
 ### 條件邊邏輯
 
@@ -625,12 +670,13 @@ PostgreSQL Server
 
 ## 十六、待實作清單
 
-**OpenAPI → Collection 工具鏈（優先執行）**
+**OpenAPI → Collection 工具鏈（優先執行，細節見 `03a_spec_collection_agent_architecture.md`）**
 - [ ] Java 專案 pom.xml 加入 `springdoc-openapi-ui 1.7.0`（對應目前 Spring Boot 2.7.11；若專案改用 Spring Boot 3.x 則改用 `springdoc-openapi-starter-webmvc-ui` 2.x 系列，見十章）
 - [ ] 啟動 Java 服務，確認 `GET /v3/api-docs` 能正常回傳完整 OpenAPI JSON
 - [ ] 安裝 `openapi-to-postmanv2`（npm），確認能將 openapi.json 轉成 Postman Collection
-- [ ] 確認 Agent B 填入的 path parameter ID 在 seed.sql 中確實存在（避免 404）
 - [ ] 確認 collection_readonly.json 和 collection_mutation.json 都能被 newman 正常執行
+
+> [A]/[B] 產生 Collection 的完整流程、LLM 填值與失敗處理、鏈式依賴偵測與注入，這些項目原本列在這裡，現在都在 `03a_spec_collection_agent_architecture.md`，不在本文件重複列。
 
 **測試 DB 建立**
 - [ ] 確認 Java 專案的 `ddl-auto` 設定（見十四章「Schema 來源」），決定是否需要手動 dump schema
@@ -644,6 +690,12 @@ PostgreSQL Server
 - [ ] mask_rules.yaml 初版：把 Java 回傳格式中所有動態欄位列出來（只列純量欄位；`id` 系主鍵欄位放 `masked_fields_mutation_only`，不放通用 `masked_fields`，見七）
 - [x] ~~fixtures/seed.sql~~：由你直接提供 PostgreSQL 初始資料
 - [ ] newman 安裝與 collection 執行驗證：確認 newman run 可正常輸出 JSON report
+
+**Mutation 錄製異常偵測（見三章、四章、九章）**
+- [x] ~~`golden_writer.py`：`record_mutation()` 對非預期 status code 判定、folder 級 tainted 標記、`_metadata.json` 寫入 `tainted_folders`~~（見 02b，並有 `tests/refactor_harness/test_golden_writer.py` 覆蓋）
+- [x] ~~`mutation_verifier.py`：讀取 `_metadata.json` 的 `tainted_folders`，`verify_all_raw()` 自動排除、`verify_one()` 不排除~~（見 02b，並有 `tests/refactor_harness/test_mutation_verifier.py` 覆蓋）
+- [x] ~~`reporter.py`／`test_nodes.py`：`excluded_folders` 欄位串接進最終 report~~（見 02b）
+- [ ] （優先度較低）更精準的預期 status 判斷基準：需 [B] 在 Postman item 標註 openapi 宣告的成功 response code，屬 `03a`/`03b` 與本文件的介面擴充，待評估
 
 **Collection 分組（狀態污染防護）**
 - [ ] 確認 Agent B 正確拆分 readonly / mutation 兩份 collection
@@ -668,7 +720,7 @@ PostgreSQL Server
 - [ ] 確認 Python 服務的 Alembic migration 可以直接套用到 `MOC_MATSUEXAM_TEST`，或改用 `db.sync_schema()` 手動同步
 
 **流程整合**
-- [x] ~~MAX_RETRY 設定~~：已定案為 3（見 `00` 九章 State 表格 `retry_count`），需調整直接改 `test_nodes.py` 的 `MAX_RETRY` 常數
+- [x] ~~MAX_RETRY 設定~~：已定案為 3（見 `01_langgraph_architecture.md` 三章 `RefactorState.retry_count`），需調整直接改 `test_nodes.py` 的 `MAX_RETRY` 常數
 - [ ] give_up 通知機制：超過重試次數時，Slack / email 通知人工介入
 
 ---

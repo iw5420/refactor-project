@@ -488,7 +488,14 @@ class RouteMapper:
 
 ```python
 class HarnessReporter:
-    def build_report(self, results: list[dict]) -> dict:
+    def build_report(self, results: list[dict], excluded_folders: list[str] | None = None) -> dict:
+        """
+        excluded_folders：因 Recorder 錄製時判定為 tainted 而整個 folder 未參與
+        這次驗證的情境（見 02a 三章「Mutation 錄製異常偵測」、四章「排除已知
+        異常的 folder」、九章「excluded_folders 欄位」）。這些 case 不計入
+        summary／failures／passed_cases 既有的計算邏輯——本方法其餘分類行為
+        完全不變，excluded_folders 只是額外附加的頂層欄位。
+        """
         passed = [r for r in results if r["passed"]]
         failed = [r for r in results if not r["passed"]]
 
@@ -513,7 +520,8 @@ class HarnessReporter:
                 }
                 for f in failed
             ],
-            "passed_cases": [p["case_id"] for p in passed]
+            "passed_cases": [p["case_id"] for p in passed],
+            "excluded_folders": excluded_folders or []
         }
 
     def _classify_failure(self, result: dict) -> str:
@@ -584,9 +592,13 @@ class HarnessReporter:
       ],
       "debug_hint": "Response 缺少欄位，檢查 Pydantic schema 定義是否完整"
     }
-  ]
+  ],
+  "passed_cases": ["..."],
+  "excluded_folders": ["order_lifecycle_bad"]
 }
 ```
+
+`excluded_folders`：因 Recorder 錄製時判定為 tainted、整個 folder 未參與這次驗證的情境（見 `MutationVerifier`、`02a_harness_architecture.md` 四章「排除已知異常的 folder」、九章「excluded_folders 欄位」）。不計入 `summary` 統計，也不是 `failures`，預設空陣列。
 
 ---
 
@@ -675,6 +687,11 @@ from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id, get_module
 from refactor_harness.fixtures.db_env import DbEnvironment
 
+# mutation collection 只接受 2xx（含 204）視為預期成功；不在此範圍內的一律判定為
+# 異常，不寫入 golden（見 02a 三章「Mutation 錄製異常偵測」）。只在 record_mutation()
+# 傳入 context="mutation" 時套用，readonly 不受影響。
+_EXPECTED_STATUS_RANGE = range(200, 300)
+
 class GoldenRecorder:
     """
     readonly／mutation 分別呼叫 record()／record_mutation()，兩者的 DB reset
@@ -703,14 +720,23 @@ class GoldenRecorder:
     def record(self, collection_path: str) -> dict:
         """
         錄製 readonly collection：DB 狀態全程不變，seed 一次即可跑完整份 collection。
+
+        readonly 不做「非預期 status code」判定（見 02a 三章「Mutation 錄製異常
+        偵測」的判斷基準——readonly 的 path 參數用 seed.sql 既有資料，理論上不會
+        觸發業務規則錯誤），所以這裡拿到的 anomalies 必然是空的，直接把 built
+        全部寫入即可，行為與異常偵測加入前完全等價。
         """
         self.db.apply_seed("fixtures/seed.sql", self.tables)
         newman_output = run_newman(collection_path, self.java_base_url)
-        recorded, skipped = self._record_executions(newman_output["run"]["executions"])
+        built, skipped, _anomalies = self._build_executions(
+            newman_output["run"]["executions"], context="readonly"
+        )
+        for case_id, golden in built:
+            self._write_golden(case_id, golden)
         return {
-            "recorded_count": len(recorded),
+            "recorded_count": len(built),
             "skipped_count": len(skipped),
-            "cases": recorded,
+            "cases": [case_id for case_id, _ in built],
             "skipped": skipped
         }
 
@@ -725,24 +751,51 @@ class GoldenRecorder:
         這個 reset 粒度必須跟 MutationVerifier.verify_one() 完全一致——
         錄製端用「連續整份 collection 跑一次」而驗證端用「逐 folder reset」，
         會讓兩端的 DB 初始狀態不同，比對必然出現偽 fail。
+
+        異常偵測（見 02a 三章「Mutation 錄製異常偵測」）：先用 _build_executions()
+        建構整個 folder 的結果、但不寫入磁碟；若這個 folder 裡有任何一個 case 的
+        status code 落在預期範圍之外，代表這條鏈式情境的前提已經不可信（鏈式注入
+        的 test script 很可能沒抓到預期欄位，環境變數最終會被設成字面字串
+        "undefined"），因此**整個 folder 都不寫入**，包含 folder 內其餘原本正常的
+        case——不細究哪些 case 個別正常，這是「頂層 folder＝一條不可分割的情境」
+        既有約定的自然延伸，記錄進 tainted_folders 供人工複查。只有 folder 內完全
+        沒有異常時，才把 built 寫入磁碟。
         """
         folder_names = list_top_level_folders(collection_path)
-        recorded, skipped = [], []
+        recorded, skipped, tainted_folders = [], [], []
         for folder_name in folder_names:
             self.db.apply_seed("fixtures/seed.sql", self.tables)
             newman_output = run_newman(
                 collection_path, self.java_base_url, folder=folder_name
             )
-            folder_recorded, folder_skipped = self._record_executions(
+            built, folder_skipped, folder_anomalies = self._build_executions(
                 newman_output["run"]["executions"], context="mutation"
             )
-            recorded += folder_recorded
+
+            if folder_anomalies:
+                tainted_folders.append({
+                    "folder": folder_name,
+                    "anomalies": folder_anomalies,
+                    # 整個 folder 的 case 都視為不可信，不只是觸發異常的那幾筆
+                    # （見上方 docstring 說明）。
+                    "excluded_case_ids": (
+                        [case_id for case_id, _ in built]
+                        + [a["case_id"] for a in folder_anomalies]
+                    ),
+                })
+                continue
+
+            for case_id, golden in built:
+                self._write_golden(case_id, golden)
+            recorded += [case_id for case_id, _ in built]
             skipped += folder_skipped
+
         return {
             "recorded_count": len(recorded),
             "skipped_count": len(skipped),
             "cases": recorded,
-            "skipped": skipped
+            "skipped": skipped,
+            "tainted_folders": tainted_folders,
         }
 
     def write_metadata(self, *results: dict):
@@ -751,39 +804,75 @@ class GoldenRecorder:
         故意不在 record()/record_mutation() 內部各自寫一次——那樣後呼叫的會把
         先呼叫的覆蓋掉，readonly 的錄製摘要就不見了。呼叫端（見 test_nodes.py）
         負責在兩者都跑完後呼叫一次這個方法。
+
+        tainted_folders 用 .get(..., []) 取——record() 的回傳沒有這個 key（readonly
+        不會產生 tainted folder），避免合併時 KeyError。
         """
         recorded = [c for r in results for c in r["cases"]]
         skipped = [c for r in results for c in r["skipped"]]
+        tainted_folders = [t for r in results for t in r.get("tainted_folders", [])]
         metadata = {
             "recorded_at": datetime.utcnow().isoformat() + "Z",
             "total_cases": len(recorded),
             "cases": recorded,
-            "skipped": skipped
+            "skipped": skipped,
+            "tainted_folders": tainted_folders
         }
         with open(self.golden_dir / "_metadata.json", "w") as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-    def _record_executions(self, executions: list[dict], context: str = "readonly") -> tuple[list[str], list[str]]:
-        recorded, skipped = [], []
+    def _build_executions(
+        self, executions: list[dict], context: str = "readonly"
+    ) -> tuple[list[tuple[str, dict]], list[str], list[dict]]:
+        """
+        建構整批 execution 的 golden 內容並分類，**不寫入磁碟**——是否真的落地
+        由呼叫端（record()／record_mutation()）決定：record_mutation() 需要先看
+        過整個 folder 有沒有異常，才能決定該 folder 要不要整批捨棄（見上方
+        record_mutation() docstring、02a 三章）。取代舊版直接寫檔的
+        _record_executions()。
+
+        回傳 (built, skipped, anomalies)：
+        - built：[(case_id, golden_dict), ...]，正常應寫入的
+        - skipped：[case_id, ...]，非 JSON response 被跳過的（沿用既有語意）
+        - anomalies：[{"case_id", "status_code", "body_preview"}, ...]，
+          status code 異常被跳過的（只在 context="mutation" 時可能非空）
+        """
+        built: list[tuple[str, dict]] = []
+        skipped: list[str] = []
+        anomalies: list[dict] = []
+
         for execution in executions:
             item = execution["item"]
             response = execution["response"]
-
             case_id = make_case_id(item)  # 共用函式，含檔名消毒（見 core/postman_runner.py）
-            golden = self._build_golden(item, response, context)
 
-            if golden is None:
-                skipped.append(case_id)  # 非 JSON response，記錄但跳過
+            golden, skip_reason = self._build_golden(item, response, context)
+
+            if golden is not None:
+                built.append((case_id, golden))
                 continue
 
-            self._write_golden(case_id, golden)
-            recorded.append(case_id)
-        return recorded, skipped
+            if skip_reason == "unexpected_status":
+                anomalies.append({
+                    "case_id": case_id,
+                    "status_code": response.get("code"),
+                    "body_preview": (response.get("body") or "")[:500],
+                })
+            else:
+                skipped.append(case_id)  # 非 JSON response，記錄但跳過
 
-    def _build_golden(self, request_item: dict, response: dict, context: str = "readonly") -> dict | None:
+        return built, skipped, anomalies
+
+    def _build_golden(
+        self, request_item: dict, response: dict, context: str = "readonly"
+    ) -> tuple[dict | None, str | None]:
         """
-        解析單一 execution 的 response。
-        非 JSON response（二進位、HTML error page）一律跳過。
+        解析單一 execution 的 response，回傳 (golden, skip_reason)。
+        非 JSON response（二進位、HTML error page）一律跳過，skip_reason 為
+        "non_json_response"；context="mutation" 且 status code 不在 2xx 範圍內
+        （見模組層級常數 _EXPECTED_STATUS_RANGE、02a 三章「Mutation 錄製異常
+        偵測」）時，skip_reason 為 "unexpected_status"。golden 不為 None 時
+        skip_reason 必為 None。
 
         空 body（如 204 No Content）不強制轉成 "{}" 再 parse——
         那樣會把「真的沒有 body」和「回傳了空物件 {}」這兩種不同語意混為一談，
@@ -799,7 +888,7 @@ class GoldenRecorder:
         content_type = headers.get("content-type", "")
 
         if "application/json" not in content_type:
-            return None
+            return None, "non_json_response"
 
         raw_body = response.get("body")
         if raw_body is None or raw_body.strip() == "":
@@ -808,11 +897,14 @@ class GoldenRecorder:
             try:
                 body = json.loads(raw_body)
             except (json.JSONDecodeError, TypeError):
-                return None
+                return None, "non_json_response"
+
+        if context == "mutation" and response["code"] not in _EXPECTED_STATUS_RANGE:
+            return None, "unexpected_status"
 
         masked_body = self.masker.mask(body, context=context) if body is not None else None
 
-        return {
+        golden = {
             "_meta": {
                 "recorded_at": datetime.utcnow().isoformat() + "Z",
                 "source": "java"
@@ -826,6 +918,7 @@ class GoldenRecorder:
                 "body": masked_body
             }
         }
+        return golden, None
 
     def _write_golden(self, case_id: str, golden: dict):
         # module 推斷用共用的 get_module（見 core/postman_runner.py），
@@ -993,6 +1086,13 @@ class MutationVerifier:
         對 readonly 做過 apply_seed，這裡內部逐 folder 的 apply_seed 仍可能
         連到不同資料庫。呼叫端（test_nodes.py 的 run_postman_tests）一律
         傳入 state["test_dsn"]。
+
+        同時讀取 {golden_dir}/_metadata.json 的 tainted_folders（見 02a 三章
+        「Mutation 錄製異常偵測」、四章「排除已知異常的 folder」），取得 Recorder
+        判定為不可信、整個 folder 都沒有寫入 golden 的情境清單，讓 verify_all_raw()
+        能主動跳過，不誤判成 golden_not_found 失敗。_metadata.json 不存在時（例如
+        尚未跑過 record_golden_output）視為沒有任何 tainted folder，不拋例外——
+        這是正常的初次執行情境。
         """
         self.python_base_url = python_base_url
         self.golden_dir = Path(golden_dir)
@@ -1010,25 +1110,58 @@ class MutationVerifier:
         self.collection_path = config["collections"]["mutation"]["path"]
         self.db = DbEnvironment(test_dsn=self.test_dsn)
 
+        self._tainted_folder_names = self._load_tainted_folder_names()
+        self._last_excluded_folders: list[str] = []
+
+    def _load_tainted_folder_names(self) -> set[str]:
+        metadata_path = self.golden_dir / "_metadata.json"
+        if not metadata_path.exists():
+            return set()
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+        return {t["folder"] for t in metadata.get("tainted_folders", [])}
+
     def verify_all(self) -> dict:
         """對 collection_mutation.json 的每一個頂層 folder 依序呼叫，彙整成單一 report
         （供 run_tests／全量驗證使用，見 test_nodes.py）。"""
-        return self.reporter.build_report(self.verify_all_raw())
+        return self.reporter.build_report(
+            self.verify_all_raw(), excluded_folders=self.get_excluded_folders()
+        )
 
     def verify_all_raw(self) -> list[dict]:
         """
         與 verify_all() 相同，但回傳尚未分類的原始 case 結果清單，不呼叫 build_report()。
         給 run_postman_tests 用來跟 GoldenVerifier.verify_raw() 的結果合併成單一 report
         （故意不是「呼叫 verify_one() 拿 report 再合併」——原因見下方 _verify_one_raw 的說明）。
+
+        自動跳過 self._tainted_folder_names 內的 folder（不執行 newman、不產生任何
+        比對結果），見 02a 四章「排除已知異常的 folder」——這是必要行為，不是選配：
+        不跳過的話，這些 case 會因為找不到 golden 被 golden_not_found 誤判成失敗，
+        但那不是 Python 端的問題。實際跳過了哪些 folder 記錄在
+        self._last_excluded_folders，供 get_excluded_folders() 讀取。
         """
         folder_names = list_top_level_folders(self.collection_path)
         all_raw_results = []
+        excluded = []
         for folder_name in folder_names:
+            if folder_name in self._tainted_folder_names:
+                excluded.append(folder_name)
+                continue
             all_raw_results.extend(self._verify_one_raw(folder_name))
+        self._last_excluded_folders = excluded
         return all_raw_results
 
+    def get_excluded_folders(self) -> list[str]:
+        """回傳上一次 verify_all_raw() 實際跳過的 folder 名稱清單。"""
+        return self._last_excluded_folders
+
     def verify_one(self, folder_name: str) -> dict:
-        """單一頂層 folder（鏈式情境）獨立跑，跑之前先 reset DB。回傳已分類的 report。"""
+        """
+        單一頂層 folder（鏈式情境）獨立跑，跑之前先 reset DB。回傳已分類的 report。
+
+        刻意不套用 verify_all_raw() 的 tainted folder 排除邏輯——除錯時可能就是
+        想看某個被標記 tainted 的 folder 實際執行狀況（見 02a 四章）。
+        """
         return self.reporter.build_report(self._verify_one_raw(folder_name))
 
     def _verify_one_raw(self, folder_name: str) -> list[dict]:
@@ -1087,7 +1220,9 @@ class MutationVerifier:
             else:
                 # golden 不存在：正常情況是該 case 在錄製時被跳過
                 # （非 JSON content-type 的回應，如純 204 No Content，見 golden_writer
-                # 的 _build_golden——這類 case 出現在 _metadata.json 的 skipped 清單）。
+                # 的 _build_golden——這類 case 出現在 _metadata.json 的 skipped 清單。
+                # 若是因為整個 folder 被判定 tainted，這個分支根本不會被執行到，
+                # 因為 verify_all_raw() 在跑到這裡之前就已經整個 folder 跳過了）。
                 # 此時退回保守的 2xx sanity check，不能像 GoldenVerifier 那樣
                 # 一律標成 golden_not_found 失敗，否則所有被合理跳過的 204 endpoint
                 # 會永久 fail；也不能寫死 expected=200，否則 204 一樣永久 fail。
@@ -1188,6 +1323,11 @@ def run_postman_tests(state: RefactorState) -> RefactorState:
     MutationVerifier 內部逐 folder 自行 apply_seed（見 02a 六章），這裡不
     需要在呼叫前再 apply_seed 一次。test_dsn 統一傳入 state["test_dsn"]，
     確保 readonly／mutation 兩條路徑與 Recorder 連到同一顆測試 DB。
+
+    mutation_verifier.verify_all_raw() 內部已自動排除 tainted folder（見
+    MutationVerifier、02a 四章「排除已知異常的 folder」）；跑完後透過
+    get_excluded_folders() 取得這次實際跳過的 folder 清單，一併傳進
+    build_report()，讓最終 report 帶有 excluded_folders 欄位（見 02a 九章）。
     """
     db = DbEnvironment(test_dsn=state["test_dsn"])
     db.apply_seed("fixtures/seed.sql", tables_to_truncate=TABLES)
@@ -1205,7 +1345,10 @@ def run_postman_tests(state: RefactorState) -> RefactorState:
     )
     mutation_raw = mutation_verifier.verify_all_raw()
 
-    report = HarnessReporter().build_report(readonly_raw + mutation_raw)
+    report = HarnessReporter().build_report(
+        readonly_raw + mutation_raw,
+        excluded_folders=mutation_verifier.get_excluded_folders(),
+    )
 
     return {**state, "test_results": report}
 
