@@ -15,7 +15,7 @@ async def main():
     graph = build_graph()
 
     initial_state = {
-        "java_project_path": "./java-project",           # ① 解析 Agent 讀取用
+        "java_project_path": os.environ["JAVA_PROJECT_PATH"],  # ① 解析 Agent 讀取用，見 00 五章「環境建立」
         "test_dsn": os.environ.get("TEST_DB_DSN", ""),   # implement node 用
         "python_base_url": os.environ.get("PYTHON_BASE_URL", "http://localhost:8000"),  # implement node 用
         "module_list": [],
@@ -23,6 +23,7 @@ async def main():
         "openapi_spec": {},
         "collection_readonly_path": "",
         "collection_mutation_path": "",
+        "collection_manual_fill_pending": [],
         "golden_output": {},
         "python_structure": {"directory_tree": "", "interfaces": []},
         "route_to_file_mapping": {},

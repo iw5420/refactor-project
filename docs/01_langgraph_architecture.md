@@ -52,7 +52,7 @@ refactor-project/
 │   └── golden/
 │
 ├── requirements.txt
-├── .env.example
+├── .env
 └── .gitignore
 ```
 
@@ -62,25 +62,27 @@ refactor-project/
 
 ```
 langgraph==1.2.6
-langchain-anthropic==1.4.0
 pyyaml==6.0.3
 python-dotenv==1.2.2
 httpx==0.28.1
 ```
 
-> **鎖死版本而非用 `>=`**：orchestrator 長時間無人值守運行，`langgraph`／`langchain-anthropic` 仍在 1.x 早期，版本間可能有 breaking change（`Send` API、reducer 行為、checkpointer 介面）。用 `==` 精確鎖定，升級時主動跑 `pip install -U langgraph` 並重跑 stub-first 驗證（見七）。上面版本號僅供參考，建立專案時用 `pip index versions langgraph` 確認最新版即可。
+> **鎖死版本而非用 `>=`**：orchestrator 長時間無人值守運行，`langgraph` 仍在 1.x 早期，版本間可能有 breaking change（`Send` API、reducer 行為、checkpointer 介面）。用 `==` 精確鎖定，升級時主動跑 `pip install -U langgraph` 並重跑 stub-first 驗證（見七）。上面版本號僅供參考，建立專案時用 `pip index versions langgraph` 確認最新版即可。
+>
+> **不含 `langchain-anthropic`**：Claude API 呼叫統一走 `anthropic` SDK 直接呼叫（見 03b 一章「相依套件」、00 六章「Claude API 呼叫封裝」），全 repo 沒有任何地方 import `langchain`，不需要這個依賴。
 >
 > `newman`、`openapi-to-postmanv2` 是 Node.js 工具，見 00 五；建議 `package.json` 同樣鎖版本，用 `npm ci`。
 
-### .env.example
+### .env
 
 ```
 ANTHROPIC_API_KEY=
 JAVA_BASE_URL=http://localhost:8080
 JAVA_JAR_PATH=../lang-exam-api-refactor/target/app.jar
+JAVA_EXECUTABLE_PATH=java
 PYTHON_BASE_URL=http://localhost:8000
 
-# 本地模型（v3.4）：另一台 Mac 上 ollama 前面掛了 nginx 做 token 驗證，
+# 本地模型：另一台 Mac 上 ollama 前面掛了 nginx 做 token 驗證，
 # ollama 本身不對外開放，OLLAMA_BASE_URL 指向的是 nginx 的 port，不是 ollama 原生的 11434。
 OLLAMA_BASE_URL=http://<另一台Mac的IP>:<nginx對外port>/v1
 OLLAMA_API_KEY=<與另一台 Mac 上 nginx 設定的 token 一致>
@@ -98,9 +100,11 @@ DATABASE_URL=postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM_TEST
 
 > `JAVA_JAR_PATH` 用相對於 `refactor-project/` 的相對路徑（見 03a 二「路徑格式」），不是絕對路徑，避免 `.env` 換機器/換使用者就失效。
 >
+> `JAVA_EXECUTABLE_PATH`（見 03a 二「Java 執行檔路徑」）：預設值 `java`，交給系統 PATH 解析；PATH 上有多個 JDK 版本、且預設解析到的版本與 Java 專案要求版本不符時，改填該 JDK 的 `java`／`java.exe` 完整路徑，避免啟動時因位元組碼版本不符而失敗。這個值機器規格相關、不強求可攜，性質同 `OLLAMA_BASE_URL` 的 IP。
+>
 > `SPRING_DATASOURCE_*` 是 [A] Spec Agent／② 測試 Agent 啟動 Java 服務（`subprocess.Popen`，見八）時帶入的環境變數，Spring Boot 會自動覆蓋 `spring.datasource.*`，不需改 `application.properties`（⑥ 測試執行 Agent 操作的是 Python 服務，用不到這組 JDBC 格式的變數）。
 >
-> `OLLAMA_API_KEY`（v3.4 新增）：translator-cli 呼叫 `OLLAMA_BASE_URL` 時，須在 request header 帶上 `Authorization: Bearer {OLLAMA_API_KEY}`，讓另一台 Mac 上的 nginx 驗證通過後才轉發給 ollama。這個變數只在 translator-cli 內部使用，不放進 `RefactorState`（與 `OLLAMA_BASE_URL` 同一類——性質同 `DATABASE_URL`，是外部工具自己讀的環境變數，不是 Orchestrator 決策要用的資料，見三章 State 設計）。實際 header 組裝與 request schema 見 `04a_translator_cli_architecture.md`。
+> `OLLAMA_API_KEY`：translator-cli 呼叫 `OLLAMA_BASE_URL` 時，須在 request header 帶上 `Authorization: Bearer {OLLAMA_API_KEY}`，讓另一台 Mac 上的 nginx 驗證通過後才轉發給 ollama。這個變數只在 translator-cli 內部使用，不放進 `RefactorState`（與 `OLLAMA_BASE_URL` 同一類——性質同 `DATABASE_URL`，是外部工具自己讀的環境變數，不是 Orchestrator 決策要用的資料，見三章 State 設計）。實際 header 組裝與 request schema 見 `07a_translator_cli_architecture.md`。
 
 ### 初始化步驟
 
@@ -109,7 +113,7 @@ mkdir refactor-project && cd refactor-project
 python3 -m venv .venv
 source .venv/bin/activate          # Windows 見八
 pip install -r requirements.txt
-cp .env.example .env               # 填入實際值
+# 建立 .env 並依上方範例填入實際值（.env 已被 .gitignore 排除，不進版控）
 git init
 ```
 
@@ -130,17 +134,18 @@ import operator
 
 
 # ── Agent ① 輸出的子型別 ──────────────────────────────
+# 不含 python_method／python_files／python_target：Java→Python 的檔案/函式
+# 對應唯一權威來源是 Agent ③ 的 python_structure.interfaces，見 04a 六章。
 class MethodInfo(TypedDict):
     java_method: str
-    python_method: str
     description: str
     complexity: Literal["low", "medium", "high"]
 
 
 class ModuleInfo(TypedDict):
     module: str                    # 對應 fixtures/golden/{module}/ 子目錄
+    summary: str                   # 模組業務邏輯摘要，供 Agent ③ 設計 Python 結構/interface 邊界時參考（見 04a）
     java_files: list[str]
-    python_files: list[str]
     depends_on: list[str]          # 依賴的其他 module 名稱（⑤ 排程依此做 topological sort）
     methods: list[MethodInfo]
 
@@ -149,11 +154,10 @@ class ApiMapping(TypedDict):
     endpoint: str
     http_method: str
     java_controller: str
-    python_target: str
     module: str
 
 
-# ── Agent ③ 輸出：python_structure（v3.2 鎖死到函式簽名層級）──
+# ── Agent ③ 輸出：python_structure ──
 class ParamSpec(TypedDict):
     name: str
     type: str
@@ -187,7 +191,7 @@ class RefactorState(TypedDict):
     # 進入點輸入（main.py 組裝 initial_state 時填入，見九）
     java_project_path: str
 
-    # 環境設定（main.py 從 .env 讀入，見九；implement node 需要，之前遺漏未列入 State）
+    # 環境設定（main.py 從 .env 讀入，見九；implement node 需要）
     test_dsn: str          # 對應 .env 的 TEST_DB_DSN，Orchestrator 直接連 DB 用
     python_base_url: str   # 對應 .env 的 PYTHON_BASE_URL，Orchestrator 打 API 用
     # 註：.env 的 DATABASE_URL 不放進這個 State——那是 Python 服務進程自己讀的環境變數，
@@ -201,6 +205,11 @@ class RefactorState(TypedDict):
     openapi_spec: dict
     collection_readonly_path: str
     collection_mutation_path: str
+    # [B] 尚未被人工解決（既沒填值、也沒標記 skip）的 endpoint 清單，
+    # 供 gen_manual_fill_templates／gen_collection 兩個節點後的條件邊
+    # 判斷要不要暫停等人工處理（見五「人工填值關卡」、03a 三章「人工
+    # 填值機制」）。空清單＝全部解決。
+    collection_manual_fill_pending: list[str]
 
     # Agent ②
     golden_output: dict
@@ -240,19 +249,21 @@ class RefactorState(TypedDict):
 
 | Node 名稱 | 對應 Agent | 型態 | 檔案 |
 |---|---|---|---|
-| `parse` | ① 解析 Agent | Claude API | `nodes/parse_node.py` |
-| `extract_spec` | [A] Spec Agent | 程式邏輯 | `nodes/spec_node.py`（見 03a/03b） |
-| `gen_collection` | [B] Collection Agent | 程式邏輯 + LLM | `nodes/collection_node.py`（見 03a/03b） |
+| `extract_spec` | [A] Spec Agent | 程式邏輯 | `graph/nodes/spec_node.py`（見 03a/03b） |
+| `gen_manual_fill_templates` | [B] Collection Agent（階段一） | 程式邏輯，不呼叫 LLM | `graph/nodes/collection_node.py`（`run_generate_templates`，見 03a 三章「人工填值機制」、03c） |
+| `gen_collection` | [B] Collection Agent（階段二） | 程式邏輯 + LLM | `graph/nodes/collection_node.py`（`run`，見 03a/03c） |
+| `await_manual_fill` | — | 程式邏輯 | `graph/nodes/await_manual_fill_node.py`（見五「人工填值關卡」，`gen_manual_fill_templates`／`gen_collection` 共用同一個終止節點） |
+| `parse` | ① 解析 Agent | Claude API | `graph/nodes/parse_node.py`（見 04a：排在 `gen_collection` 之後，因為 skip 呼叫鏈排除需要讀 [B] 已定案的 `unfilled_endpoints.json`） |
 | `record_tests` | ② 測試 Agent | 程式邏輯（Harness） | `refactor_harness/langgraph_nodes/test_nodes.py`（見 02b） |
-| `design` | ③ 架構設計 Agent | Claude API | `nodes/design_node.py` |
-| `plan` | [P] Plan Agent | Claude API | `nodes/plan_node.py` |
-| `scaffold` | ④ 骨架實作 Agent | translator-cli（骨架生成模式） | `nodes/scaffold_node.py` |
-| `implement` | ⑤ 功能改寫 Agent | translator-cli（填空模式）＋ 排程器 | `nodes/implement_node.py` |
+| `design` | ③ 架構設計 Agent | Claude API | `graph/nodes/design_node.py` |
+| `plan` | [P] Plan Agent | Claude API | `graph/nodes/plan_node.py` |
+| `scaffold` | ④ 骨架實作 Agent | translator-cli（骨架生成模式） | `graph/nodes/scaffold_node.py` |
+| `implement` | ⑤ 功能改寫 Agent | translator-cli（填空模式）＋ 排程器 | `graph/nodes/implement_node.py` |
 | `run_tests` | ⑥ 測試執行 Agent | 程式邏輯（Harness） | `refactor_harness/langgraph_nodes/test_nodes.py`（見 02b） |
-| `debug` | ⑦ Debug Agent | Claude API | `nodes/debug_node.py` |
-| `give_up` | — | 程式邏輯 | `nodes/give_up_node.py` |
+| `debug` | ⑦ Debug Agent | Claude API | `graph/nodes/debug_node.py` |
+| `give_up` | — | 程式邏輯 | `graph/nodes/give_up_node.py` |
 
-> **`scaffold` 與 `implement` 呼叫 translator-cli 的兩種不同模式，不是同一支 API**：`implement`（⑤）用「填空模式」`fill_function()`——目標檔案與空函式簽名已存在，模型只回傳單一函式本體，用 AST 插入。`scaffold`（④）從無到有建立目錄、檔案、class、空函式簽名，沒有既有結構可插入，因此呼叫另一個「骨架生成模式」介面（如 `translator_cli.generate_scaffold(python_structure)`，整檔輸出）。精確介面定義見 `04a_translator_cli_architecture.md`，這裡先釘死「不是同一個契約」，避免誤用 `fill_function()` 處理不存在的檔案。
+> **`scaffold` 與 `implement` 呼叫 translator-cli 的兩種不同模式，不是同一支 API**：`implement`（⑤）用「填空模式」`fill_function()`——目標檔案與空函式簽名已存在，模型只回傳單一函式本體，用 AST 插入。`scaffold`（④）從無到有建立目錄、檔案、class、空函式簽名，沒有既有結構可插入，因此呼叫另一個「骨架生成模式」介面（如 `translator_cli.generate_scaffold(python_structure)`，整檔輸出）。精確介面定義見 `07a_translator_cli_architecture.md`，這裡先釘死「不是同一個契約」，避免誤用 `fill_function()` 處理不存在的檔案。
 
 ---
 
@@ -265,7 +276,7 @@ class RefactorState(TypedDict):
 from langgraph.graph import StateGraph, END
 from graph.state import RefactorState
 from graph.nodes import (
-    parse_node, spec_node, collection_node, design_node,
+    parse_node, spec_node, collection_node, await_manual_fill_node, design_node,
     plan_node, scaffold_node, implement_node, debug_node, give_up_node,
 )
 from refactor_harness.langgraph_nodes.test_nodes import (
@@ -275,9 +286,11 @@ from refactor_harness.langgraph_nodes.test_nodes import (
 def build_graph():
     builder = StateGraph(RefactorState)
 
-    builder.add_node("parse", parse_node.run)
     builder.add_node("extract_spec", spec_node.run)
+    builder.add_node("gen_manual_fill_templates", collection_node.run_generate_templates)
     builder.add_node("gen_collection", collection_node.run)
+    builder.add_node("await_manual_fill", await_manual_fill_node.run)
+    builder.add_node("parse", parse_node.run)
     builder.add_node("record_tests", record_golden_output)
     builder.add_node("design", design_node.run)
     builder.add_node("plan", plan_node.run)
@@ -287,10 +300,35 @@ def build_graph():
     builder.add_node("debug", debug_node.run)
     builder.add_node("give_up", give_up_node.run)
 
-    builder.set_entry_point("parse")
-    builder.add_edge("parse", "extract_spec")
-    builder.add_edge("extract_spec", "gen_collection")
-    builder.add_edge("gen_collection", "record_tests")
+    builder.set_entry_point("extract_spec")
+    builder.add_edge("extract_spec", "gen_manual_fill_templates")
+
+    # 階段一（產生人工填值模板）後的人工填值關卡（Conditional Edge，見
+    # 本節下方說明）：有待填 endpoint 就暫停，否則直接進階段二
+    builder.add_conditional_edges(
+        "gen_manual_fill_templates",
+        collection_node.should_await_manual_fill_templates_or_continue,
+        {
+            "continue": "gen_collection",
+            "await_manual_fill": "await_manual_fill",
+        },
+    )
+
+    # 階段二（跑完剩下的 pipeline）後的人工填值關卡：防禦性的第二道
+    # 關卡，正常情況下階段一已經擋下所有待填 endpoint
+    builder.add_conditional_edges(
+        "gen_collection",
+        collection_node.should_await_manual_fill_or_continue,
+        {
+            "continue": "parse",
+            "await_manual_fill": "await_manual_fill",
+        },
+    )
+    builder.add_edge("await_manual_fill", END)
+
+    # parse（① 解析 Agent）排在 [B] 之後：skip 呼叫鏈排除（見 04a 五章）
+    # 要讀 [B] 已定案的 postman/unfilled_endpoints.json，排更前面這份輸入不存在
+    builder.add_edge("parse", "record_tests")
     builder.add_edge("record_tests", "design")
 ```
 
@@ -332,11 +370,38 @@ def build_graph():
 
 `should_debug_or_done`（定義在 `02b_harness_code.md` 的 `test_nodes.py`）依 `test_results.status` 與 `retry_count` 三分流：全過結束、失敗但未超重試上限進 `debug`、超過上限進 `give_up`。`give_up` 不是 END 本身，而是一個獨立節點——保留這個節點是為了讓「通知人工」這個動作有明確落點（Slack/email，見 02a 十六待實作清單），而不是讓圖靜默結束。
 
+### 人工填值關卡（Conditional Edge，兩道）
+
+**設計**：[B] Collection Agent 的填值機制是「所有需要動態值的 mutation endpoint，一律由人工在階段一主動產生的模板裡提供真實 payload，Claude API 完全不參與填值」（見 03a 三章「人工填值機制」，設計動機與細節不在此重複）。對應到 graph 層，`gen_collection` 拆成兩個 node：`gen_manual_fill_templates`（階段一，落地 `openapi.json`、產生模板，不呼叫 Claude API）與 `gen_collection`（階段二，假設模板已填完，跑鏈式依賴偵測、folder 分組、套用人工填值、注入）。暫停點因此提早到「連鏈式依賴偵測這種真的要花錢的 Claude API 呼叫都還沒開始，就先讓人工把值填好」，不會白白燒掉 API 額度等人工。
+
+兩個 node 之後各接一道 conditional edge，判斷依據、`await_manual_fill` 節點都共用同一套機制：
+
+**判斷依據**：兩個 node 執行完後，都把回傳值（`gen_manual_fill_templates()`／`CollectionAgentResult.manual_fill_pending`，見 03c 三章）寫進 `state["collection_manual_fill_pending"]`（見三章 State Schema）。這份清單只列**尚未被人工解決**（既沒填值、也沒標記 `skip`）的 endpoint；已經 `skip` 的視為「人工確認這個 endpoint 是特例、不走一般重構驗證流程」，不算 pending。
+
+```python
+# graph/nodes/collection_node.py
+def should_await_manual_fill_templates_or_continue(state: RefactorState) -> str:
+    return "await_manual_fill" if state.get("collection_manual_fill_pending") else "continue"
+
+
+def should_await_manual_fill_or_continue(state: RefactorState) -> str:
+    return "await_manual_fill" if state.get("collection_manual_fill_pending") else "continue"
+```
+
+- **`gen_manual_fill_templates` 後**：空清單 → `"continue"` → 直接進 `gen_collection`（階段二），跳過等待（例如重跑時模板早已填完）；非空 → `"await_manual_fill"`，這是**預期中的常態路徑**——第一次跑一定會停在這裡，等人工填完 `postman/manual_fill/` 底下的模板。
+- **`gen_collection` 後**：空清單 → `"continue"` → 走原本的 `record_tests`；非空 → `"await_manual_fill"`，這是**防禦性的第二道關卡**，正常情況下第一道已經擋下所有待填 endpoint，只有「階段一之後 `openapi.json` 又變動」「人工填的值套用失敗」這類邊界情況才會走到這裡。
+
+**`await_manual_fill` 節點**（`graph/nodes/await_manual_fill_node.py`，比照 `give_up_node` 的「終止節點」寫法，不是 `async def run` 的線性展開 state 慣例，因為它不需要再往下傳遞任何新資訊）：只做一件事——把 `state["collection_manual_fill_pending"]` 印出來，附上 `postman/manual_fill/` 路徑提示，然後這條 graph run 結束（`add_edge("await_manual_fill", END)`）。**不是**跟 `give_up` 一樣代表失敗，只是「暫停等人工」，語意上更接近一個特殊的正常結束狀態。兩道關卡共用同一個節點，因為對人工來說是同一件事：去 `postman/manual_fill/` 把值填完。
+
+**已知限制：目前的「續跑」不是真正的 LangGraph resume**——`main.py` 目前沒有配置 checkpointer（見九），`await_manual_fill` 之後的 END 是這次 `graph.ainvoke()` 呼叫的終點，狀態不會保留。人工補完 `postman/manual_fill/` 底下的值後，理論上「重新整個跑 `python main.py`」可以繼續，但那會從 `extract_spec` 重頭開始，連帶重新呼叫 Claude API 做一次 `parse`／`design`（這兩步跟 collection 填值完全無關，純屬浪費）。
+
+現階段（stub-first、尚未接上 checkpointer）的務實做法：**直接呼叫 `run_collection_agent()`**（`specs_dir`/`postman_dir` 帶跟階段一同一組路徑，不透過整個 graph、也不需要重跑 `generate_manual_fill_templates()`——`specs/openapi.json` 跟 `postman/manual_fill/` 都已經是階段一落地的檔案，`run_collection_agent()` 直接讀就好）。**要注意這個「續跑」的實際成本**：每次呼叫 `run_collection_agent()` 都會重新完整跑一次鏈式依賴偵測（MAP/REDUCE，真實 Claude API 呼叫），不是只處理「這次新填的值」——這在實測中是真實成本的主要來源之一（見 `docs/03_spent_cost_estimate.md`），如果卡在第二道防禦性關卡、需要多次補值才能填完，每補一次都要重新付一次鏈式依賴偵測的成本，不是免費的。真正讓 `python main.py` 能從 `gen_manual_fill_templates`／`gen_collection` 斷點續跑（而不必重跑 `parse`／`design`，也不必每次重付鏈式依賴偵測的成本），需要接上 LangGraph 的 checkpointer（如 `MemorySaver` 或持久化版本）＋固定 `thread_id`，留待專案脫離 stub-first 階段、main.py 需要支援長時間、可中斷續跑的執行模式時再一併處理，不在本次範圍。
+
 ---
 
 ## 六、⑤ 功能改寫 Agent：Module 排程器實作
 
-對應 00 v3.2 的排程原則：**module 間依賴關係沿用 Agent ① `module_list` 的 `depends_on`，優先讓同一 module 的 task 連續完成並通過局部驗證，才釋放依賴它的下游 module；本地模型的實際生成請求全域序列化（併發數＝1）。**
+對應 00 三章的排程原則：**module 間依賴關係沿用 Agent ① `module_list` 的 `depends_on`，優先讓同一 module 的 task 連續完成並通過局部驗證，才釋放依賴它的下游 module；本地模型的實際生成請求全域序列化（併發數＝1）。**
 
 ### 設計決策：為什麼不用 LangGraph 的 `Send` API 做 task 級平行節點
 
@@ -378,8 +443,13 @@ class ModuleScheduler:
         for task in task_list:
             self.tasks_by_module.setdefault(task["module"], []).append(task)
 
-        # module 名下擁有哪些檔案，用來偵測「後續寫入是否波及已驗證過的上游 module」（見下方 check_upstream_regression）
-        self.module_owned_files = {m["module"]: set(m["python_files"]) for m in module_list}
+        # module 名下擁有哪些檔案，用來偵測「後續寫入是否波及已驗證過的上游 module」（見下方 check_upstream_regression）。
+        # 從 task_list 的 target_files 彙整，而不是 module_list 的檔名——① 的檔名只是猜測，
+        # ③ 可能整個改寫；task_list.target_files 必須是 python_structure.interfaces 中已存在的
+        # file_path，才是這個時間點真正權威的檔案路徑來源（見 04a 六章）。
+        self.module_owned_files: dict[str, set[str]] = {}
+        for module, tasks in self.tasks_by_module.items():
+            self.module_owned_files[module] = {f for t in tasks for f in t["target_files"]}
 
         self._backfill_missing_task_deps()
 
@@ -581,7 +651,7 @@ async def run(state: RefactorState) -> RefactorState:
 
 > **`blocked_modules` 與 `failed_modules` 的下游路由差異**：`should_debug_or_done`（見 02b）須分開判斷，不能只看 `test_results` 整體成敗——`retry_count` **只在 `failed_modules` 非空時才扣減**（代表 module 確實跑過、驗證過但沒通過，屬於「程式碼寫錯」）。兩者都非空時通常是因果關係（`failed_modules` 是 root cause，`blocked_modules` 是被牽連的下游），`debug_node` 只需針對 `failed_modules`（尤其 `regression: true` 的項目）分析，`blocked_modules` 待對應的 `failed_modules` 修好、重驗通過後排程器會自然釋放，不額外消耗 `retry_count`。
 
-**對應 00 v3.2 的兩條規則**：
+**對應 00 三章的兩條規則**：
 - `_module_deps_satisfied` 保證下游 module 不會在上游通過局部驗證前被排進就緒佇列，避免疊在錯誤程式碼上的產物
 - `MODEL_SEMAPHORE = asyncio.Semaphore(1)` 是「排程可平行、執行序列化」的具體實作：`get_ready_tasks()` 可一次回傳多個就緒 task，但實際呼叫仍被 Semaphore 收斂成一個個跑
 
@@ -632,7 +702,7 @@ async def run(state: RefactorState) -> dict:
 
 ### 替換順序
 
-1. 先用 stub 跑通 `parse → extract_spec → gen_collection → record_tests → design`，確認線性流程沒問題。
+1. 先用 stub 跑通 `extract_spec → gen_collection → parse → record_tests → design`，確認線性流程沒問題。
 2. 換上 `design` 的 stub 後，驗證 `plan`／`scaffold` 平行分支確實同時觸發、`implement` 確實等兩者都完成才跑一次（可在 stub 裡印 timestamp 觀察）。
 3. 用假的 `test_results`（先 fail 後 pass）驗證 retry 迴圈：`debug → implement → run_tests` 是否正確迴圈、`retry_count` 超過上限是否正確走到 `give_up`。
 4. 圖的路由確認無誤後，才逐一把 stub 換成真正呼叫 Claude API / translator-cli / Harness 的實作，一次換一個 node，換完立刻單獨測試該 node。
@@ -654,7 +724,7 @@ async def run(state: RefactorState) -> dict:
 | 換行符（CRLF/LF） | git snapshot + AST 插入（translator-cli）對 CRLF 敏感，Windows checkout 預設可能轉換換行符 | 專案根目錄加 `.gitattributes` 統一鎖定 `* text=auto eol=lf`，翻譯後的 Python 檔案一律用 LF |
 | asyncio + subprocess | `implement_node`／`DbEnvironment` 用 asyncio 呼叫 subprocess（`npx`、`psql` 等）時，Windows 在事件迴圈關閉階段偶爾會拋出無害但擾人的 `RuntimeError: Event loop is closed` | Python 3.8+ 在 Windows 上預設已是 `ProactorEventLoop`（支援 subprocess），通常不需要手動設定；若遇到此類訊息干擾（或懷疑被其他套件改了 policy），可在 `main.py` 入口顯式加上 `asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())` 保險 |
 
-> translator-cli 內部的 AST 處理、git snapshot 細節屬於 `04a_translator_cli_architecture.md` 的範圍，這裡只列 LangGraph Orchestrator 層級會直接踩到的坑。
+> translator-cli 內部的 AST 處理、git snapshot 細節屬於 `07a_translator_cli_architecture.md` 的範圍，這裡只列 LangGraph Orchestrator 層級會直接踩到的坑。
 
 ---
 
@@ -672,7 +742,7 @@ load_dotenv()
 async def main():
     graph = build_graph()
     initial_state = {
-        "java_project_path": "./java-project",   # 進入點輸入，① 解析 Agent 讀取用
+        "java_project_path": os.environ["JAVA_PROJECT_PATH"],  # 進入點輸入，① 解析 Agent 讀取用，見 00 五章「環境建立」
         "test_dsn": os.environ["TEST_DB_DSN"],           # implement node 的 DbEnvironment 用
         "python_base_url": os.environ["PYTHON_BASE_URL"],# implement node 的 GoldenVerifier 用
         "retry_count": 0,

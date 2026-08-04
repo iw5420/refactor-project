@@ -395,7 +395,7 @@ test/2026/
 └── lang-exam-api-refactor/    ← Java 專案的複製版，專門給這次重構用
 ```
 
-`java_project_path` 可以填相對路徑（如 `"../lang-exam-api-refactor"`）或絕對路徑，`01` 九章 `main.py` 目前只是用 `"./java-project"` 當 placeholder 範例值，不是規定死的位置。
+`java_project_path` 可以填相對路徑（如 `"../lang-exam-api-refactor"`）或絕對路徑；`main.py` 組裝 `initial_state` 時讀 `.env` 的 `JAVA_PROJECT_PATH`，不寫死在程式碼裡，見 00 五章「環境建立」。
 
 ### Agent A：springdoc-openapi → OpenAPI 3.0
 
