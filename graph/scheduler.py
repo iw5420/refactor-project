@@ -30,8 +30,14 @@ class ModuleScheduler:
         for task in task_list:
             self.tasks_by_module.setdefault(task["module"], []).append(task)
 
-        # module 名下擁有哪些檔案，用來偵測「後續寫入是否波及已驗證過的上游 module」（見下方 check_upstream_regression）
-        self.module_owned_files = {m["module"]: set(m["python_files"]) for m in module_list}
+        # module 名下擁有哪些檔案，用來偵測「後續寫入是否波及已驗證過的上游 module」（見下方 check_upstream_regression）。
+        # 從 task_list 的 target_files 彙整，而不是 Agent ① module_list 的檔名——
+        # ① 的檔名只是猜測，③ 架構設計 Agent 可能整個改寫；task_list.target_files
+        # 必須是 python_structure.interfaces 中已存在的 file_path（見 graph/state.py
+        # TaskSpec 註解），才是這個時間點真正權威的檔案路徑來源。
+        self.module_owned_files: dict[str, set[str]] = {}
+        for module, tasks in self.tasks_by_module.items():
+            self.module_owned_files[module] = {f for t in tasks for f in t["target_files"]}
 
         self._backfill_missing_task_deps()
 

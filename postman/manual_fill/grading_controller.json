@@ -1,0 +1,178 @@
+{
+  "controller": "grading-controller",
+  "endpoints": [
+    {
+      "endpoint": "POST /api/grading/score",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "score": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": [{"id":"1","score":"0"},{"id":"2","score":"0"},{"id":"3","score":"0"},{"id":"4","score":"0"},{"id":"5","score":"0"},{"id":"6","score":"0"},{"id":"7","score":"0"},{"id":"8","score":"0"},{"id":"9","score":"0"},{"id":"10","score":"0"},{"id":"11","score":"0"},{"id":"12","score":"0"},{"id":"13","score":"0"},{"id":"14","score":"0"},{"id":"15","score":"0"},{"id":"16","score":"3"},{"id":"17","score":"0"},{"id":"18","score":"0"},{"id":"19","score":"0"},{"id":"20","score":"0"},{"id":"21","score":"0"},{"id":"22","score":"0"},{"id":"23","score":"0"},{"id":"24","score":"3"},{"id":"25","score":"0"},{"id":"26","score":"0"},{"id":"27","score":"3"},{"id":"28","score":"0"},{"id":"29","score":"0"},{"id":"30","score":"0"},{"id":"31","score":"5"},{"id":"32","score":"5"},{"id":"33","score":"5"},{"id":"34","score":"5"},{"id":"35","score":"5"},{"id":"36","score":"5"},{"id":"37","score":"5"},{"id":"38","score":"5"},{"id":"39","score":"20"}],
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/grading/random",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "typePartList": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "type": "integer",
+                          "format": "int32"
+                        },
+                        "type": {
+                          "type": "string"
+                        },
+                        "part": {
+                          "type": "string"
+                        },
+                        "score": {
+                          "type": "integer",
+                          "format": "int32"
+                        }
+                      }
+                    }
+                  },
+                  "kind": {
+                    "type": "integer",
+                    "format": "int32"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "fields",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/grading/login",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {"username":"root","password":"root"},
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/grading/grade",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "randomId": {
+                    "type": "string"
+                  },
+                  "comment": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {"randomId":"pt28Z","kind":"2025/macuhau/TAA","comment":""},
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/grading/analyze",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {"kind": "2025/macuhau/TAA"},
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "controller": "general-controller",
+  "endpoints": [
+    {
+      "endpoint": "POST /api/general/schools",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "grade": {
+                    "type": "string"
+                  },
+                  "local": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {"grade":"國小","local":"[10]嘉義縣"},
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    }
+  ]
+}

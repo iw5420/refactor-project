@@ -1,0 +1,132 @@
+{
+  "controller": "file-controller",
+  "endpoints": [
+    {
+      "endpoint": "POST /api/file/voice",
+      "param_schema": {
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "randomId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "partNumber",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "questionNumber",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "required": [
+                  "file"
+                ],
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "file_upload",
+      "values": {
+		"kind": "2025/macuhau/TAA",
+		"randomId": "3de7f",
+		"partNumber": "1",
+		"questionNumber": "1"
+		},
+      "raw_body": null,
+      "file_paths": {
+		"file": "local_uploads/1_1.wav"
+		},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/file/image",
+      "param_schema": {
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "randomId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "required": [
+                  "file"
+                ],
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "file_upload",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 """
 ④ 骨架實作 Agent（translator-cli，骨架生成模式）
 依 Agent ③ 的目錄結構與 interface 定義，建立目錄、base class、router 骨架、config
-見 03a_translator_cli_architecture.md
+見 07a_translator_cli_architecture.md
 """
 from graph.state import RefactorState
 

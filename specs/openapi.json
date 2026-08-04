@@ -1,0 +1,2376 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "OpenAPI definition",
+    "version": "v0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Generated server url"
+    }
+  ],
+  "paths": {
+    "/api/exam/update": {
+      "put": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateExamRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultUpdateExamRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/saveFinishTime": {
+      "put": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "saveFinishTime",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveFinishTimeRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultString"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grading/score": {
+      "post": {
+        "tags": [
+          "grading-controller"
+        ],
+        "operationId": "score",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SaveScoreRq"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultVoid"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grading/random": {
+      "post": {
+        "tags": [
+          "grading-controller"
+        ],
+        "operationId": "getRandomQuestions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetRandomQuestionsRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetRandomQuestionsRS"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grading/login": {
+      "post": {
+        "tags": [
+          "grading-controller"
+        ],
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultBoolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grading/grade": {
+      "post": {
+        "tags": [
+          "grading-controller"
+        ],
+        "operationId": "grade",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveTotalAndCommentRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultVoid"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grading/analyze": {
+      "post": {
+        "tags": [
+          "grading-controller"
+        ],
+        "operationId": "analyze",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultAnalyzeRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/general/schools": {
+      "post": {
+        "tags": [
+          "general-controller"
+        ],
+        "operationId": "schools",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetSchoolRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetSchoolRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/file/voice": {
+      "get": {
+        "tags": [
+          "file-controller"
+        ],
+        "operationId": "voice_1",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "randomId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "partNumber",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "questionNumber",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "file-controller"
+        ],
+        "operationId": "voice",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "randomId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "partNumber",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "questionNumber",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "required": [
+                  "file"
+                ],
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultString"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/file/image": {
+      "get": {
+        "tags": [
+          "file-controller"
+        ],
+        "operationId": "image_1",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "randomId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "file-controller"
+        ],
+        "operationId": "image",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "randomId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "required": [
+                  "file"
+                ],
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultMapStringObject"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/showFinishTime": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "showFinishTime",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveFinishTimeRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultShowFinishTimeRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/search": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetExamRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetExamRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/getSingleExam": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "getSingleExam",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetSingleExamRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetSingleExamRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/getExamComponentConfig": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "getConfig",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExamComponentConfigRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultExamComponentConfig"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/getAll": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "getAll",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetAllExamRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/getAllExamKind": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "getAllExamKind",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetAllExamKindRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/create": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateExamRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultCreateExamRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/answer/search": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "searchAnswer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetExamResultRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetExamResultRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/answer/save": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "saveAnswer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SaveAnswerRq"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultString"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/ResumeSameTypeAnswer": {
+      "post": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "ResumeSameTypeAnswer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetExamRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetExamResultRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/candidate/search": {
+      "post": {
+        "tags": [
+          "candidate-controller"
+        ],
+        "operationId": "getCandidate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CardRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultUserProfileRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/candidate/generateRandomId": {
+      "post": {
+        "tags": [
+          "candidate-controller"
+        ],
+        "operationId": "createRandom",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreaterandomRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultCreaterandomRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/registration/exam/schools": {
+      "get": {
+        "tags": [
+          "registration-controller"
+        ],
+        "operationId": "schools_1",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetAllSchoolRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/registration/exam/grades": {
+      "get": {
+        "tags": [
+          "registration-controller"
+        ],
+        "operationId": "grades",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetAllGradeRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/registration/exam/classes": {
+      "get": {
+        "tags": [
+          "registration-controller"
+        ],
+        "operationId": "classes",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetAllClassesRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grading/test-exception": {
+      "get": {
+        "tags": [
+          "grading-controller"
+        ],
+        "operationId": "testException",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/general/version": {
+      "get": {
+        "tags": [
+          "general-controller"
+        ],
+        "operationId": "getVersion",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/general/localtions": {
+      "get": {
+        "tags": [
+          "general-controller"
+        ],
+        "operationId": "locals",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetAllLocalRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/general/language": {
+      "get": {
+        "tags": [
+          "general-controller"
+        ],
+        "operationId": "language",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json;charset=UTF-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultLanguageRq"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/general/grades": {
+      "get": {
+        "tags": [
+          "general-controller"
+        ],
+        "operationId": "grades_1",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultGetAllGradeRs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/exam/delete": {
+      "delete": {
+        "tags": [
+          "exam-controller"
+        ],
+        "operationId": "delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteExamRq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseResultString"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "UpdateExamRq": {
+        "type": "object",
+        "properties": {
+          "typeNumber": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "c": {
+            "type": "string"
+          },
+          "d": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "picture": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultUpdateExamRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UpdateExamRs"
+          }
+        }
+      },
+      "UpdateExamRs": {
+        "type": "object",
+        "properties": {
+          "typenumber": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "c": {
+            "type": "string"
+          },
+          "d": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "picture": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "SaveFinishTimeRq": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "randomId": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultString": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "string"
+          }
+        }
+      },
+      "SaveScoreRq": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultVoid": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "GetRandomQuestionsRq": {
+        "type": "object",
+        "properties": {
+          "typePartList": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TypePartRq"
+            }
+          },
+          "kind": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "TypePartRq": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "type": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "score": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "ExamkindEntity": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "typeNumber": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "c": {
+            "type": "string"
+          },
+          "d": {
+            "type": "string"
+          },
+          "longQuestion": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "picture": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "GetRandomQuestionsRS": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExamkindEntity"
+            }
+          }
+        }
+      },
+      "ResponseResultGetRandomQuestionsRS": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetRandomQuestionsRS"
+          }
+        }
+      },
+      "LoginRq": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultBoolean": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SaveTotalAndCommentRq": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "randomId": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          }
+        }
+      },
+      "AnalyzeRq": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "AnalyzeRs": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "studentCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "questionResults": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuestionAnalysis"
+            }
+          },
+          "studentScores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StudentScore"
+            }
+          }
+        }
+      },
+      "QuestionAnalysis": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "typeNumber": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "correctAnswer": {
+            "type": "string"
+          },
+          "correctRate": {
+            "type": "string"
+          },
+          "correctCount": {
+            "type": "number",
+            "format": "double"
+          },
+          "mostChosenWrongAnswer": {
+            "type": "string"
+          },
+          "mostChosenWrongCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "c": {
+            "type": "string"
+          },
+          "crate": {
+            "type": "string"
+          },
+          "d": {
+            "type": "string"
+          },
+          "drate": {
+            "type": "string"
+          },
+          "noCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "noRate": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "picture": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "acount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "brate": {
+            "type": "string"
+          },
+          "bcount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "dcount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ccount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "arate": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultAnalyzeRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AnalyzeRs"
+          }
+        }
+      },
+      "StudentScore": {
+        "type": "object",
+        "properties": {
+          "randomId": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          }
+        }
+      },
+      "GetSchoolRq": {
+        "type": "object",
+        "properties": {
+          "grade": {
+            "type": "string"
+          },
+          "local": {
+            "type": "string"
+          }
+        }
+      },
+      "GetSchoolRs": {
+        "type": "object",
+        "properties": {
+          "school": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ResponseResultGetSchoolRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetSchoolRs"
+          }
+        }
+      },
+      "ResponseResultMapStringObject": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "ResponseResultShowFinishTimeRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ShowFinishTimeRs"
+          }
+        }
+      },
+      "ShowFinishTimeRs": {
+        "type": "object",
+        "properties": {
+          "finishtime": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        }
+      },
+      "GetExamRq": {
+        "type": "object",
+        "properties": {
+          "year": {
+            "type": "string"
+          },
+          "grade": {
+            "type": "string"
+          },
+          "classes": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "card": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "randomId": {
+            "type": "string"
+          }
+        }
+      },
+      "ExamEntity": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "school": {
+            "type": "string"
+          },
+          "year": {
+            "type": "string"
+          },
+          "grade": {
+            "type": "string"
+          },
+          "className": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "userName": {
+            "type": "string"
+          },
+          "card": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "randomId": {
+            "type": "string"
+          },
+          "finishTime": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "registrationDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "registrationSession": {
+            "type": "string"
+          },
+          "cellPhone": {
+            "type": "string"
+          },
+          "department": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "local": {
+            "type": "string"
+          },
+          "gtptPassed": {
+            "type": "boolean"
+          },
+          "gtptCertificate": {
+            "type": "string"
+          },
+          "questionRelated": {
+            "type": "string"
+          },
+          "isReviewer": {
+            "type": "boolean"
+          },
+          "testNumber": {
+            "type": "string"
+          }
+        }
+      },
+      "GetExamRs": {
+        "type": "object",
+        "properties": {
+          "exam": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExamEntity"
+            }
+          },
+          "result": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultGetExamRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetExamRs"
+          }
+        }
+      },
+      "GetSingleExamRq": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "GetSingleExamRs": {
+        "type": "object",
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExamkindEntity"
+            }
+          }
+        }
+      },
+      "ResponseResultGetSingleExamRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetSingleExamRs"
+          }
+        }
+      },
+      "ExamComponentConfigRq": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "typeNumber": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          }
+        }
+      },
+      "ExamComponentConfig": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "kindName": {
+            "type": "string"
+          },
+          "typeNumber": {
+            "type": "string"
+          },
+          "typeName": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "partName": {
+            "type": "string"
+          }
+        }
+      },
+      "ResultExamComponentConfig": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ExamComponentConfig"
+          },
+          "errorCode": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          },
+          "failure": {
+            "type": "boolean"
+          }
+        }
+      },
+      "GetAllExamRs": {
+        "type": "object",
+        "properties": {
+          "allExams": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ExamkindEntity"
+              }
+            }
+          }
+        }
+      },
+      "ResponseResultGetAllExamRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetAllExamRs"
+          }
+        }
+      },
+      "GetAllExamKindRs": {
+        "type": "object",
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ResponseResultGetAllExamKindRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetAllExamKindRs"
+          }
+        }
+      },
+      "CreateExamRq": {
+        "type": "object",
+        "properties": {
+          "typeNumber": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "c": {
+            "type": "string"
+          },
+          "d": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "picture": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateExamRs": {
+        "type": "object",
+        "properties": {
+          "typenumber": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "c": {
+            "type": "string"
+          },
+          "d": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          },
+          "picture": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultCreateExamRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CreateExamRs"
+          }
+        }
+      },
+      "GetExamResultRq": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "randomId": {
+            "type": "string"
+          }
+        }
+      },
+      "AnswerEntity": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "randomId": {
+            "type": "string"
+          },
+          "typeNumber": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "score": {
+            "type": "string"
+          }
+        }
+      },
+      "GetExamResultRs": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnswerEntity"
+            }
+          },
+          "result": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultGetExamResultRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetExamResultRs"
+          }
+        }
+      },
+      "SaveAnswerRq": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "randomId": {
+            "type": "string"
+          },
+          "typeNumber": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          }
+        }
+      },
+      "CardRq": {
+        "type": "object",
+        "properties": {
+          "card": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultUserProfileRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UserProfileRs"
+          }
+        }
+      },
+      "UserProfileRs": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "card": {
+            "type": "string"
+          },
+          "randomId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "department": {
+            "type": "string"
+          },
+          "local": {
+            "type": "string"
+          },
+          "school": {
+            "type": "string"
+          },
+          "className": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "isReviewer": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CreaterandomRq": {
+        "type": "object",
+        "properties": {
+          "school": {
+            "type": "string"
+          },
+          "year": {
+            "type": "string"
+          },
+          "grade": {
+            "type": "string"
+          },
+          "classes": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "card": {
+            "type": "string"
+          }
+        }
+      },
+      "CreaterandomRs": {
+        "type": "object",
+        "properties": {
+          "randomId": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultCreaterandomRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CreaterandomRs"
+          }
+        }
+      },
+      "GetAllSchoolRs": {
+        "type": "object",
+        "properties": {
+          "school": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ResponseResultGetAllSchoolRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetAllSchoolRs"
+          }
+        }
+      },
+      "GetAllGradeRs": {
+        "type": "object",
+        "properties": {
+          "grade": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ResponseResultGetAllGradeRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetAllGradeRs"
+          }
+        }
+      },
+      "GetAllClassesRs": {
+        "type": "object",
+        "properties": {
+          "classes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ResponseResultGetAllClassesRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetAllClassesRs"
+          }
+        }
+      },
+      "GetAllLocalRs": {
+        "type": "object",
+        "properties": {
+          "local": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ResponseResultGetAllLocalRs": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/GetAllLocalRs"
+          }
+        }
+      },
+      "LanguageRq": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          }
+        }
+      },
+      "ResponseResultLanguageRq": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/LanguageRq"
+          }
+        }
+      },
+      "DeleteExamRq": {
+        "type": "object",
+        "properties": {
+          "typeNumber": {
+            "type": "string"
+          },
+          "partNumber": {
+            "type": "string"
+          },
+          "questionNumber": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

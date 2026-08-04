@@ -1,0 +1,80 @@
+{
+  "controller": "candidate-controller",
+  "endpoints": [
+    {
+      "endpoint": "POST /api/candidate/search",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "card": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {"card":"26MA-A-0504I"},
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/candidate/generateRandomId",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "school": {
+                    "type": "string"
+                  },
+                  "year": {
+                    "type": "string"
+                  },
+                  "grade": {
+                    "type": "string"
+                  },
+                  "classes": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "card": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {"email":"test3@gmail.com.tw","card":"26MA-A-0503X","kind":"","name":"黃小芳","school":"淡水國小","grade":"","classes":"1","role":"老師","department":"","local":"台北市"},
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    }
+  ]
+}

@@ -1,0 +1,972 @@
+{
+  "item": [
+    {
+      "name": "api",
+      "description": "",
+      "item": [
+        {
+          "name": "grading",
+          "description": "",
+          "item": [
+            {
+              "name": "test-exception",
+              "description": "",
+              "item": [
+                {
+                  "id": "fd371f35-8c01-4ba7-b9be-50ee88b93a84",
+                  "name": "test Exception",
+                  "request": {
+                    "name": "test Exception",
+                    "description": {},
+                    "url": {
+                      "path": [
+                        "api",
+                        "grading",
+                        "test-exception"
+                      ],
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "query": [],
+                      "variable": []
+                    },
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "*/*"
+                      }
+                    ],
+                    "method": "GET",
+                    "body": {},
+                    "auth": null
+                  },
+                  "response": [
+                    {
+                      "id": "9c97da9d-e51d-4fe8-9fb3-d78ff4236eff",
+                      "name": "OK",
+                      "originalRequest": {
+                        "url": {
+                          "path": [
+                            "api",
+                            "grading",
+                            "test-exception"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {}
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "*/*"
+                        }
+                      ],
+                      "body": "<string>",
+                      "cookie": [],
+                      "_postman_previewlanguage": "text"
+                    }
+                  ],
+                  "event": [],
+                  "protocolProfileBehavior": {
+                    "disableBodyPruning": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "general",
+          "description": "",
+          "item": [
+            {
+              "name": "version",
+              "description": "",
+              "item": [
+                {
+                  "id": "f128e4c9-a086-4457-b85b-11c8ba36658b",
+                  "name": "get Version",
+                  "request": {
+                    "name": "get Version",
+                    "description": {},
+                    "url": {
+                      "path": [
+                        "api",
+                        "general",
+                        "version"
+                      ],
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "query": [],
+                      "variable": []
+                    },
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "*/*"
+                      }
+                    ],
+                    "method": "GET",
+                    "body": {},
+                    "auth": null
+                  },
+                  "response": [
+                    {
+                      "id": "e646cbad-518b-41fe-bad6-4ba9977548f9",
+                      "name": "OK",
+                      "originalRequest": {
+                        "url": {
+                          "path": [
+                            "api",
+                            "general",
+                            "version"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {}
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "*/*"
+                        }
+                      ],
+                      "body": "<string>",
+                      "cookie": [],
+                      "_postman_previewlanguage": "text"
+                    }
+                  ],
+                  "event": [],
+                  "protocolProfileBehavior": {
+                    "disableBodyPruning": true
+                  }
+                }
+              ]
+            },
+            {
+              "name": "localtions",
+              "description": "",
+              "item": [
+                {
+                  "id": "1939142e-2a8e-4c78-bde3-817c553ff88f",
+                  "name": "locals",
+                  "request": {
+                    "name": "locals",
+                    "description": {},
+                    "url": {
+                      "path": [
+                        "api",
+                        "general",
+                        "localtions"
+                      ],
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "query": [],
+                      "variable": []
+                    },
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "*/*"
+                      }
+                    ],
+                    "method": "GET",
+                    "body": {},
+                    "auth": null
+                  },
+                  "response": [
+                    {
+                      "id": "7d443fc1-6837-426b-831c-e142002f6a1b",
+                      "name": "OK",
+                      "originalRequest": {
+                        "url": {
+                          "path": [
+                            "api",
+                            "general",
+                            "localtions"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {}
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "*/*"
+                        }
+                      ],
+                      "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"local\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
+                      "cookie": [],
+                      "_postman_previewlanguage": "text"
+                    }
+                  ],
+                  "event": [],
+                  "protocolProfileBehavior": {
+                    "disableBodyPruning": true
+                  }
+                }
+              ]
+            },
+            {
+              "name": "language",
+              "description": "",
+              "item": [
+                {
+                  "id": "3eb272cc-406e-4db5-b818-b238c785ae7c",
+                  "name": "language",
+                  "request": {
+                    "name": "language",
+                    "description": {},
+                    "url": {
+                      "path": [
+                        "api",
+                        "general",
+                        "language"
+                      ],
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "query": [],
+                      "variable": []
+                    },
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "application/json;charset=UTF-8"
+                      }
+                    ],
+                    "method": "GET",
+                    "body": {},
+                    "auth": null
+                  },
+                  "response": [
+                    {
+                      "id": "80d9ec50-2e46-4ad8-9b98-a28e7020144a",
+                      "name": "OK",
+                      "originalRequest": {
+                        "url": {
+                          "path": [
+                            "api",
+                            "general",
+                            "language"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "application/json;charset=UTF-8"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {}
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "application/json;charset=UTF-8"
+                        }
+                      ],
+                      "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"code\": \"<string>\",\n    \"displayName\": \"<string>\"\n  }\n}",
+                      "cookie": [],
+                      "_postman_previewlanguage": "json"
+                    }
+                  ],
+                  "event": [],
+                  "protocolProfileBehavior": {
+                    "disableBodyPruning": true
+                  }
+                }
+              ]
+            },
+            {
+              "name": "grades",
+              "description": "",
+              "item": [
+                {
+                  "id": "a8d44028-c672-44dc-ae06-1b952f7face0",
+                  "name": "grades 1",
+                  "request": {
+                    "name": "grades 1",
+                    "description": {},
+                    "url": {
+                      "path": [
+                        "api",
+                        "general",
+                        "grades"
+                      ],
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "query": [],
+                      "variable": []
+                    },
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "*/*"
+                      }
+                    ],
+                    "method": "GET",
+                    "body": {},
+                    "auth": null
+                  },
+                  "response": [
+                    {
+                      "id": "cc3366db-1539-4005-b2a1-a8d55ddc299f",
+                      "name": "OK",
+                      "originalRequest": {
+                        "url": {
+                          "path": [
+                            "api",
+                            "general",
+                            "grades"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {}
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "*/*"
+                        }
+                      ],
+                      "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"grade\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
+                      "cookie": [],
+                      "_postman_previewlanguage": "text"
+                    }
+                  ],
+                  "event": [],
+                  "protocolProfileBehavior": {
+                    "disableBodyPruning": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "file",
+          "description": "",
+          "item": [
+            {
+              "name": "voice",
+              "description": "",
+              "item": [
+                {
+                  "id": "bab22a8e-5795-41b5-a050-71be6b73d0ad",
+                  "name": "voice 1",
+                  "request": {
+                    "name": "voice 1",
+                    "description": {},
+                    "url": {
+                      "path": [
+                        "api",
+                        "file",
+                        "voice"
+                      ],
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "query": [
+                        {
+                          "disabled": false,
+                          "description": {
+                            "content": "(Required) ",
+                            "type": "text/plain"
+                          },
+                          "key": "kind",
+                          "value": "<string>"
+                        },
+                        {
+                          "disabled": false,
+                          "description": {
+                            "content": "(Required) ",
+                            "type": "text/plain"
+                          },
+                          "key": "randomId",
+                          "value": "<string>"
+                        },
+                        {
+                          "disabled": false,
+                          "description": {
+                            "content": "(Required) ",
+                            "type": "text/plain"
+                          },
+                          "key": "partNumber",
+                          "value": "<string>"
+                        },
+                        {
+                          "disabled": false,
+                          "description": {
+                            "content": "(Required) ",
+                            "type": "text/plain"
+                          },
+                          "key": "questionNumber",
+                          "value": "<string>"
+                        }
+                      ],
+                      "variable": []
+                    },
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "*/*"
+                      }
+                    ],
+                    "method": "GET",
+                    "body": {},
+                    "auth": null
+                  },
+                  "response": [
+                    {
+                      "id": "45159f1d-e33e-4aa5-b02c-c827be90364e",
+                      "name": "OK",
+                      "originalRequest": {
+                        "url": {
+                          "path": [
+                            "api",
+                            "file",
+                            "voice"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [
+                            {
+                              "disabled": false,
+                              "description": {
+                                "content": "(Required) ",
+                                "type": "text/plain"
+                              },
+                              "key": "kind",
+                              "value": "<string>"
+                            },
+                            {
+                              "disabled": false,
+                              "description": {
+                                "content": "(Required) ",
+                                "type": "text/plain"
+                              },
+                              "key": "randomId",
+                              "value": "<string>"
+                            },
+                            {
+                              "disabled": false,
+                              "description": {
+                                "content": "(Required) ",
+                                "type": "text/plain"
+                              },
+                              "key": "partNumber",
+                              "value": "<string>"
+                            },
+                            {
+                              "disabled": false,
+                              "description": {
+                                "content": "(Required) ",
+                                "type": "text/plain"
+                              },
+                              "key": "questionNumber",
+                              "value": "<string>"
+                            }
+                          ],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {}
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "*/*"
+                        }
+                      ],
+                      "body": "{}",
+                      "cookie": [],
+                      "_postman_previewlanguage": "text"
+                    }
+                  ],
+                  "event": [],
+                  "protocolProfileBehavior": {
+                    "disableBodyPruning": true
+                  }
+                }
+              ]
+            },
+            {
+              "name": "image",
+              "description": "",
+              "item": [
+                {
+                  "id": "0407e62d-f8ee-4370-bb4c-99cd8b7ae30e",
+                  "name": "image 1",
+                  "request": {
+                    "name": "image 1",
+                    "description": {},
+                    "url": {
+                      "path": [
+                        "api",
+                        "file",
+                        "image"
+                      ],
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "query": [
+                        {
+                          "disabled": false,
+                          "description": {
+                            "content": "(Required) ",
+                            "type": "text/plain"
+                          },
+                          "key": "kind",
+                          "value": "<string>"
+                        },
+                        {
+                          "disabled": false,
+                          "description": {
+                            "content": "(Required) ",
+                            "type": "text/plain"
+                          },
+                          "key": "randomId",
+                          "value": "<string>"
+                        },
+                        {
+                          "disabled": false,
+                          "description": {
+                            "content": "(Required) ",
+                            "type": "text/plain"
+                          },
+                          "key": "side",
+                          "value": "<string>"
+                        }
+                      ],
+                      "variable": []
+                    },
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "*/*"
+                      }
+                    ],
+                    "method": "GET",
+                    "body": {},
+                    "auth": null
+                  },
+                  "response": [
+                    {
+                      "id": "93ee28a3-ab0d-461d-b612-9891cb80b440",
+                      "name": "OK",
+                      "originalRequest": {
+                        "url": {
+                          "path": [
+                            "api",
+                            "file",
+                            "image"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [
+                            {
+                              "disabled": false,
+                              "description": {
+                                "content": "(Required) ",
+                                "type": "text/plain"
+                              },
+                              "key": "kind",
+                              "value": "<string>"
+                            },
+                            {
+                              "disabled": false,
+                              "description": {
+                                "content": "(Required) ",
+                                "type": "text/plain"
+                              },
+                              "key": "randomId",
+                              "value": "<string>"
+                            },
+                            {
+                              "disabled": false,
+                              "description": {
+                                "content": "(Required) ",
+                                "type": "text/plain"
+                              },
+                              "key": "side",
+                              "value": "<string>"
+                            }
+                          ],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {}
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "*/*"
+                        }
+                      ],
+                      "body": "{}",
+                      "cookie": [],
+                      "_postman_previewlanguage": "text"
+                    }
+                  ],
+                  "event": [],
+                  "protocolProfileBehavior": {
+                    "disableBodyPruning": true
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "registration",
+          "description": "",
+          "item": [
+            {
+              "name": "exam",
+              "description": "",
+              "item": [
+                {
+                  "name": "schools",
+                  "description": "",
+                  "item": [
+                    {
+                      "id": "3d14823f-3e31-4596-8df2-5732250ae3aa",
+                      "name": "schools 1",
+                      "request": {
+                        "name": "schools 1",
+                        "description": {},
+                        "url": {
+                          "path": [
+                            "api",
+                            "registration",
+                            "exam",
+                            "schools"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {},
+                        "auth": null
+                      },
+                      "response": [
+                        {
+                          "id": "d5d932ae-9703-4c63-99e0-49ff73f513f3",
+                          "name": "OK",
+                          "originalRequest": {
+                            "url": {
+                              "path": [
+                                "api",
+                                "registration",
+                                "exam",
+                                "schools"
+                              ],
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "query": [],
+                              "variable": []
+                            },
+                            "header": [
+                              {
+                                "key": "Accept",
+                                "value": "*/*"
+                              }
+                            ],
+                            "method": "GET",
+                            "body": {}
+                          },
+                          "status": "OK",
+                          "code": 200,
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "*/*"
+                            }
+                          ],
+                          "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"school\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
+                          "cookie": [],
+                          "_postman_previewlanguage": "text"
+                        }
+                      ],
+                      "event": [],
+                      "protocolProfileBehavior": {
+                        "disableBodyPruning": true
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "grades",
+                  "description": "",
+                  "item": [
+                    {
+                      "id": "0b95f4e9-fe14-4483-9390-073a89da2931",
+                      "name": "grades",
+                      "request": {
+                        "name": "grades",
+                        "description": {},
+                        "url": {
+                          "path": [
+                            "api",
+                            "registration",
+                            "exam",
+                            "grades"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {},
+                        "auth": null
+                      },
+                      "response": [
+                        {
+                          "id": "c6645b66-7b4c-4e9b-a3bd-a6394b7cd266",
+                          "name": "OK",
+                          "originalRequest": {
+                            "url": {
+                              "path": [
+                                "api",
+                                "registration",
+                                "exam",
+                                "grades"
+                              ],
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "query": [],
+                              "variable": []
+                            },
+                            "header": [
+                              {
+                                "key": "Accept",
+                                "value": "*/*"
+                              }
+                            ],
+                            "method": "GET",
+                            "body": {}
+                          },
+                          "status": "OK",
+                          "code": 200,
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "*/*"
+                            }
+                          ],
+                          "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"grade\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
+                          "cookie": [],
+                          "_postman_previewlanguage": "text"
+                        }
+                      ],
+                      "event": [],
+                      "protocolProfileBehavior": {
+                        "disableBodyPruning": true
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "classes",
+                  "description": "",
+                  "item": [
+                    {
+                      "id": "8a95909e-fe29-43ef-9837-79d626bf7b93",
+                      "name": "classes",
+                      "request": {
+                        "name": "classes",
+                        "description": {},
+                        "url": {
+                          "path": [
+                            "api",
+                            "registration",
+                            "exam",
+                            "classes"
+                          ],
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "query": [],
+                          "variable": []
+                        },
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "*/*"
+                          }
+                        ],
+                        "method": "GET",
+                        "body": {},
+                        "auth": null
+                      },
+                      "response": [
+                        {
+                          "id": "fc3bedc3-d6db-442f-8191-edc0ad5f2d8c",
+                          "name": "OK",
+                          "originalRequest": {
+                            "url": {
+                              "path": [
+                                "api",
+                                "registration",
+                                "exam",
+                                "classes"
+                              ],
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "query": [],
+                              "variable": []
+                            },
+                            "header": [
+                              {
+                                "key": "Accept",
+                                "value": "*/*"
+                              }
+                            ],
+                            "method": "GET",
+                            "body": {}
+                          },
+                          "status": "OK",
+                          "code": 200,
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "*/*"
+                            }
+                          ],
+                          "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"classes\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
+                          "cookie": [],
+                          "_postman_previewlanguage": "text"
+                        }
+                      ],
+                      "event": [],
+                      "protocolProfileBehavior": {
+                        "disableBodyPruning": true
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event": [],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    }
+  ],
+  "info": {
+    "_postman_id": "80c0f511-ed55-4a97-8983-01f4661a5c8d",
+    "name": "OpenAPI definition-readonly",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": {
+      "content": "",
+      "type": "text/plain"
+    }
+  }
+}

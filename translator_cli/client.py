@@ -1,12 +1,12 @@
 """
 translator-cli 的 Python 客戶端 stub
-實際介面定義見 03a_translator_cli_architecture.md
+實際介面定義見 07a_translator_cli_architecture.md
 
 這裡是 implement_node 呼叫的介面：
 - fill_function(): 填空模式，用於 Agent ⑤
 - generate_scaffold(): 骨架生成模式，用於 Agent ④（見 scaffold_node）
 
-暫時用 stub 回傳假資料，實作見 03b_translator_cli_code.md
+暫時用 stub 回傳假資料，實作見 07b_translator_cli_code.md
 """
 
 

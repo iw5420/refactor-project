@@ -1,0 +1,47 @@
+[
+  {
+    "endpoint": "PUT /api/exam/update",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "PUT /api/exam/saveFinishTime",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "POST /api/exam/showFinishTime",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "POST /api/exam/getExamComponentConfig",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "POST /api/exam/create",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "POST /api/exam/ResumeSameTypeAnswer",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "DELETE /api/exam/delete",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "POST /api/grading/random",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "POST /api/file/image",
+    "category": "skip",
+    "detail": "人工確認排除"
+  }
+]

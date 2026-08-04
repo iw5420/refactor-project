@@ -5,15 +5,14 @@ import operator
 # ── Agent ① 輸出的子型別 ──────────────────────────────
 class MethodInfo(TypedDict):
     java_method: str
-    python_method: str
     description: str
     complexity: Literal["low", "medium", "high"]
 
 
 class ModuleInfo(TypedDict):
     module: str                    # 對應 fixtures/golden/{module}/ 子目錄
+    summary: str                   # 模組業務邏輯摘要，供 Agent ③ 設計 Python 結構/interface 邊界時參考（見 04a）
     java_files: list[str]
-    python_files: list[str]
     depends_on: list[str]          # 依賴的其他 module 名稱（⑤ 排程依此做 topological sort）
     methods: list[MethodInfo]
 
@@ -22,7 +21,6 @@ class ApiMapping(TypedDict):
     endpoint: str
     http_method: str
     java_controller: str
-    python_target: str
     module: str
 
 
@@ -74,6 +72,10 @@ class RefactorState(TypedDict):
     openapi_spec: dict
     collection_readonly_path: str
     collection_mutation_path: str
+    # [B] 填值失敗、且尚未被人工解決（補值或明確 skip）的 endpoint 清單，
+    # 供 gen_collection 後的條件邊判斷要不要暫停等人工處理（見 01 五「人工
+    # 補值關卡」、03c 二 2.6 章 `manual_fill.py`）。空清單＝全部解決。
+    collection_manual_fill_pending: list[str]
 
     # Agent ②
     golden_output: dict

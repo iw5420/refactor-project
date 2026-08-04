@@ -8,3 +8,11 @@ dist/
 build/
 .pytest_cache/
 *.log
+logs/
+
+# 人工填值用的真實檔案（錄音、照片等個資/敏感內容）——見
+# docs/03a_spec_collection_agent_architecture.md 三章「檔案上傳」。
+# 跟 fixtures/file_upload_samples/ 不同：那裡放的是可重複使用、無敏感
+# 內容的通用範例檔，會進 git；這裡放的是這次測試實際要用的真實檔案，
+# 刻意不進 git，避免真實個資寫進 commit 歷史。
+local_uploads/

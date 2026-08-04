@@ -1,0 +1,466 @@
+{
+  "controller": "exam-controller",
+  "endpoints": [
+    {
+      "endpoint": "PUT /api/exam/update",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "typeNumber": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "partNumber": {
+                    "type": "string"
+                  },
+                  "part": {
+                    "type": "string"
+                  },
+                  "questionNumber": {
+                    "type": "string"
+                  },
+                  "a": {
+                    "type": "string"
+                  },
+                  "b": {
+                    "type": "string"
+                  },
+                  "c": {
+                    "type": "string"
+                  },
+                  "d": {
+                    "type": "string"
+                  },
+                  "question": {
+                    "type": "string"
+                  },
+                  "voice": {
+                    "type": "string"
+                  },
+                  "picture": {
+                    "type": "string"
+                  },
+                  "answer": {
+                    "type": "string"
+                  },
+                  "score": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "fields",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "PUT /api/exam/saveFinishTime",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "randomId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "fields",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/exam/showFinishTime",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "randomId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "fields",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/exam/search",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "year": {
+                    "type": "string"
+                  },
+                  "grade": {
+                    "type": "string"
+                  },
+                  "classes": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "card": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "randomId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {"card":"","classes":"","grade":"","kind":"","status":"","year":"113","randomId":""},
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/exam/getSingleExam",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+     "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {
+        "kind": "2025/macuhau/TAA"
+      },
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/exam/getExamComponentConfig",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "typeNumber": {
+                    "type": "string"
+                  },
+                  "partNumber": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+	"note": "目前已無使用早期開發api",
+      "fill_mode": "fields",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/exam/create",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "typeNumber": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "partNumber": {
+                    "type": "string"
+                  },
+                  "part": {
+                    "type": "string"
+                  },
+                  "questionNumber": {
+                    "type": "string"
+                  },
+                  "a": {
+                    "type": "string"
+                  },
+                  "b": {
+                    "type": "string"
+                  },
+                  "c": {
+                    "type": "string"
+                  },
+                  "d": {
+                    "type": "string"
+                  },
+                  "question": {
+                    "type": "string"
+                  },
+                  "voice": {
+                    "type": "string"
+                  },
+                  "picture": {
+                    "type": "string"
+                  },
+                  "answer": {
+                    "type": "string"
+                  },
+                  "score": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "fields",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/exam/answer/search",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "randomId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": {"card": "26MA-A-0501E", "randomId": "pt28Z", "kind": "2025/macuhau/TAA"},
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/exam/answer/save",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "randomId": {
+                      "type": "string"
+                    },
+                    "typeNumber": {
+                      "type": "string"
+                    },
+                    "partNumber": {
+                      "type": "string"
+                    },
+                    "questionNumber": {
+                      "type": "string"
+                    },
+                    "answer": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": null,
+      "fill_mode": "raw_body",
+      "values": {},
+      "raw_body": [{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"1","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"2","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"3","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"4","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"5","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"6","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"7","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"8","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"9","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"10","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"11","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"12","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"1","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"2","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"3","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"4","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"5","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"6","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"7","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"8","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"9","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"10","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"11","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"12","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"13","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"14","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"15","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"16","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"17","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"18","typeNumber":"1"}],
+      "file_paths": {},
+      "decision": "fill",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "POST /api/exam/ResumeSameTypeAnswer",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "year": {
+                    "type": "string"
+                  },
+                  "grade": {
+                    "type": "string"
+                  },
+                  "classes": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "card": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "randomId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "fields",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    },
+    {
+      "endpoint": "DELETE /api/exam/delete",
+      "param_schema": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "typeNumber": {
+                    "type": "string"
+                  },
+                  "partNumber": {
+                    "type": "string"
+                  },
+                  "questionNumber": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "note": "目前已無使用早期開發api",
+      "fill_mode": "fields",
+      "values": {},
+      "raw_body": null,
+      "file_paths": {},
+      "decision": "skip",
+      "last_apply_error": null
+    }
+  ]
+}
