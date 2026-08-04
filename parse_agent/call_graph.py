@@ -64,8 +64,9 @@ def parse_java_project(java_project_path: str) -> ParsedProject:
         # proxy），這類 interface 若不建 ClassInfo，_resolve_type_name_
         # to_classes() 對這個型別的欄位會直接回傳空清單（完全無法解析），
         # 連「留白」都談不上，Repository 這層永遠進不了依賴圖、Map 摘要、
-        # module_list.java_files（見 04a 四章「已知缺口」）。跟 _extract_
-        # classes() 共用同一套重複名稱偵測，不另外處理。
+        # module_list.java_files（見 04a 四章「Repository interface 的
+        # 補充掃描」）。跟 _extract_classes() 共用同一套重複名稱偵測，
+        # 不另外處理。
         # 這個檔案 import 的專案內類別名稱，補足欄位/呼叫圖都解析不到的
         # 依賴（見 _extract_project_imports() docstring）；同一檔案若有
         # 多個 top-level class（少見，見 04b 十一章已知限制），全部共用
@@ -107,22 +108,18 @@ def _extract_project_imports(tree: javalang.tree.CompilationUnit) -> list[str]:
     補的是**欄位依賴（`resolve_field_target_classes()`）跟呼叫圖
     （`_walk_and_resolve()`）都解析不到的依賴**：這兩者都只認得「透過
     DI 注入的欄位」或「`this.x.y()` 這種欄位鏈式呼叫」，對「靜態方法
-    呼叫」（如 `ExamSpecification.withYear(...)`）、「方法參考」
-    （`ClassName::method`）、單純的型別參照（catch 特定例外類別、
-    instanceof 判斷）這些不透過欄位建立關係的用法完全看不到——這類
-    class 因此永遠進不了 `controller_dependency_closure()`，不會被 Map
-    摘要、也不會出現在 `module_list.java_files`（實測 `lang-exam-api-
-    refactor` 的 `ExamController.search()` 用 `ExamSpecification.
-    withYear(...)` 這種靜態呼叫組 JPA 動態查詢條件，`ExamSpecification`
-    因此完全消失，即使它裡面藏著「year 為 `"string"`時不過濾」這類真實
-    業務規則）。
+    呼叫」（`ClassName.staticMethod()`）、「方法參考」（`ClassName::
+    method`）、單純的型別參照（catch 特定例外類別、instanceof 判斷）
+    這些不透過欄位建立關係的用法完全看不到——這類 class 因此永遠進不了
+    `controller_dependency_closure()`，不會被 Map 摘要、也不會出現在
+    `module_list.java_files`（見 04a 四章「Import 依賴補充」）。
 
-    **不嘗試窮舉每一種 Java 呼叫語法去解決這個問題**（那需要呼叫圖
-    picture 逐一新增靜態呼叫、方法參考等分支，且永遠可能還有下一種沒
-    覆蓋到的語法）；改用更通用、更不依賴語法細節的訊號：**只要一個
-    class 明確 import 了另一個專案內的類別，兩者之間就有依賴關係**——
-    不管這個依賴實際上是透過欄位、靜態呼叫、方法參考、還是任何其他
-    方式建立的，import 陳述式本身就是最終、最不會漏掉的事實來源。
+    **不嘗試窮舉每一種 Java 呼叫語法去解決這個問題**（那需要呼叫圖建構
+    逐一新增靜態呼叫、方法參考等分支，且永遠可能還有下一種沒覆蓋到的
+    語法）；改用更通用、更不依賴語法細節的訊號：**只要一個 class 明確
+    import 了另一個專案內的類別，兩者之間就有依賴關係**——不管這個依賴
+    實際上是透過欄位、靜態呼叫、方法參考、還是任何其他方式建立的，
+    import 陳述式本身就是最終、最不會漏掉的事實來源。
 
     `wildcard`（`import com.x.*`）／`static`（`import static
     com.x.Y.method`）import 不處理：wildcard 給不出具體類別名稱；
@@ -244,7 +241,8 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
     這類 interface 的欄位型別解析會直接落空（連候選都列不出來，不是
     「留白但保守全連結」），`controller_dependency_closure()` 因此永遠
     看不到這層依賴，Repository 進不了 Map 摘要、也不會出現在
-    `module_list.java_files`（見 04a 四章「已知缺口」）。
+    `module_list.java_files`（見 04a 四章「Repository interface 的補充
+    掃描」）。
 
     **只在 `_resolve_type_name_to_classes()` 的 fallback 分支生效，不影響
     既有的「interface 有 `@Service`/`@Component`/`@Repository` 明確實作」

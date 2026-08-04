@@ -140,18 +140,15 @@ _METHOD_NAME_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 def _normalize_method_name(raw_name: str, known_names: set[str]) -> str:
     """Map 階段回傳的 `method_name` 理論上應該原樣抄自輸入原始碼（見
-    `prompts.MAP_SYSTEM_PROMPT`「method_name：原樣抄方法名稱」），但實測
-    `lang-exam-api-refactor` 的 `FileController`（見 04a 三章步驟 5 備註：
-    兩個同名多載方法 `voice`，一個 `@PostMapping`、一個 `@GetMapping`）
-    發現：即使 prompt 明確要求原樣抄，模型仍自行加註 `"(POST)"`／
-    `"(GET)"` 這類後綴消歧同名方法。這個後綴一旦留著，
+    `prompts.MAP_SYSTEM_PROMPT`「method_name：原樣抄方法名稱」），但一個
+    class 內有同名多載方法時（如兩個 `voice`，一個 `@PostMapping`、一個
+    `@GetMapping`），即使 prompt 明確要求原樣抄，模型仍可能自行加註
+    `"(POST)"`／`"(GET)"` 這類後綴消歧同名方法。這個後綴一旦留著，
     `filter_excluded_methods()`／`assemble_api_mapping()` 用字串完全比對
     method_id 時就會對不上 `route_index`／`call_graph` 裡 javalang 解析
     出的真實方法名稱（沒有這個後綴），導致該方法對應的 endpoint 整批從
     `api_to_python_target` 消失——`assemble_api_mapping()` 會把這誤判成
-    「方法已被排除」的合法情況，不會產生任何 warning（真實跑
-    `lang-exam-api-refactor` 時實測到：`GET/POST /api/file/voice`、
-    `GET /api/file/image` 三個非-skip endpoint 因此消失）。
+    「方法已被排除」的合法情況，不會產生任何 warning。
 
     這裡在合併回 `MapMethodResult` 之前正規化：原樣名稱若不在這個 class
     實際宣告的方法名稱集合（`known_names`，來自 javalang 掃描結果，權威
@@ -494,9 +491,7 @@ def assemble_api_mapping(
     不是，兩者會共用同一個 `method_id`。`compute_excluded_methods()` 的
     「共用方法會被保護」規則（見 04a 五章）這時會誤判成「這個方法也被
     非-skip endpoint 使用，不該排除」，導致人工明確排除的那個 endpoint
-    透過 `known_methods` 檢查悄悄復活。實測 `lang-exam-api-refactor` 的
-    `POST /api/file/image`（人工標記 skip）就是因為跟 `GET /api/file/
-    image`（非-skip）共用 `method_id`，被這個機制覆蓋過。
+    透過 `known_methods` 檢查悄悄復活。
 
     人工標記 skip 這個事實是對**這一個 endpoint**下的絕對判斷，不該因為
     底層 `method_id` 共用而被覆蓋——因此這裡直接、無條件排除

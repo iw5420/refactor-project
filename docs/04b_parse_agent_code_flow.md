@@ -26,22 +26,22 @@ parse_agent/__init__.py: run_parse_agent()
 
 | function | 做什麼 | 產出／為什麼 |
 |---|---|---|
-| `_extract_classes()` | 逐檔 AST 抽取 class 的 field／method／stereotype／routes／annotations | `ClassInfo`，四、五章分析的基礎單位 |
+| `_extract_classes()` | 逐檔 AST 抽取 class 的 field／method／stereotype／routes／annotations | `ClassInfo`，04a 四、五章分析的基礎單位 |
 | `_extract_interfaces()` | 逐檔 AST 抽取 interface 宣告（不含 field/route） | 讓 Spring Data JPA Repository 這類無實作類別的 interface 也能被依賴解析找到，補 `module_list` 完整性缺口 |
-| `_extract_project_imports()` | 抽這個檔案 import 的專案內類別簡單名稱 | 補欄位／呼叫圖都解析不到的依賴（靜態呼叫、方法參考等），供四章 `controller_dependency_closure()` 使用 |
-| `_uses_dynamic_query_signal()` | 檢查是否 import 已知動態查詢型別（如 `Specification`） | 供四章 `needs_llm_summary()` 判斷「這個類別一律要送 Map」 |
+| `_extract_project_imports()` | 抽這個檔案 import 的專案內類別簡單名稱 | 補欄位／呼叫圖都解析不到的依賴（靜態呼叫、方法參考等），供 04a 四章 `controller_dependency_closure()` 使用 |
+| `_uses_dynamic_query_signal()` | 檢查是否 import 已知動態查詢型別（如 `Specification`） | 供 04a 四章 `needs_llm_summary()` 判斷「這個類別一律要送 Map」 |
 | `_extract_fields()` / `_constructor_qualifier_hints()` | 抽欄位與建構子參數上的 `@Qualifier` | 供多實作 interface 消歧用的線索 |
 | `build_interface_implementors()` | 建 interface → 實作類別清單 | 供欄位型別解析時找候選類別 |
-| `resolve_field_target_classes()` | 單一欄位解析到目標類別（`@Qualifier`／`@Primary` 消歧，失敗則保守全連結） | 呼叫圖建構、四章依賴閉包共用的核心解析函式 |
-| `_build_call_graph()` → `_walk_and_resolve()` / `_continue_chain()` | 走訪每個方法 body，遞迴解析呼叫鏈（含鏈式呼叫） | `method_id → 呼叫的 method_id 集合`，供五章可達性分析 |
-| `_extract_routes()` → `_build_route_index()` | 由 Controller annotation 組出完整 path | `endpoint_key → method_id` 索引，供五章 skip 比對、六章 ApiMapping 組裝 |
+| `resolve_field_target_classes()` | 單一欄位解析到目標類別（`@Qualifier`／`@Primary` 消歧，失敗則保守全連結） | 呼叫圖建構、04a 四章依賴閉包共用的核心解析函式 |
+| `_build_call_graph()` → `_walk_and_resolve()` / `_continue_chain()` | 走訪每個方法 body，遞迴解析呼叫鏈（含鏈式呼叫） | `method_id → 呼叫的 method_id 集合`，供 04a 五章可達性分析 |
+| `_extract_routes()` → `_build_route_index()` | 由 Controller annotation 組出完整 path | `endpoint_key → method_id` 索引，供 04a 五章 skip 比對、六章 ApiMapping 組裝 |
 | `_read_context_path()` | 讀主設定檔 `server.servlet.context-path`（含佔位符處理） | 讓 route_index 路徑前綴跟 `openapi_spec` 一致 |
 
-**輸出**：`ParsedProject(classes, call_graph, route_index)` —— 四、五章共用的唯一基礎資料，只建構一次。
+**輸出**：`ParsedProject(classes, call_graph, route_index)` —— 04a 四、五章共用的唯一基礎資料，只建構一次。
 
 ---
 
-## 二、`run_map_reduce()`（summarize.py，對應 04b 四、六章）
+## 二、`run_map_reduce()`（grouping.py 四章 + summarize.py 七章，對應 04b 四、七章）
 
 | function | 做什麼 | 產出／為什麼 |
 |---|---|---|
@@ -54,11 +54,11 @@ parse_agent/__init__.py: run_parse_agent()
 | `run_map_phase_with_retry(controller_units)`【4b】 | 同上機制，組間可平行 | Controller 摘要 |
 | `_mechanical_summary()` | 對 trivial 但確實被依賴到的 class，機械組出佔位摘要，不呼叫 API | 補進 Map 結果，維持 `module_list.java_files` 完整性 |
 | `_reduce_phase()` | 彙整全部 Map 結果（含機械摘要） + `controller_dependencies`（程式算好的事實）→ 單次呼叫 Claude API | 決定最終 module 拆分（哪些 class 同屬一個 module） |
-| `_assemble_module_drafts()` | 合併 Reduce 的 module 歸屬 + Map 已產出的方法清單（machine merge，不重問模型） | `module_drafts`（保留 `class_name`）+ `class_to_module` 對照表 —— 之所以先產出草稿而非直接輸出 `ModuleInfo`，是因為五、六章的排除與 ApiMapping 組裝都還需要 `class_name`，但最終型別沒有這個欄位 |
+| `_assemble_module_drafts()` | 合併 Reduce 的 module 歸屬 + Map 已產出的方法清單（machine merge，不重問模型） | `module_drafts`（保留 `class_name`）+ `class_to_module` 對照表 —— 之所以先產出草稿而非直接輸出 `ModuleInfo`，是因為 04a 五、六章的排除與 ApiMapping 組裝都還需要 `class_name`，但最終型別沒有這個欄位 |
 
 ---
 
-## 三、`load_skip_endpoints()` + `compute_excluded_methods()`（skip_filter.py，對應 04b 五章）
+## 三、`load_skip_endpoints()` + `compute_excluded_methods()`（skip_filter.py，對應 04b 八章）
 
 | function | 做什麼 | 產出／為什麼 |
 |---|---|---|

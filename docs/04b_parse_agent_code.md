@@ -231,8 +231,9 @@ def parse_java_project(java_project_path: str) -> ParsedProject:
         # Spring Data JPA Repository，這類 interface 若不建 ClassInfo，
         # _resolve_type_name_to_classes() 對這個型別的欄位會直接回傳空
         # 清單（完全無法解析），Repository 這層永遠進不了依賴圖、Map
-        # 摘要、module_list.java_files（見 04a 四章「已解決的缺口」）。
-        # 跟 _extract_classes() 共用同一套重複名稱偵測，不另外處理。
+        # 摘要、module_list.java_files（見 04a 四章「Repository interface
+        # 的補充掃描」）。跟 _extract_classes() 共用同一套重複名稱偵測，
+        # 不另外處理。
         #
         # 這個檔案 import 的專案內類別名稱，補足欄位/呼叫圖都解析不到的
         # 依賴（見 _extract_project_imports() docstring）；同一檔案若有
@@ -273,21 +274,18 @@ def _extract_project_imports(tree: javalang.tree.CompilationUnit) -> list[str]:
     補的是**欄位依賴（`resolve_field_target_classes()`）跟呼叫圖
     （`_walk_and_resolve()`）都解析不到的依賴**：這兩者都只認得「透過
     DI 注入的欄位」或「`this.x.y()` 這種欄位鏈式呼叫」，對「靜態方法
-    呼叫」（如 `ExamSpecification.withYear(...)`）、「方法參考」
-    （`ClassName::method`）、單純的型別參照這些不透過欄位建立關係的
-    用法完全看不到——這類 class 因此永遠進不了 `controller_dependency_
-    closure()`，不會被 Map 摘要、也不會出現在 `module_list.java_files`
-    （實測 `lang-exam-api-refactor` 的 `ExamController.search()` 用
-    `ExamSpecification.withYear(...)` 這種靜態呼叫組 JPA 動態查詢條件，
-    `ExamSpecification` 因此完全消失，即使它裡面藏著「year 為 `"string"`
-    時不過濾」這類真實業務規則，見 04a 四章「已解決的缺口」）。
+    呼叫」（`ClassName.staticMethod()`）、「方法參考」（`ClassName::
+    method`）、單純的型別參照（catch 特定例外類別、instanceof 判斷）
+    這些不透過欄位建立關係的用法完全看不到——這類 class 因此永遠進不了
+    `controller_dependency_closure()`，不會被 Map 摘要、也不會出現在
+    `module_list.java_files`（見 04a 四章「Import 依賴補充」）。
 
-    **不嘗試窮舉每一種 Java 呼叫語法去解決這個問題**（那需要呼叫圖逐一
-    新增靜態呼叫、方法參考等分支，且永遠可能還有下一種沒覆蓋到的語法）；
-    改用更通用、更不依賴語法細節的訊號：**只要一個 class 明確 import 了
-    另一個專案內的類別，兩者之間就有依賴關係**——不管這個依賴實際上是
-    透過欄位、靜態呼叫、方法參考、還是任何其他方式建立的，import 陳述
-    式本身就是最終、最不會漏掉的事實來源。
+    **不嘗試窮舉每一種 Java 呼叫語法去解決這個問題**（那需要呼叫圖建構
+    逐一新增靜態呼叫、方法參考等分支，且永遠可能還有下一種沒覆蓋到的
+    語法）；改用更通用、更不依賴語法細節的訊號：**只要一個 class 明確
+    import 了另一個專案內的類別，兩者之間就有依賴關係**——不管這個依賴
+    實際上是透過欄位、靜態呼叫、方法參考、還是任何其他方式建立的，
+    import 陳述式本身就是最終、最不會漏掉的事實來源。
 
     `wildcard`（`import com.x.*`）／`static`（`import static
     com.x.Y.method`）import 不處理：wildcard 給不出具體類別名稱；
@@ -408,7 +406,8 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
     這類 interface 的欄位型別解析會直接落空（連候選都列不出來，不是
     「留白但保守全連結」），`controller_dependency_closure()` 因此永遠
     看不到這層依賴，Repository 進不了 Map 摘要、也不會出現在
-    `module_list.java_files`（見 04a 四章「已解決的缺口」）。
+    `module_list.java_files`（見 04a 四章「Repository interface 的補充
+    掃描」）。
 
     **只在 `_resolve_type_name_to_classes()` 的 fallback 分支生效，不影響
     既有的「interface 有 `@Service`/`@Component`/`@Repository` 明確實作」
@@ -1765,18 +1764,15 @@ _METHOD_NAME_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 def _normalize_method_name(raw_name: str, known_names: set[str]) -> str:
     """Map 階段回傳的 `method_name` 理論上應該原樣抄自輸入原始碼（見
-    `prompts.MAP_SYSTEM_PROMPT`「method_name：原樣抄方法名稱」），但實測
-    `lang-exam-api-refactor` 的 `FileController`（兩個同名多載方法
-    `voice`，一個 `@PostMapping`、一個 `@GetMapping`）發現：即使 prompt
-    明確要求原樣抄，模型仍自行加註 `"(POST)"`／`"(GET)"` 這類後綴消歧
-    同名方法。這個後綴一旦留著，`filter_excluded_methods()`／
-    `assemble_api_mapping()` 用字串完全比對 method_id 時就會對不上
-    `route_index`／`call_graph` 裡 javalang 解析出的真實方法名稱（沒有
-    這個後綴），導致該方法對應的 endpoint 整批從 `api_to_python_target`
-    消失——`assemble_api_mapping()` 會把這誤判成「方法已被排除」的合法
-    情況，不會產生任何 warning（真實跑 `lang-exam-api-refactor` 時實測
-    到：`GET/POST /api/file/voice`、`GET /api/file/image` 三個非-skip
-    endpoint 因此消失）。
+    `prompts.MAP_SYSTEM_PROMPT`「method_name：原樣抄方法名稱」），但一個
+    class 內有同名多載方法時（如兩個 `voice`，一個 `@PostMapping`、一個
+    `@GetMapping`），即使 prompt 明確要求原樣抄，模型仍可能自行加註
+    `"(POST)"`／`"(GET)"` 這類後綴消歧同名方法。這個後綴一旦留著，
+    `filter_excluded_methods()`／`assemble_api_mapping()` 用字串完全比對
+    method_id 時就會對不上 `route_index`／`call_graph` 裡 javalang 解析
+    出的真實方法名稱（沒有這個後綴），導致該方法對應的 endpoint 整批從
+    `api_to_python_target` 消失——`assemble_api_mapping()` 會把這誤判成
+    「方法已被排除」的合法情況，不會產生任何 warning。
 
     這裡在合併回 `MapMethodResult` 之前正規化：原樣名稱若不在這個 class
     實際宣告的方法名稱集合（`known_names`，來自 javalang 掃描結果，權威
@@ -2119,10 +2115,8 @@ def assemble_api_mapping(
     `@GetMapping`），且其中一個是 skip、另一個不是，兩者會共用同一個
     `method_id`——`compute_excluded_methods()` 的「共用方法會被保護」
     規則這時會誤判成「這個方法也被非-skip endpoint 使用，不該排除」，
-    讓人工明確排除的那個 endpoint 透過 `known_methods` 檢查悄悄復活
-    （實測 `lang-exam-api-refactor` 的 `POST /api/file/image` 就是這樣
-    因為跟 `GET /api/file/image` 共用 method_id 而被保護下來）。人工標記
-    skip 是對這一個 endpoint 下的絕對判斷，不該因為底層 method_id 共用
+    讓人工明確排除的那個 endpoint 透過 `known_methods` 檢查悄悄復活。
+    人工標記 skip 是對這一個 endpoint 下的絕對判斷，不該因為底層 method_id 共用
     被覆蓋，因此直接、無條件排除 `skip_endpoints` 裡的每一個
     endpoint_key，不透過 method_id 這層間接關係。這道排除只影響
     `api_to_python_target`，不影響 `module_list`——共用 method_id 的另一
@@ -2524,22 +2518,18 @@ async def run(state: RefactorState) -> RefactorState:
 
 ## 十一、已知限制與待驗證事項
 
-04a 十章已定案、在 04b 落地為具體行為的四項（`@RequestMapping` 非字面值解析、`@Qualifier` 消歧失敗頻率、4a 批次拆分門檻、Map/Reduce 重試仍失敗後的策略）見三章各處註解、四章 7.1 `run_map_phase_with_retry()`，不在這裡重複列出；`graph/builder.py` 尚未同步一項跟 04b 無關（見 04a 十章「尚待定案」），也不在這裡討論。以下是 04b 在把設計落地成程式碼過程中，另外浮現、04a 沒有點名的實作層級限制，先明確記錄——**以下各項「目前驗證過的目標專案」均指 04a 三章驗證過的同一個 `lang-exam-api-refactor`（93 個 `.java` 檔案，81 個 top-level class；90 這個數字是 04a 較早期驗證時的檔案數，專案後續有增減，見四章新發現的差異），不重複列出這個前提**。
+04a 十章已定案、在 04b 落地為具體行為的四項（`@RequestMapping` 非字面值解析、`@Qualifier` 消歧失敗頻率、4a 批次拆分門檻、Map/Reduce 重試仍失敗後的策略）見三章各處註解、四章 7.1 `run_map_phase_with_retry()`，不在這裡重複列出；`graph/builder.py` 尚未同步一項跟 04b 無關（見 04a 十章「尚待定案」），也不在這裡討論。以下是實作過程中浮現、04a 沒有點名的實作層級限制。除非特別註明，「目標專案」均指 `lang-exam-api-refactor`；「沒有觸發」不等於「已證明沒問題」，只代表這個專案剛好沒踩到，換一個專案仍可能踩到，不可因此刪除：
 
-`run_parse_agent()` 已對這個真實專案跑過完整流程（含真實 Claude API Map/Reduce 呼叫，不只是 javalang parse 成功），以下各項依有沒有被這次真實跑法蓋到分兩類：**已觸發並驗證修正**（見四章新增項）、**這個專案沒有對應寫法可觸發，假設本身仍未驗證**（其餘各項維持原樣，「沒有觸發」不等於「已證明沒問題」，只代表這個專案剛好沒踩到，換一個專案仍可能踩到，不可因此刪除）：
-
-- **【本次真實跑法新發現，已修正】Spring Data JPA 的 Repository interface（`public interface XxxRepository extends JpaRepository<...>`，沒有手寫實作類別）原本對 `_extract_classes()`（三章 3.1）完全隱形**——`_extract_classes()` 只掃 `ClassDeclaration`，不處理 `InterfaceDeclaration`，這種寫法的 Repository 原本永遠不會變成 `ClassInfo`，不進呼叫圖、不進 `controller_dependency_closure()`（四章）、不會被 Map 摘要、不會出現在 `module_list.java_files`。實測 `lang-exam-api-refactor`：8 個 Repository 檔案 7 個是這種寫法，全專案至少 15 個欄位是這個型別，`AnswerRepository` 還有一個帶 `@Query` 的統計方法，這段邏輯原本會整個從輸出消失、沒有任何 warning。**不影響五章 skip 排除的正確性**（Repository 方法從未成為呼叫圖節點，不可能被誤判排除，仍符合「多連、少排除」的安全方向），純粹是 `module_list` 的完整性缺口。這在 Spring Boot 專案是主流寫法、不是邊界情況，跟本節其餘「這個專案沒觸發」的項目不同等級，判定為必要修正。
-
-  **修法（三章 3.1 `_extract_interfaces()`）**：讓 `_extract_classes()` 之外新增一個對稱函式掃 `InterfaceDeclaration`，一樣建成 `ClassInfo`（`implements=[]`／`fields=[]`／`routes=[]`，interface 沒有這些東西可萃取，見該函式 docstring），跟 `_extract_classes()` 的結果一起塞進同一個 `classes` dict。`_resolve_type_name_to_classes()` 既有的「優先查 `interface_implementors`，查不到才退回 `classes.get()`」順序完全不變，這個修法只在原本「完全無法解析」的 fallback 分支生效——已用合成範例驗證：interface 有 `@Service` 實作時，欄位解析仍正確指向具體實作類別，不受影響。**已用真實專案驗證**：`classes` 從 81 增加到 89，`ExamRepository`／`AnswerRepository`／`ExamComponentConfigRepository`／`ExamkindRepository` 都正確出現在對應 Controller 的 `controller_dependency_closure()` 裡，且被 `find_shared_classes()` 正確判定為共用類別（會進 4a 批次，只摘要一次）。**刻意不處理的部分**：interface 的 `default`/`static` method body（Java 8+ 允許實作，但這個真實專案全部方法都是 `body is None`，沒有真正的案例可驗證），留待接上真的用到這個寫法的專案再評估。
-- **鏈式呼叫解析（三章 3.3 `_resolve_qualifier_string()`／`_continue_chain()`／`_walk_and_resolve()`）是新寫的遞迴演算法，還沒有真實 Java 專案跑過**——javalang 90/90 解析成功只驗證了「parse 不出錯」，沒有驗證「呼叫圖的語意解析（誰呼叫誰）精不精確」。這個演算法假設了 javalang 對純欄位存取鏈（沒有方法呼叫打斷）會把它折成點號字串塞進 `qualifier`、只在遇到方法呼叫時才展開成巢狀 `.selectors`，以及 `this.x.y()` 的 `"this"` 一定出現在 qualifier 字串最前面，第一次接上真實專案後應該優先檢查呼叫圖的連結數量是否合理（多連比漏連安全，但連結數量若跟 class 數量、方法數量的比例明顯失真，可能代表這裡對 javalang 節點結構的假設有誤，需要對照當時安裝的 javalang 版本原始碼核對）。選擇器層級（`.selectors` 內）的節點若自己還帶非空 `qualifier`（javalang 通常不會這樣產生），目前直接視為無法解析，不強行模擬，也是同一類尚待驗證的邊界情況。
+- **Repository interface 的 `default`／`static` method body 不會被追蹤**（見三章 3.1 `_extract_interfaces()`，設計見 04a 四章「Repository interface 的補充掃描」）——這類方法本身會被正確納入 `ClassInfo.methods`（能被 `_yield_call()` 辨識成呼叫目標），但方法自己內部呼叫的東西不會被追蹤（`_build_call_graph()` 只走 `ClassDeclaration`，不含 interface）。Spring Data Repository 極少用這個寫法，目標專案沒有觸發，維持既有「連結留白、預設保留」的安全方向，留待接上真的用到這個寫法的專案再評估。
+- **鏈式呼叫解析（三章 3.3 `_resolve_qualifier_string()`／`_continue_chain()`／`_walk_and_resolve()`）是新寫的遞迴演算法，語意解析的精確度還沒有真實案例驗證過**——javalang 能成功 parse 只證明語法層沒問題，不代表「呼叫圖的語意解析（誰呼叫誰）精不精確」也對。這個演算法假設了 javalang 對純欄位存取鏈（沒有方法呼叫打斷）會把它折成點號字串塞進 `qualifier`、只在遇到方法呼叫時才展開成巢狀 `.selectors`，以及 `this.x.y()` 的 `"this"` 一定出現在 qualifier 字串最前面，第一次接上真實專案後應該優先檢查呼叫圖的連結數量是否合理（多連比漏連安全，但連結數量若跟 class 數量、方法數量的比例明顯失真，可能代表這裡對 javalang 節點結構的假設有誤，需要對照當時安裝的 javalang 版本原始碼核對）。選擇器層級（`.selectors` 內）的節點若自己還帶非空 `qualifier`（javalang 通常不會這樣產生），目前直接視為無法解析，不強行模擬，也是同一類尚待驗證的邊界情況。
 - **`ParsedProject.classes` 用 class 簡單名稱當 key，不處理跨檔案同名類別**（見二章 `types.py` 前言）——沒有觸發，真的遇到時會退化成保守全連結，不會直接壞掉，但精準度下降。
 - **欄位型別只展開單一型別參數的集合容器**（見二章 `FieldInfo` docstring、三章 `_resolve_declared_type()`）——`List<XxxService>`／`Set<XxxService>`／`Optional<XxxService>` 這類寫法已能正確解析出 `XxxService`；`Map<K, V>`、自訂多參數泛型仍只取外層型別名稱，內層型別參數不展開，因為「哪個型別參數才是真正的依賴目標」在雙參數以上沒有一致慣例可循。
-- **`implements` 用完整 package 路徑寫法時，`_extract_classes()` 抓到的介面名稱會錯**（見三章 3.1 `implements=[t.name for t in (class_decl.implements or [])]`）——實測驗證：javalang 把 `implements com.example.iface.MyInterface` 解析成巢狀 `ReferenceType`／`sub_type` 鏈，最外層 `.name` 只是路徑第一段（`"com"`），真正的介面簡單名稱被埋在鏈的最深處，直接取 `.name` 會抓到 `"com"` 而不是 `"MyInterface"`。影響有界：抓錯的介面名稱在 `build_interface_implementors()` 對不上專案內任何 class，會落入既有的「完全無法解析」保守分支（連結留白，不誤排除），不會 crash，只是精準度下降，跟本節其他 javalang 邊界情況同一等級。目標專案用 `import` 搭配簡短型別名稱寫 `implements`，沒有觸發這個情況，暫不需要為此特別解析巢狀 `sub_type` 鏈還原完整名稱。
+- **`implements` 用完整 package 路徑寫法時，`_extract_classes()` 抓到的介面名稱會錯**（見三章 3.1 `implements=[t.name for t in (class_decl.implements or [])]`）——javalang 把 `implements com.example.iface.MyInterface` 解析成巢狀 `ReferenceType`／`sub_type` 鏈，最外層 `.name` 只是路徑第一段（`"com"`），真正的介面簡單名稱被埋在鏈的最深處，直接取 `.name` 會抓到 `"com"` 而不是 `"MyInterface"`。影響有界：抓錯的介面名稱在 `build_interface_implementors()` 對不上專案內任何 class，會落入既有的「完全無法解析」保守分支（連結留白，不誤排除），不會 crash，只是精準度下降。目標專案用 `import` 搭配簡短型別名稱寫 `implements`，沒有觸發這個情況，暫不需要為此特別解析巢狀 `sub_type` 鏈還原完整名稱。
 - **`_extract_classes()`／`_build_call_graph()`（三章 3.1／3.3）只掃 `tree.types`（頂層 class 宣告），不含巢狀 inner class**——inner class 完全不會出現在 `ParsedProject.classes`／呼叫圖裡，其獨有的方法（沒有被外層 class 的方法呼叫，或呼叫鏈解析不到）不會被摘要、也不會進 `module_list`。這不是新增的風險，是原本「完全無法解析時連結留白、預設保留」設計（04a 三章「多連、少排除」）的自然延伸，只是這裡連 class 本身都沒被建立，不算排除、只是從未被納入。目標專案沒有用 inner class 承載業務邏輯的情況，維持現況已足夠；若目標專案大量用 inner class 承載業務邏輯（而非純資料結構如 Builder／DTO），需要另外評估是否要把 inner class 當成獨立分析單位。
 - **`_class_source_payload()`／`_class_source_chars()` 假設「每個 `.java` 檔案只有一個 top-level class」**（見七章 7.1、四章 `_class_source_chars()`）——目標專案符合這個假設；這裡指的是同一份檔案裡有多個「平行」的 top-level class（Java 語法允許，只是慣例上少見，跟上面 inner class 是不同情況：`tree.types` 本來就會列出所有平行 top-level 宣告）。若目標專案真的有這種寫法，Map 階段送出的原始碼會包含「這批要分析的 class」以外的其他 class 定義，模型輸出的 `class_name` 需要靠 7.1 `_map_analyze_batch()` 的缺漏檢查兜底，不會直接造成錯誤，但可能讓摘要品質下降或多花 token。
-- **Reduce 是單次呼叫，沒有切分**（見七章 7.2）——04a 四章沒有像 Map 階段那樣討論 Reduce 的輸入規模上限；如果 Map 階段產出的 class 數量非常多（濃縮後的候選仍然是全專案規模），單次 Reduce 呼叫的 payload 可能過大。目標專案（90 個 class）估計不會觸發這個問題，但比它大上一個數量級的專案可能需要，留待接上更大規模的真實專案評估。
+- **Reduce 是單次呼叫，沒有切分**（見七章 7.2）——04a 四章沒有像 Map 階段那樣討論 Reduce 的輸入規模上限；如果 Map 階段產出的 class 數量非常多（濃縮後的候選仍然是全專案規模），單次 Reduce 呼叫的 payload 可能過大。目標專案規模不會觸發這個問題，但比它大上一個數量級的專案可能需要，留待接上更大規模的真實專案評估。
 - **`_extract_routes()`（三章 3.4）只掃描 Controller 具體類別自己方法上的 annotation，沒有處理 route annotation 標在「Controller 實作的 interface」方法上、具體類別覆寫時沒有重複標注的寫法**——Spring MVC 允許把 `@RequestMapping`／`@GetMapping` 等標在 interface 方法上，執行期 Spring 會正確解析並生效，但 javalang 靜態掃描只看 `class_decl.methods` 上的 annotation，不會去追具體類別實作的 interface 方法是否也帶著 annotation，這種端點會整個從 `route_index` 消失。這類消失的端點如果不是 skip endpoint，會在非-skip 組查表時觸發「查無對應」warning（見八章 `_endpoints_to_method_ids()` 的 `group` 參數），至少能從 log 發現「這個端點沒被正確索引」；但 warning 不能讓這個端點自己重新變成合法的 BFS 起點——它依然不會貢獻任何非-skip 可達性，若它呼叫到的方法剛好也被某個 skip endpoint 的呼叫鏈碰到、且沒有其他非-skip 路徑能到達，那個方法理論上仍可能被誤判排除，需要靠 warning log 事後人工核對呼叫鏈。目標專案沒有觸發這個情況，暫不需要為此擴充 `_extract_routes()` 去解析 interface 繼承鏈；但下次接上新的目標專案時，若 log 出現非-skip 組的查無對應警告，需要人工檢查對應方法是否被錯誤排除。
 - **`@RequestMapping` 沒有指定 `method` 屬性時，Spring 實際語意是「回應所有 HTTP method」，但 `_extract_request_mapping_methods()`（三章 3.4）目前回傳空清單、記警告、不索引任何 HTTP method**（見三章 3.4 該函式 docstring）——這種端點會整個從 `route_index` 消失，影響跟上一項「interface 方法上的 route annotation」同一等級：非-skip 組查表時會觸發「查無對應」warning，可從 log 發現，但無法讓端點自己變回合法的 BFS 起點。這種不指定 method 的寫法在 REST controller 較罕見，目標專案沒有觸發，暫不處理。
-- **`module_list` 對「同名多載方法、其中一個 route 是 skip」這種情況仍有精準度限制，`api_to_python_target` 沒有這個問題**——實測 `lang-exam-api-refactor` 的 `FileController.image`（`@PostMapping`／`@GetMapping` 同名）觸發過（見七章 3.3 `assemble_api_mapping()`、八章 `compute_excluded_methods()`）：`api_to_python_target` 已對 `skip_endpoints` 做無條件的 endpoint 層級排除，`POST /api/file/image` 保證不會出現在輸出裡；但 `module_list` 那個方法的描述（Map 階段對這個 `method_id` 產出的所有 `MethodInfo` 條目）仍會被「共用方法會被保護」規則整批保留，可能同時混著 skip 分支（上傳）與非-skip 分支（下載）的行為描述，沒有欄位能區分兩者。`compute_excluded_methods()` 對這種 method_id 碰撞會記警告（見八章），但只是提示、不會自動修正描述內容，需要人工核對；徹底解決需要在 `route_index`／Map 輸出裡引入 per-route（而非 per-method-name）的識別，屬於比目前規模更大的設計變更，暫不處理。
-- **【本次真實跑法新發現，已修正】欄位／呼叫圖都解析不到的依賴（靜態呼叫、方法參考等）原本會讓對應類別完全消失於 `module_list`**——`_walk_and_resolve()`（三章 3.3）只認得 `this.x.y()` 這種欄位鏈式呼叫，看不懂 `ClassName.staticMethod()`。實測 `lang-exam-api-refactor` 的 `ExamController.search()` 用 `ExamSpecification.withYear(rq.getYear())` 這種靜態呼叫組 JPA 動態查詢條件（`org.springframework.data.jpa.domain.Specification`），`ExamSpecification` 從未被注入成欄位，原本完全不會進 `controller_dependency_closure()`——`ExamSpecification.java` 裡「`year` 為字面值 `"string"` 時不過濾」這種真實業務規則會整個消失，沒有任何 warning。**修法（三章 `_extract_project_imports()`、四章 `_direct_deps()`）**：不窮舉呼叫語法，改用「明確 import 專案內類別即算依賴」這個更通用的訊號，不透過 `@Qualifier`／`@Primary` 消歧（import 是編譯期就確定的單一目標，沒有 DI 那種歧義）。已用真實專案驗證：`ExamController` 的依賴閉包從 4 個增加到 19 個，`ExamSpecification` 正確出現在其中並被送進 Map 摘要。**殘留限制**：只認 import 陳述式，同套件內不需要 import 就能互相參照的情況（Java 語言特性）仍解析不到——目標專案沒有觸發（跨層依賴一律跨 package，都有明確 import），留待接上真的有這種寫法的專案再評估是否需要另外掃套件宣告＋目錄結構比對。
-- **【本次真實跑法新發現，已修正】import 掃描把 entity／DTO／enum／工具類別全部攤開後，Map 階段成本明顯上升，且不能用 package／命名慣例篩選**——上一項修法讓 `controller_dependency_closure()` 的範圍變寬（`ExamController` 從 4 個依賴變 19 個），若每個都送 Map 摘要，entity／DTO 這類純資料容器多半沒有值得摘要的業務邏輯，是浪費；但 DDD 風格的富領域模型常把業務規則寫在 entity 自己的方法裡，用 package／命名判斷「這是 entity 所以沒邏輯」會直接誤判掉這種情況。**修法（四章 `needs_llm_summary()`／`classify_trivial_classes()`，七章 `_mechanical_summary()`）**：改用內容判斷——(1) 用到已知動態查詢型別（如 `Specification`）一律判定有邏輯，繞開「method body 有沒有控制流程」這種通用啟發式（`ExamSpecification.withYear()` 自己的方法本體只有一句 `return (lambda);`，實際邏輯藏在 lambda 裡，body 層級的判斷法會直接誤判成沒邏輯）；(2) 有 Lombok／JPA 資料類別標記、且方法清單只有存取器方法（`get*`／`set*`／`is*` 等）才判定為純資料類別跳過 Map，annotation 只是「要不要進一步檢查方法清單」的觸發點，DDD entity 若有非存取器命名的方法會正常落到規則 (3) 繼續送 Map；(3) 其餘情況預設有邏輯，送 Map。跳過的類別仍透過機械組出的佔位摘要維持 `module_list.java_files` 完整性，不呼叫 API。已用真實專案驗證：41 個 reachable class 裡 20 個正確判定為純資料類別（全部是 Lombok `@Data`／`@Entity`，javalang 完全看不到方法，因為是 Lombok 生成的），21 個判定要送 Map（含全部 Repository interface、`ExamSpecification`、例外類別、工具類別），`api_to_python_target` 依然精確對上 24 個非-skip endpoint。**副作用觀察**：實測發現 Map 對 `AuthException`／`ExamException`（只有建構子、沒有一般方法的例外類別）會回傳一個跟類別同名的偽方法（把建構子描述當成方法），觸發 `_normalize_method_name()` 的「找不到對應方法」警告——這兩個類別都不是 Controller，沒有自己的 route，不影響 `api_to_python_target`，`module_list.methods` 裡多一筆內容正確、但命名有點怪的描述，屬於無害的精準度殘留，暫不處理。
+- **`module_list` 對「同名多載方法、其中一個 route 是 skip」這種情況仍有精準度限制，`api_to_python_target` 沒有這個問題**（見七章 3.3 `assemble_api_mapping()`、八章 `compute_excluded_methods()`）——`api_to_python_target` 已對 `skip_endpoints` 做無條件的 endpoint 層級排除；但 `module_list` 那個方法的描述（Map 階段對這個 `method_id` 產出的所有 `MethodInfo` 條目）仍會被「共用方法會被保護」規則整批保留，可能同時混著 skip 分支與非-skip 分支的行為描述，沒有欄位能區分兩者。`compute_excluded_methods()` 對這種 method_id 碰撞會記警告（見八章），但只是提示、不會自動修正描述內容，需要人工核對；徹底解決需要在 `route_index`／Map 輸出裡引入 per-route（而非 per-method-name）的識別，屬於比目前規模更大的設計變更，暫不處理。
+- **Import 依賴掃描（三章 `_extract_project_imports()`，設計見 04a 四章「Import 依賴補充」）只認 import 陳述式，同套件內不需要 import 就能互相參照的情況（Java 語言特性）仍解析不到**——目標專案的跨層依賴一律跨 package、都有明確 import，沒有觸發；留待接上真的有這種寫法的專案再評估是否需要另外掃套件宣告＋目錄結構比對。
+- **`needs_llm_summary()`／`classify_trivial_classes()`（四章，設計見 04a 四章「Map 摘要必要性判斷」）的分類是啟發式，不是完美判斷**——只有 Lombok／JPA 資料類別標記＋方法清單只有存取器方法時才跳過 Map，其餘一律送 Map，不確定時偏向保守（多送不少判斷少）。已知一個無害的邊界情況：只有建構子、沒有一般方法的例外類別（如自訂 `XxxException`），Map 有時會回傳一個跟類別同名的偽方法（把建構子描述當成方法），觸發 `_normalize_method_name()` 的「找不到對應方法」警告——這類例外類別不是 Controller，沒有自己的 route，不影響 `api_to_python_target`，只是 `module_list.methods` 多一筆命名有點怪、但內容正確的描述，不處理。
