@@ -1,0 +1,1124 @@
+{
+  "directory_tree": "app/\n  app/core/database.py\n  app/main.py\n  app/models/candidate.py\n  app/models/common.py\n  app/models/exam.py\n  app/models/file.py\n  app/models/general.py\n  app/models/grading.py\n  app/models/registration.py\n  app/repositories/candidate_repository.py\n  app/repositories/exam_repository.py\n  app/repositories/general_repository.py\n  app/repositories/grading_repository.py\n  app/routers/candidate_router.py\n  app/routers/exam_router.py\n  app/routers/file_router.py\n  app/routers/general_router.py\n  app/routers/grading_router.py\n  app/routers/registration_router.py\n  app/schemas/candidate.py\n  app/schemas/exam.py\n  app/schemas/general.py\n  app/schemas/grading.py\n  app/schemas/registration.py\n  app/services/candidate_service.py\n  app/services/common_service.py\n  app/services/exam_service.py\n  app/services/grading_service.py\n\n### app/schemas/general.py\n```python\nfrom __future__ import annotations\n\nfrom pydantic import BaseModel\n\nclass ResponseResultLanguageRq(BaseModel):\n    code: int | None\n    msg: str | None\n    data: LanguageRq | None\n\nclass ResponseResultGetAllGradeRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetAllGradeRs | None\n\nclass ResponseResultGetAllLocalRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetAllLocalRs | None\n\nclass GetSchoolRq(BaseModel):\n    grade: str | None\n    local: str | None\n\nclass ResponseResultGetSchoolRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetSchoolRs | None\n\n```\n\n### app/schemas/candidate.py\n```python\nfrom __future__ import annotations\n\nfrom pydantic import BaseModel\n\nclass CardRq(BaseModel):\n    card: str | None\n\nclass ResponseResultUserProfileRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: UserProfileRs | None\n\nclass CreaterandomRq(BaseModel):\n    school: str | None\n    year: str | None\n    grade: str | None\n    classes: str | None\n    kind: str | None\n    name: str | None\n    email: str | None\n    card: str | None\n\nclass ResponseResultCreaterandomRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: CreaterandomRs | None\n\n```\n\n### app/schemas/candidate.py\n```python\n# 以下類別在 Java 端只有建構子、沒有被 module_list 追蹤到任何一般方法\n# （常見情況：自訂例外類別）。InterfaceSpec 無法表達這類定義，只能列出\n# 建構子簽名；實際 Python 對應寫法（Exception 子類別／dataclass／其他）\n# 請依下方標註的 Java 原始碼路徑自行判斷，這裡不假設任何基底類別。\n\n# ExamException（Java 原始碼：src/main/java/com/teachLanguage/exception/ExamException.java）\n# 建構子 1: ExamException(errorCode: ErrorCode, message: str)\n# 建構子 2: ExamException(message: str, errorCode: ErrorCode, data: Object)\n\n```\n\n### app/schemas/registration.py\n```python\nfrom __future__ import annotations\n\nfrom pydantic import BaseModel\n\nclass ResponseResultGetAllClassesRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetAllClassesRs | None\n\nclass ResponseResultGetAllGradeRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetAllGradeRs | None\n\nclass ResponseResultGetAllSchoolRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetAllSchoolRs | None\n\n```\n\n### app/schemas/exam.py\n```python\nfrom __future__ import annotations\n\nfrom pydantic import BaseModel\n\nclass SaveAnswerRq(BaseModel):\n    kind: str | None\n    randomId: str | None\n    typeNumber: str | None\n    partNumber: str | None\n    questionNumber: str | None\n    answer: str | None\n\nclass ResponseResultString(BaseModel):\n    code: int | None\n    msg: str | None\n    data: str | None\n\nclass GetExamRq(BaseModel):\n    year: str | None\n    grade: str | None\n    classes: str | None\n    kind: str | None\n    card: str | None\n    status: str | None\n    randomId: str | None\n\nclass ResponseResultGetExamRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetExamRs | None\n\nclass GetExamResultRq(BaseModel):\n    kind: str | None\n    randomId: str | None\n\nclass ResponseResultGetExamResultRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetExamResultRs | None\n\nclass GetSingleExamRq(BaseModel):\n    kind: str | None\n\nclass ResponseResultGetSingleExamRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetSingleExamRs | None\n\nclass ResponseResultGetAllExamRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetAllExamRs | None\n\nclass ResponseResultGetAllExamKindRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: GetAllExamKindRs | None\n\n```\n\n### app/schemas/grading.py\n```python\nfrom __future__ import annotations\n\nfrom pydantic import BaseModel\n\nclass LoginRq(BaseModel):\n    username: str | None\n    password: str | None\n\nclass ResponseResultBoolean(BaseModel):\n    code: int | None\n    msg: str | None\n    data: bool | None\n\nclass SaveScoreRq(BaseModel):\n    id: str | None\n    score: str | None\n\nclass ResponseResultVoid(BaseModel):\n    code: int | None\n    msg: str | None\n    data: object | None\n\nclass SaveTotalAndCommentRq(BaseModel):\n    kind: str | None\n    randomId: str | None\n    comment: str | None\n\nclass AnalyzeRq(BaseModel):\n    kind: str | None\n\nclass ResponseResultAnalyzeRs(BaseModel):\n    code: int | None\n    msg: str | None\n    data: AnalyzeRs | None\n\n```\n\n### app/schemas/grading.py\n```python\n# 以下類別在 Java 端只有建構子、沒有被 module_list 追蹤到任何一般方法\n# （常見情況：自訂例外類別）。InterfaceSpec 無法表達這類定義，只能列出\n# 建構子簽名；實際 Python 對應寫法（Exception 子類別／dataclass／其他）\n# 請依下方標註的 Java 原始碼路徑自行判斷，這裡不假設任何基底類別。\n\n# AuthException（Java 原始碼：src/main/java/com/teachLanguage/exception/AuthException.java）\n# 建構子 1: AuthException(errorCode: ErrorCode, message: str)\n# 建構子 2: AuthException(errorCode: ErrorCode, message: str, data: Object)\n\n```\n\n### app/core/database.py\n```python\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker, declarative_base\nimport os\n\nDATABASE_URL = os.environ[\"DATABASE_URL\"]\nengine = create_engine(DATABASE_URL)\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase = declarative_base()\n\n\ndef get_db():\n    db = SessionLocal()\n    try:\n        yield db\n    except Exception:\n        db.rollback()\n        raise\n    finally:\n        db.close()\n```\n\n### app/main.py\n```python\nfrom fastapi import FastAPI\n\nfrom app.routers.candidate_router import router as candidate_router\nfrom app.routers.exam_router import router as exam_router\nfrom app.routers.file_router import router as file_router\nfrom app.routers.general_router import router as general_router\nfrom app.routers.grading_router import router as grading_router\nfrom app.routers.registration_router import router as registration_router\n\napp = FastAPI()\napp.include_router(candidate_router)\napp.include_router(exam_router)\napp.include_router(file_router)\napp.include_router(general_router)\napp.include_router(grading_router)\napp.include_router(registration_router)\n```\n",
+  "interfaces": [
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "error",
+      "params": [
+        {
+          "name": "code",
+          "type": "int"
+        },
+        {
+          "name": "msg",
+          "type": "str"
+        }
+      ],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "error",
+      "params": [
+        {
+          "name": "code",
+          "type": "int"
+        },
+        {
+          "name": "msg",
+          "type": "str"
+        },
+        {
+          "name": "data",
+          "type": "T"
+        }
+      ],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "error",
+      "params": [
+        {
+          "name": "code",
+          "type": "int"
+        },
+        {
+          "name": "data",
+          "type": "T"
+        }
+      ],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "error",
+      "params": [
+        {
+          "name": "code",
+          "type": "ErrorCode"
+        }
+      ],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "error",
+      "params": [
+        {
+          "name": "code",
+          "type": "ErrorCode"
+        },
+        {
+          "name": "data",
+          "type": "T"
+        }
+      ],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "error",
+      "params": [
+        {
+          "name": "code",
+          "type": "ErrorCode"
+        },
+        {
+          "name": "msg",
+          "type": "str"
+        }
+      ],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "ok",
+      "params": [],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "ok",
+      "params": [
+        {
+          "name": "data",
+          "type": "T"
+        }
+      ],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ResponseResult",
+      "function_name": "ok",
+      "params": [
+        {
+          "name": "code",
+          "type": "int"
+        },
+        {
+          "name": "msg",
+          "type": "str"
+        },
+        {
+          "name": "data",
+          "type": "T"
+        }
+      ],
+      "return_type": "ResponseResult<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "Result",
+      "function_name": "success",
+      "params": [
+        {
+          "name": "data",
+          "type": "T"
+        }
+      ],
+      "return_type": "Result<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "Result",
+      "function_name": "success",
+      "params": [],
+      "return_type": "Result<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "Result",
+      "function_name": "failure",
+      "params": [
+        {
+          "name": "errorCode",
+          "type": "int"
+        },
+        {
+          "name": "message",
+          "type": "str"
+        }
+      ],
+      "return_type": "Result<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "Result",
+      "function_name": "failure",
+      "params": [
+        {
+          "name": "errorCode",
+          "type": "ErrorCode"
+        }
+      ],
+      "return_type": "Result<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "Result",
+      "function_name": "failure",
+      "params": [
+        {
+          "name": "errorCode",
+          "type": "ErrorCode"
+        },
+        {
+          "name": "message",
+          "type": "str"
+        }
+      ],
+      "return_type": "Result<T>"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "Result",
+      "function_name": "is_failure",
+      "params": [],
+      "return_type": "bool"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ErrorCode",
+      "function_name": "get_code",
+      "params": [],
+      "return_type": "int"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ErrorCode",
+      "function_name": "get_msg",
+      "params": [],
+      "return_type": "str"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ValidationUtil",
+      "function_name": "is_null_or_empty",
+      "params": [
+        {
+          "name": "str",
+          "type": "str"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "ValidationUtil",
+      "function_name": "is_valid_field",
+      "params": [
+        {
+          "name": "str",
+          "type": "str"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "CollectionUtil",
+      "function_name": "find_distinct_field",
+      "params": [
+        {
+          "name": "list",
+          "type": "list[T]"
+        },
+        {
+          "name": "mapper",
+          "type": "Function<T, String>"
+        }
+      ],
+      "return_type": "list[str]"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "CodeUtil",
+      "function_name": "generate_random_code",
+      "params": [],
+      "return_type": "str"
+    },
+    {
+      "file_path": "app/services/common_service.py",
+      "class_name": "CodeUtil",
+      "function_name": "half_width2_full_width",
+      "params": [
+        {
+          "name": "fullWidthStr",
+          "type": "str"
+        }
+      ],
+      "return_type": "str"
+    },
+    {
+      "file_path": "app/routers/file_router.py",
+      "class_name": null,
+      "function_name": "voice",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "partNumber",
+          "type": "str"
+        },
+        {
+          "name": "questionNumber",
+          "type": "str"
+        },
+        {
+          "name": "file",
+          "type": "MultipartFile"
+        }
+      ],
+      "return_type": "ResponseResult<String>"
+    },
+    {
+      "file_path": "app/routers/file_router.py",
+      "class_name": null,
+      "function_name": "voice",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "partNumber",
+          "type": "str"
+        },
+        {
+          "name": "questionNumber",
+          "type": "str"
+        }
+      ],
+      "return_type": "object"
+    },
+    {
+      "file_path": "app/routers/file_router.py",
+      "class_name": null,
+      "function_name": "voice",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "partNumber",
+          "type": "str"
+        },
+        {
+          "name": "questionNumber",
+          "type": "str"
+        },
+        {
+          "name": "file",
+          "type": "MultipartFile"
+        }
+      ],
+      "return_type": "ResponseResult<String>"
+    },
+    {
+      "file_path": "app/routers/file_router.py",
+      "class_name": null,
+      "function_name": "voice",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "partNumber",
+          "type": "str"
+        },
+        {
+          "name": "questionNumber",
+          "type": "str"
+        }
+      ],
+      "return_type": "object"
+    },
+    {
+      "file_path": "app/routers/file_router.py",
+      "class_name": null,
+      "function_name": "image",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "side",
+          "type": "str"
+        },
+        {
+          "name": "file",
+          "type": "MultipartFile"
+        }
+      ],
+      "return_type": "ResponseResult<Map<String, Object>>"
+    },
+    {
+      "file_path": "app/routers/file_router.py",
+      "class_name": null,
+      "function_name": "image",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "side",
+          "type": "str"
+        }
+      ],
+      "return_type": "object"
+    },
+    {
+      "file_path": "app/routers/file_router.py",
+      "class_name": null,
+      "function_name": "image",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "side",
+          "type": "str"
+        },
+        {
+          "name": "file",
+          "type": "MultipartFile"
+        }
+      ],
+      "return_type": "ResponseResult<Map<String, Object>>"
+    },
+    {
+      "file_path": "app/routers/file_router.py",
+      "class_name": null,
+      "function_name": "image",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "side",
+          "type": "str"
+        }
+      ],
+      "return_type": "object"
+    },
+    {
+      "file_path": "app/routers/general_router.py",
+      "class_name": null,
+      "function_name": "language",
+      "params": [],
+      "return_type": "ResponseResultLanguageRq"
+    },
+    {
+      "file_path": "app/routers/general_router.py",
+      "class_name": null,
+      "function_name": "grades",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetAllGradeRs"
+    },
+    {
+      "file_path": "app/routers/general_router.py",
+      "class_name": null,
+      "function_name": "locals",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetAllLocalRs"
+    },
+    {
+      "file_path": "app/routers/general_router.py",
+      "class_name": null,
+      "function_name": "schools",
+      "params": [
+        {
+          "name": "rq",
+          "type": "GetSchoolRq"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetSchoolRs"
+    },
+    {
+      "file_path": "app/routers/general_router.py",
+      "class_name": null,
+      "function_name": "get_version",
+      "params": [],
+      "return_type": "str"
+    },
+    {
+      "file_path": "app/repositories/general_repository.py",
+      "class_name": "SchoolRepository",
+      "function_name": "find_by_grade_and_local",
+      "params": [
+        {
+          "name": "grade",
+          "type": "str"
+        },
+        {
+          "name": "local",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[SchoolEntity]"
+    },
+    {
+      "file_path": "app/routers/candidate_router.py",
+      "class_name": null,
+      "function_name": "get_candidate",
+      "params": [
+        {
+          "name": "req",
+          "type": "CardRq"
+        }
+      ],
+      "return_type": "ResponseResultUserProfileRs"
+    },
+    {
+      "file_path": "app/routers/candidate_router.py",
+      "class_name": null,
+      "function_name": "create_random",
+      "params": [
+        {
+          "name": "rq",
+          "type": "CreaterandomRq"
+        }
+      ],
+      "return_type": "ResponseResultCreaterandomRs"
+    },
+    {
+      "file_path": "app/services/candidate_service.py",
+      "class_name": "ExamService",
+      "function_name": "get_list",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[ExamEntity]"
+    },
+    {
+      "file_path": "app/services/candidate_service.py",
+      "class_name": "ExamService",
+      "function_name": "get_candidate_by_card",
+      "params": [
+        {
+          "name": "card",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "ExamEntity | None"
+    },
+    {
+      "file_path": "app/services/candidate_service.py",
+      "class_name": "ExamService",
+      "function_name": "create_random",
+      "params": [
+        {
+          "name": "card",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "Result<CreaterandomRs>"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamRepository",
+      "function_name": "find_by_kind",
+      "params": [
+        {
+          "name": "paramString",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[ExamEntity]"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamRepository",
+      "function_name": "find_by_random_id_and_kind",
+      "params": [
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "Kind",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "ExamEntity | None"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamRepository",
+      "function_name": "find_by_card",
+      "params": [
+        {
+          "name": "card",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "ExamEntity | None"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamRepository",
+      "function_name": "find_top_by_kind_order_by_id_desc",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "ExamEntity | None"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamSpecification",
+      "function_name": "with_year",
+      "params": [
+        {
+          "name": "year",
+          "type": "str"
+        }
+      ],
+      "return_type": "Specification<ExamEntity>"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamSpecification",
+      "function_name": "with_grade",
+      "params": [
+        {
+          "name": "grade",
+          "type": "str"
+        }
+      ],
+      "return_type": "Specification<ExamEntity>"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamSpecification",
+      "function_name": "with_classes",
+      "params": [
+        {
+          "name": "classes",
+          "type": "str"
+        }
+      ],
+      "return_type": "Specification<ExamEntity>"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamSpecification",
+      "function_name": "with_kind",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        }
+      ],
+      "return_type": "Specification<ExamEntity>"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamSpecification",
+      "function_name": "with_card",
+      "params": [
+        {
+          "name": "card",
+          "type": "str"
+        }
+      ],
+      "return_type": "Specification<ExamEntity>"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamSpecification",
+      "function_name": "with_status",
+      "params": [
+        {
+          "name": "status",
+          "type": "str"
+        }
+      ],
+      "return_type": "Specification<ExamEntity>"
+    },
+    {
+      "file_path": "app/repositories/candidate_repository.py",
+      "class_name": "ExamSpecification",
+      "function_name": "with_random_id",
+      "params": [
+        {
+          "name": "randomId",
+          "type": "str"
+        }
+      ],
+      "return_type": "Specification<ExamEntity>"
+    },
+    {
+      "file_path": "app/services/candidate_service.py",
+      "class_name": "UserProfileRs",
+      "function_name": "from_entity",
+      "params": [
+        {
+          "name": "entity",
+          "type": "ExamEntity"
+        }
+      ],
+      "return_type": "UserProfileRs"
+    },
+    {
+      "file_path": "app/routers/registration_router.py",
+      "class_name": null,
+      "function_name": "classes",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetAllClassesRs"
+    },
+    {
+      "file_path": "app/routers/registration_router.py",
+      "class_name": null,
+      "function_name": "grades",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetAllGradeRs"
+    },
+    {
+      "file_path": "app/routers/registration_router.py",
+      "class_name": null,
+      "function_name": "schools",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetAllSchoolRs"
+    },
+    {
+      "file_path": "app/routers/exam_router.py",
+      "class_name": null,
+      "function_name": "save_answer",
+      "params": [
+        {
+          "name": "rq_list",
+          "type": "list[SaveAnswerRq]"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultString"
+    },
+    {
+      "file_path": "app/routers/exam_router.py",
+      "class_name": null,
+      "function_name": "search",
+      "params": [
+        {
+          "name": "rq",
+          "type": "GetExamRq"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetExamRs"
+    },
+    {
+      "file_path": "app/routers/exam_router.py",
+      "class_name": null,
+      "function_name": "search_answer",
+      "params": [
+        {
+          "name": "rq",
+          "type": "GetExamResultRq"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetExamResultRs"
+    },
+    {
+      "file_path": "app/routers/exam_router.py",
+      "class_name": null,
+      "function_name": "get_single_exam",
+      "params": [
+        {
+          "name": "rq",
+          "type": "GetSingleExamRq"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetSingleExamRs"
+    },
+    {
+      "file_path": "app/routers/exam_router.py",
+      "class_name": null,
+      "function_name": "get_all",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetAllExamRs"
+    },
+    {
+      "file_path": "app/routers/exam_router.py",
+      "class_name": null,
+      "function_name": "get_all_exam_kind",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
+        }
+      ],
+      "return_type": "ResponseResultGetAllExamKindRs"
+    },
+    {
+      "file_path": "app/services/exam_service.py",
+      "class_name": "ExamkindService",
+      "function_name": "get_list",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[ExamkindEntity]"
+    },
+    {
+      "file_path": "app/repositories/exam_repository.py",
+      "class_name": "ExamkindRepository",
+      "function_name": "find_by_kind",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[ExamkindEntity]"
+    },
+    {
+      "file_path": "app/services/exam_service.py",
+      "class_name": "AnswerService",
+      "function_name": "get_list",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[AnswerEntity]"
+    },
+    {
+      "file_path": "app/repositories/exam_repository.py",
+      "class_name": "AnswerRepository",
+      "function_name": "find_by_kind_and_random_id",
+      "params": [
+        {
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[AnswerEntity]"
+    },
+    {
+      "file_path": "app/repositories/exam_repository.py",
+      "class_name": "AnswerRepository",
+      "function_name": "find_by_random_id_and_kind_and_type_number_and_part_number_and_question_number",
+      "params": [
+        {
+          "name": "randomId",
+          "type": "str"
+        },
+        {
+          "name": "paramString3",
+          "type": "str"
+        },
+        {
+          "name": "paramString4",
+          "type": "str"
+        },
+        {
+          "name": "paramString5",
+          "type": "str"
+        },
+        {
+          "name": "paramString6",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "AnswerEntity | None"
+    },
+    {
+      "file_path": "app/repositories/exam_repository.py",
+      "class_name": "AnswerRepository",
+      "function_name": "find_all_by_type_number_and_part_number_and_question_number",
+      "params": [
+        {
+          "name": "typeNumber",
+          "type": "str"
+        },
+        {
+          "name": "partNumber",
+          "type": "str"
+        },
+        {
+          "name": "questionNumber",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[AnswerEntity]"
+    },
+    {
+      "file_path": "app/repositories/exam_repository.py",
+      "class_name": "AnswerRepository",
+      "function_name": "count_distinct_random_id_by_kind",
+      "params": [
+        {
+          "name": "paramString",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "int"
+    },
+    {
+      "file_path": "app/routers/grading_router.py",
+      "class_name": null,
+      "function_name": "test_exception",
+      "params": [],
+      "return_type": "str"
+    },
+    {
+      "file_path": "app/routers/grading_router.py",
+      "class_name": null,
+      "function_name": "login",
+      "params": [
+        {
+          "name": "rq",
+          "type": "LoginRq"
+        }
+      ],
+      "return_type": "ResponseResultBoolean"
+    },
+    {
+      "file_path": "app/routers/grading_router.py",
+      "class_name": null,
+      "function_name": "score",
+      "params": [
+        {
+          "name": "rq_list",
+          "type": "list[SaveScoreRq]"
+        }
+      ],
+      "return_type": "ResponseResultVoid"
+    },
+    {
+      "file_path": "app/routers/grading_router.py",
+      "class_name": null,
+      "function_name": "grade",
+      "params": [
+        {
+          "name": "rq",
+          "type": "SaveTotalAndCommentRq"
+        }
+      ],
+      "return_type": "ResponseResultVoid"
+    },
+    {
+      "file_path": "app/routers/grading_router.py",
+      "class_name": null,
+      "function_name": "analyze",
+      "params": [
+        {
+          "name": "rq",
+          "type": "AnalyzeRq"
+        }
+      ],
+      "return_type": "ResponseResultAnalyzeRs"
+    },
+    {
+      "file_path": "app/repositories/grading_repository.py",
+      "class_name": "BackUserRepository",
+      "function_name": "find_by_user_name_and_password",
+      "params": [
+        {
+          "name": "username",
+          "type": "str"
+        },
+        {
+          "name": "passwd",
+          "type": "str"
+        },
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "BackUserEntity"
+    },
+    {
+      "file_path": "app/services/grading_service.py",
+      "class_name": "QuestionService",
+      "function_name": "get_list",
+      "params": [
+        {
+          "name": "db",
+          "type": "Session"
+        }
+      ],
+      "return_type": "list[QuestionEntity]"
+    }
+  ]
+}

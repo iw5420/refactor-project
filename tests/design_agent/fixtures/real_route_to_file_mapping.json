@@ -1,0 +1,126 @@
+{
+  "POST_api_candidate_search": [
+    "app/repositories/candidate_repository.py",
+    "app/routers/candidate_router.py",
+    "app/schemas/candidate.py",
+    "app/services/candidate_service.py"
+  ],
+  "POST_api_candidate_generateRandomId": [
+    "app/repositories/candidate_repository.py",
+    "app/routers/candidate_router.py",
+    "app/schemas/candidate.py",
+    "app/services/candidate_service.py"
+  ],
+  "POST_api_exam_answer_save": [
+    "app/repositories/exam_repository.py",
+    "app/routers/exam_router.py",
+    "app/schemas/exam.py",
+    "app/services/exam_service.py"
+  ],
+  "POST_api_exam_search": [
+    "app/repositories/exam_repository.py",
+    "app/routers/exam_router.py",
+    "app/schemas/exam.py",
+    "app/services/exam_service.py"
+  ],
+  "POST_api_exam_answer_search": [
+    "app/repositories/exam_repository.py",
+    "app/routers/exam_router.py",
+    "app/schemas/exam.py",
+    "app/services/exam_service.py"
+  ],
+  "POST_api_exam_getSingleExam": [
+    "app/repositories/exam_repository.py",
+    "app/routers/exam_router.py",
+    "app/schemas/exam.py",
+    "app/services/exam_service.py"
+  ],
+  "POST_api_exam_getAll": [
+    "app/repositories/exam_repository.py",
+    "app/routers/exam_router.py",
+    "app/schemas/exam.py",
+    "app/services/exam_service.py"
+  ],
+  "POST_api_exam_getAllExamKind": [
+    "app/repositories/exam_repository.py",
+    "app/routers/exam_router.py",
+    "app/schemas/exam.py",
+    "app/services/exam_service.py"
+  ],
+  "POST_api_file_voice": [
+    "app/routers/file_router.py"
+  ],
+  "GET_api_file_voice": [
+    "app/routers/file_router.py"
+  ],
+  "GET_api_file_image": [
+    "app/routers/file_router.py"
+  ],
+  "GET_api_general_language": [
+    "app/repositories/general_repository.py",
+    "app/routers/general_router.py",
+    "app/schemas/general.py"
+  ],
+  "GET_api_general_grades": [
+    "app/repositories/general_repository.py",
+    "app/routers/general_router.py",
+    "app/schemas/general.py"
+  ],
+  "GET_api_general_localtions": [
+    "app/repositories/general_repository.py",
+    "app/routers/general_router.py",
+    "app/schemas/general.py"
+  ],
+  "POST_api_general_schools": [
+    "app/repositories/general_repository.py",
+    "app/routers/general_router.py",
+    "app/schemas/general.py"
+  ],
+  "GET_api_general_version": [
+    "app/repositories/general_repository.py",
+    "app/routers/general_router.py",
+    "app/schemas/general.py"
+  ],
+  "GET_api_grading_test-exception": [
+    "app/repositories/grading_repository.py",
+    "app/routers/grading_router.py",
+    "app/schemas/grading.py",
+    "app/services/grading_service.py"
+  ],
+  "POST_api_grading_login": [
+    "app/repositories/grading_repository.py",
+    "app/routers/grading_router.py",
+    "app/schemas/grading.py",
+    "app/services/grading_service.py"
+  ],
+  "POST_api_grading_score": [
+    "app/repositories/grading_repository.py",
+    "app/routers/grading_router.py",
+    "app/schemas/grading.py",
+    "app/services/grading_service.py"
+  ],
+  "POST_api_grading_grade": [
+    "app/repositories/grading_repository.py",
+    "app/routers/grading_router.py",
+    "app/schemas/grading.py",
+    "app/services/grading_service.py"
+  ],
+  "POST_api_grading_analyze": [
+    "app/repositories/grading_repository.py",
+    "app/routers/grading_router.py",
+    "app/schemas/grading.py",
+    "app/services/grading_service.py"
+  ],
+  "GET_api_registration_exam_classes": [
+    "app/routers/registration_router.py",
+    "app/schemas/registration.py"
+  ],
+  "GET_api_registration_exam_grades": [
+    "app/routers/registration_router.py",
+    "app/schemas/registration.py"
+  ],
+  "GET_api_registration_exam_schools": [
+    "app/routers/registration_router.py",
+    "app/schemas/registration.py"
+  ]
+}

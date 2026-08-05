@@ -1,0 +1,285 @@
+app/
+  app/core/database.py
+  app/main.py
+  app/models/candidate.py
+  app/models/common.py
+  app/models/exam.py
+  app/models/file.py
+  app/models/general.py
+  app/models/grading.py
+  app/models/registration.py
+  app/repositories/candidate_repository.py
+  app/repositories/exam_repository.py
+  app/repositories/general_repository.py
+  app/repositories/grading_repository.py
+  app/routers/candidate_router.py
+  app/routers/exam_router.py
+  app/routers/file_router.py
+  app/routers/general_router.py
+  app/routers/grading_router.py
+  app/routers/registration_router.py
+  app/schemas/candidate.py
+  app/schemas/exam.py
+  app/schemas/general.py
+  app/schemas/grading.py
+  app/schemas/registration.py
+  app/services/candidate_service.py
+  app/services/common_service.py
+  app/services/exam_service.py
+  app/services/grading_service.py
+
+### app/schemas/general.py
+```python
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+class ResponseResultLanguageRq(BaseModel):
+    code: int | None
+    msg: str | None
+    data: LanguageRq | None
+
+class ResponseResultGetAllGradeRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetAllGradeRs | None
+
+class ResponseResultGetAllLocalRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetAllLocalRs | None
+
+class GetSchoolRq(BaseModel):
+    grade: str | None
+    local: str | None
+
+class ResponseResultGetSchoolRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetSchoolRs | None
+
+```
+
+### app/schemas/candidate.py
+```python
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+class CardRq(BaseModel):
+    card: str | None
+
+class ResponseResultUserProfileRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: UserProfileRs | None
+
+class CreaterandomRq(BaseModel):
+    school: str | None
+    year: str | None
+    grade: str | None
+    classes: str | None
+    kind: str | None
+    name: str | None
+    email: str | None
+    card: str | None
+
+class ResponseResultCreaterandomRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: CreaterandomRs | None
+
+```
+
+### app/schemas/candidate.py
+```python
+# 以下類別在 Java 端只有建構子、沒有被 module_list 追蹤到任何一般方法
+# （常見情況：自訂例外類別）。InterfaceSpec 無法表達這類定義，只能列出
+# 建構子簽名；實際 Python 對應寫法（Exception 子類別／dataclass／其他）
+# 請依下方標註的 Java 原始碼路徑自行判斷，這裡不假設任何基底類別。
+
+# ExamException（Java 原始碼：src/main/java/com/teachLanguage/exception/ExamException.java）
+# 建構子 1: ExamException(errorCode: ErrorCode, message: str)
+# 建構子 2: ExamException(message: str, errorCode: ErrorCode, data: Object)
+
+```
+
+### app/schemas/registration.py
+```python
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+class ResponseResultGetAllClassesRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetAllClassesRs | None
+
+class ResponseResultGetAllGradeRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetAllGradeRs | None
+
+class ResponseResultGetAllSchoolRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetAllSchoolRs | None
+
+```
+
+### app/schemas/exam.py
+```python
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+class SaveAnswerRq(BaseModel):
+    kind: str | None
+    randomId: str | None
+    typeNumber: str | None
+    partNumber: str | None
+    questionNumber: str | None
+    answer: str | None
+
+class ResponseResultString(BaseModel):
+    code: int | None
+    msg: str | None
+    data: str | None
+
+class GetExamRq(BaseModel):
+    year: str | None
+    grade: str | None
+    classes: str | None
+    kind: str | None
+    card: str | None
+    status: str | None
+    randomId: str | None
+
+class ResponseResultGetExamRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetExamRs | None
+
+class GetExamResultRq(BaseModel):
+    kind: str | None
+    randomId: str | None
+
+class ResponseResultGetExamResultRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetExamResultRs | None
+
+class GetSingleExamRq(BaseModel):
+    kind: str | None
+
+class ResponseResultGetSingleExamRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetSingleExamRs | None
+
+class ResponseResultGetAllExamRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetAllExamRs | None
+
+class ResponseResultGetAllExamKindRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: GetAllExamKindRs | None
+
+```
+
+### app/schemas/grading.py
+```python
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+class LoginRq(BaseModel):
+    username: str | None
+    password: str | None
+
+class ResponseResultBoolean(BaseModel):
+    code: int | None
+    msg: str | None
+    data: bool | None
+
+class SaveScoreRq(BaseModel):
+    id: str | None
+    score: str | None
+
+class ResponseResultVoid(BaseModel):
+    code: int | None
+    msg: str | None
+    data: object | None
+
+class SaveTotalAndCommentRq(BaseModel):
+    kind: str | None
+    randomId: str | None
+    comment: str | None
+
+class AnalyzeRq(BaseModel):
+    kind: str | None
+
+class ResponseResultAnalyzeRs(BaseModel):
+    code: int | None
+    msg: str | None
+    data: AnalyzeRs | None
+
+```
+
+### app/schemas/grading.py
+```python
+# 以下類別在 Java 端只有建構子、沒有被 module_list 追蹤到任何一般方法
+# （常見情況：自訂例外類別）。InterfaceSpec 無法表達這類定義，只能列出
+# 建構子簽名；實際 Python 對應寫法（Exception 子類別／dataclass／其他）
+# 請依下方標註的 Java 原始碼路徑自行判斷，這裡不假設任何基底類別。
+
+# AuthException（Java 原始碼：src/main/java/com/teachLanguage/exception/AuthException.java）
+# 建構子 1: AuthException(errorCode: ErrorCode, message: str)
+# 建構子 2: AuthException(errorCode: ErrorCode, message: str, data: Object)
+
+```
+
+### app/core/database.py
+```python
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+import os
+
+DATABASE_URL = os.environ["DATABASE_URL"]
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+```
+
+### app/main.py
+```python
+from fastapi import FastAPI
+
+from app.routers.candidate_router import router as candidate_router
+from app.routers.exam_router import router as exam_router
+from app.routers.file_router import router as file_router
+from app.routers.general_router import router as general_router
+from app.routers.grading_router import router as grading_router
+from app.routers.registration_router import router as registration_router
+
+app = FastAPI()
+app.include_router(candidate_router)
+app.include_router(exam_router)
+app.include_router(file_router)
+app.include_router(general_router)
+app.include_router(grading_router)
+app.include_router(registration_router)
+```

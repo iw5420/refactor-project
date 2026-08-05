@@ -1,0 +1,146 @@
+[
+  {
+    "endpoint": "/api/candidate/search",
+    "http_method": "POST",
+    "java_controller": "CandidateController.getCandidate",
+    "module": "candidate"
+  },
+  {
+    "endpoint": "/api/candidate/generateRandomId",
+    "http_method": "POST",
+    "java_controller": "CandidateController.createRandom",
+    "module": "candidate"
+  },
+  {
+    "endpoint": "/api/exam/answer/save",
+    "http_method": "POST",
+    "java_controller": "ExamController.saveAnswer",
+    "module": "exam"
+  },
+  {
+    "endpoint": "/api/exam/search",
+    "http_method": "POST",
+    "java_controller": "ExamController.search",
+    "module": "exam"
+  },
+  {
+    "endpoint": "/api/exam/answer/search",
+    "http_method": "POST",
+    "java_controller": "ExamController.searchAnswer",
+    "module": "exam"
+  },
+  {
+    "endpoint": "/api/exam/getSingleExam",
+    "http_method": "POST",
+    "java_controller": "ExamController.getSingleExam",
+    "module": "exam"
+  },
+  {
+    "endpoint": "/api/exam/getAll",
+    "http_method": "POST",
+    "java_controller": "ExamController.getAll",
+    "module": "exam"
+  },
+  {
+    "endpoint": "/api/exam/getAllExamKind",
+    "http_method": "POST",
+    "java_controller": "ExamController.getAllExamKind",
+    "module": "exam"
+  },
+  {
+    "endpoint": "/api/file/voice",
+    "http_method": "POST",
+    "java_controller": "FileController.voice",
+    "module": "file"
+  },
+  {
+    "endpoint": "/api/file/voice",
+    "http_method": "GET",
+    "java_controller": "FileController.voice",
+    "module": "file"
+  },
+  {
+    "endpoint": "/api/file/image",
+    "http_method": "GET",
+    "java_controller": "FileController.image",
+    "module": "file"
+  },
+  {
+    "endpoint": "/api/general/language",
+    "http_method": "GET",
+    "java_controller": "GeneralController.language",
+    "module": "general"
+  },
+  {
+    "endpoint": "/api/general/grades",
+    "http_method": "GET",
+    "java_controller": "GeneralController.grades",
+    "module": "general"
+  },
+  {
+    "endpoint": "/api/general/localtions",
+    "http_method": "GET",
+    "java_controller": "GeneralController.locals",
+    "module": "general"
+  },
+  {
+    "endpoint": "/api/general/schools",
+    "http_method": "POST",
+    "java_controller": "GeneralController.schools",
+    "module": "general"
+  },
+  {
+    "endpoint": "/api/general/version",
+    "http_method": "GET",
+    "java_controller": "GeneralController.getVersion",
+    "module": "general"
+  },
+  {
+    "endpoint": "/api/grading/test-exception",
+    "http_method": "GET",
+    "java_controller": "GradingController.testException",
+    "module": "grading"
+  },
+  {
+    "endpoint": "/api/grading/login",
+    "http_method": "POST",
+    "java_controller": "GradingController.login",
+    "module": "grading"
+  },
+  {
+    "endpoint": "/api/grading/score",
+    "http_method": "POST",
+    "java_controller": "GradingController.score",
+    "module": "grading"
+  },
+  {
+    "endpoint": "/api/grading/grade",
+    "http_method": "POST",
+    "java_controller": "GradingController.grade",
+    "module": "grading"
+  },
+  {
+    "endpoint": "/api/grading/analyze",
+    "http_method": "POST",
+    "java_controller": "GradingController.analyze",
+    "module": "grading"
+  },
+  {
+    "endpoint": "/api/registration/exam/classes",
+    "http_method": "GET",
+    "java_controller": "RegistrationController.classes",
+    "module": "registration"
+  },
+  {
+    "endpoint": "/api/registration/exam/grades",
+    "http_method": "GET",
+    "java_controller": "RegistrationController.grades",
+    "module": "registration"
+  },
+  {
+    "endpoint": "/api/registration/exam/schools",
+    "http_method": "GET",
+    "java_controller": "RegistrationController.schools",
+    "module": "registration"
+  }
+]
