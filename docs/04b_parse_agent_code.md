@@ -1925,7 +1925,7 @@ def _reduce_phase(map_results: list[MapClassResult], controller_deps: dict[str, 
 
 ### 7.3 輸出組裝（六章）
 
-**為什麼需要 `_ModuleDraft` 這個中繼結構**：`graph/state.py` 的 `MethodInfo` 只有 `java_method`／`description`／`complexity` 三個欄位，沒有 `class_name`——這是刻意的，因為 ③ 架構設計 Agent 之後只需要方法層級的資訊（見 04a 六章）。但 `filter_excluded_methods()`（下方）需要用 `method_id`（含 `class_name`／`file_path`）判斷是否落在 `skip_filter` 算出的排除集合裡，如果直接組成 `MethodInfo` 就把 `class_name` 弄丟了，之後就無法正確比對。因此組裝分兩步：先組出保留 `class_name` 的內部草稿 `_ModuleDraft`，排除計算跟 `assemble_api_mapping()`（同樣需要 `class_name`）都在草稿階段完成，最後才用 `finalize_module_list()` 剝除 `class_name`、產出真正符合 `ModuleInfo` 型別的公開輸出。
+**為什麼需要 `_ModuleDraft` 這個中繼結構**：`graph/state.py` 的 `MethodInfo` 含 `class_name`（供 ③ 架構設計 Agent 重新掃描 Java 簽名時比對回正確的類別——同一 module 內跨層同名方法會歧義，見 05a 二章），但沒有 `file_path`：`file_path` 已經由 `ModuleInfo.java_files` 在模組層級提供，方法層級不需要重複帶。但 `filter_excluded_methods()`（下方）需要用 `method_id`（含 `class_name`／`file_path`）判斷是否落在 `skip_filter` 算出的排除集合裡，如果直接組成 `MethodInfo` 就沒有 `file_path` 可用，之後就無法正確比對。因此組裝分兩步：先組出額外保留 `file_path` 的內部草稿 `_ModuleDraft`，排除計算跟 `assemble_api_mapping()`（同樣需要 `file_path`）都在草稿階段完成，最後才用 `finalize_module_list()` 剝除 `file_path`、產出真正符合 `ModuleInfo` 型別的公開輸出。
 
 ```python
 # parse_agent/summarize.py（續）
@@ -2019,6 +2019,7 @@ def _assemble_module_drafts(
                         file_path=project.classes[cls].file_path,
                         method=MethodInfo(
                             java_method=m.method_name,
+                            class_name=cls,
                             description=m.description,
                             complexity=m.complexity,  # type: ignore[typeddict-item]
                         ),
@@ -2158,10 +2159,11 @@ def assemble_api_mapping(
 
 
 def finalize_module_list(drafts: list[_ModuleDraft]) -> list[ModuleInfo]:
-    """剝除 `_ModuleDraft` 只有內部組裝過程需要的 `class_name`／
-    `file_path`，產出符合 `graph/state.py` `ModuleInfo` 型別的最終輸出。
-    必須在 `filter_excluded_methods()`／`assemble_api_mapping()` 都跑完
-    之後才呼叫——這兩者都依賴草稿階段保留的 `class_name`。
+    """剝除 `_ModuleDraft` 只有內部組裝過程需要的 `file_path`，產出符合
+    `graph/state.py` `ModuleInfo` 型別的最終輸出（`class_name` 已經在
+    `dm.method` 裡，不需要額外剝除，見本節前言）。必須在
+    `filter_excluded_methods()`／`assemble_api_mapping()` 都跑完之後才
+    呼叫——這兩者都依賴草稿階段保留的 `file_path`。
     """
     return [
         ModuleInfo(

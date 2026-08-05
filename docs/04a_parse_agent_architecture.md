@@ -122,7 +122,7 @@ Map 階段輸出的是局部候選結果，同一組看不到其他組的內容�
 | module 業務邏輯摘要（彙整同 module 內各 class 摘要，重新以模組為單位摘要，不是機械拼接） | `ModuleInfo.summary`（見六章） |
 | module 間依賴關係 | `ModuleInfo.depends_on` |
 
-Reduce **不**決定方法層級的內容——`MethodInfo`（`java_method`／`description`／`complexity`）全部沿用 Map 階段已經產出的方法清單，Reduce 只負責「這個 class 歸哪個 module」，見六章、`04b_parse_agent_code.md` 七章 7.3。
+Reduce **不**決定方法層級的內容——`MethodInfo`（`java_method`／`class_name`／`description`／`complexity`）全部沿用 Map 階段已經產出的方法清單，Reduce 只負責「這個 class 歸哪個 module」，見六章、`04b_parse_agent_code.md` 七章 7.3。
 
 > 若合併階段只是機械拼接各組候選、不重新做跨邊界判斷，會系統性漏掉組與組之間的關聯（00 六章已強調過這點），因此 Reduce 階段的「重新摘要」不可省略，不能只是把 Map 階段的 class 摘要照抄堆疊成 module 摘要。
 
@@ -165,6 +165,7 @@ Reduce **不**決定方法層級的內容——`MethodInfo`（`java_method`／`d
 ```python
 class MethodInfo(TypedDict):
     java_method: str
+    class_name: str                # 所屬 Java class（見下方說明）
     description: str
     complexity: Literal["low", "medium", "high"]
 
@@ -181,6 +182,8 @@ class ApiMapping(TypedDict):
     java_controller: str
     module: str
 ```
+
+**`MethodInfo.class_name`**：所屬 Java class 名稱。同一 module 內常見跨層同名方法（如 `UserService.getById()` 與 `UserRepository.getById()`，service 委派 repository 時命名本來就容易一致）——若沒有這個欄位，③ 架構設計 Agent 重新掃描 `module.java_files` 的簽名時，光憑 `java_method` 字面名稱無法判斷這筆描述原本對應哪個類別，見 `05a_design_agent_architecture.md` 二章、四章。
 
 **`ModuleInfo.summary` 的定位**：00 文件要求 ① 輸出「核心業務邏輯摘要」，這個欄位就是它的落地位置，設計目標是給 ③ 架構設計 Agent 使用，不是給人閱讀的專案文件。因此內容要直接支援 ③ 的判斷，不是泛泛複述程式碼在做什麼：
 

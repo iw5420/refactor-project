@@ -138,6 +138,8 @@ import operator
 # 對應唯一權威來源是 Agent ③ 的 python_structure.interfaces，見 04a 六章。
 class MethodInfo(TypedDict):
     java_method: str
+    class_name: str        # 所屬 Java class，供 ③ 重新掃描簽名時比對回正確的類別
+                            # （同一 module 內跨層同名方法會歧義，見 05a 二章）
     description: str
     complexity: Literal["low", "medium", "high"]
 
@@ -254,8 +256,8 @@ class RefactorState(TypedDict):
 | `gen_collection` | [B] Collection Agent（階段二） | 程式邏輯 + LLM | `graph/nodes/collection_node.py`（`run`，見 03a/03c） |
 | `await_manual_fill` | — | 程式邏輯 | `graph/nodes/await_manual_fill_node.py`（見五「人工填值關卡」，`gen_manual_fill_templates`／`gen_collection` 共用同一個終止節點） |
 | `parse` | ① 解析 Agent | Claude API | `graph/nodes/parse_node.py`（見 04a：排在 `gen_collection` 之後，因為 skip 呼叫鏈排除需要讀 [B] 已定案的 `unfilled_endpoints.json`） |
-| `record_tests` | ② 測試 Agent | 程式邏輯（Harness） | `refactor_harness/langgraph_nodes/test_nodes.py`（見 02b） |
-| `design` | ③ 架構設計 Agent | Claude API | `graph/nodes/design_node.py` |
+| `record_tests` | ② 測試 Agent | 程式邏輯（Harness） | `refactor_harness/langgraph_nodes/test_nodes.py`（見 02b；與 `design` 平行執行，見五章「平行分支」） |
+| `design` | ③ 架構設計 Agent | Claude API | `graph/nodes/design_node.py`（不依賴 `golden_output`，與 `record_tests` 平行執行，見 05a 十一章、五章「平行分支」） |
 | `plan` | [P] Plan Agent | Claude API | `graph/nodes/plan_node.py` |
 | `scaffold` | ④ 骨架實作 Agent | translator-cli（骨架生成模式） | `graph/nodes/scaffold_node.py` |
 | `implement` | ⑤ 功能改寫 Agent | translator-cli（填空模式）＋ 排程器 | `graph/nodes/implement_node.py` |
@@ -328,17 +330,30 @@ def build_graph():
 
     # parse（① 解析 Agent）排在 [B] 之後：skip 呼叫鏈排除（見 04a 五章）
     # 要讀 [B] 已定案的 postman/unfilled_endpoints.json，排更前面這份輸入不存在
+    #
+    # 平行分支：parse 完成後，record_tests（②）與 design（③）同時進入就緒
+    # 狀態——② 不依賴③的輸出，③ 不依賴 golden_output，兩者互不相依，見
+    # 00 一章流程圖、05a 十一章
     builder.add_edge("parse", "record_tests")
-    builder.add_edge("record_tests", "design")
+    builder.add_edge("parse", "design")
 ```
 
-### 平行分支：③ → [P] / ④ → ⑤
+### 平行分支：① → (② ∥ ③) → ([P] ∥ ④) → ⑤
 
-00 的流程圖裡 `design` 完成後 `plan` 和 `scaffold` 平行執行，兩者都完成才進 `implement`。在 LangGraph 的 `StateGraph` 裡，這個 fan-out / fan-in 不需要額外的 API：**只要兩個節點都以同一個節點為前驅、又都指向同一個後繼節點，LangGraph 執行時會在同一個 superstep 平行呼叫兩者，並等兩者都完成後才觸發後繼節點。**
+00 的流程圖有兩處 fan-out/fan-in：`parse` 完成後 `record_tests` 和 `design` 平行執行；`design` 完成後 `plan` 和 `scaffold` 平行執行，四者都完成才進 `implement`。在 LangGraph 的 `StateGraph` 裡，這個 fan-out / fan-in 不需要額外的 API：**只要兩個節點都以同一個節點為前驅、又都指向同一個後繼節點，LangGraph 執行時會在同一個 superstep 平行呼叫兩者，並等兩者都完成後才觸發後繼節點。**
 
 ```python
-    # 平行分支：design 完成後，plan 與 scaffold 同時進入就緒狀態
+    # fan-in：plan／scaffold 的前驅是 record_tests 與 design 兩者都完成才
+    # 觸發——plan／scaffold 本身不讀 golden_output，但仍等 record_tests 一併
+    # 完成才進入下一階段，維持圖上單一明確的合流點（比每個節點各自判斷
+    # 「我依賴的東西是否就緒」更容易推理，也跟 00 一章流程圖的單一菱形
+    # 合流點一致）；若日後 record_tests 明顯拖慢整體關鍵路徑、且 plan／
+    # scaffold／implement 都已穩定，可再評估讓 record_tests 直接接到
+    # run_tests（⑥）前，不強制在此合流，見九章「已知限制」同類型的
+    # 「先求正確、非阻塞優化留待穩定後再做」原則
+    builder.add_edge("record_tests", "plan")
     builder.add_edge("design", "plan")
+    builder.add_edge("record_tests", "scaffold")
     builder.add_edge("design", "scaffold")
 
     # fan-in：implement 的兩個前驅都完成後才觸發一次
@@ -346,7 +361,7 @@ def build_graph():
     builder.add_edge("scaffold", "implement")
 ```
 
-> fan-in 不需要 reducer 的**前提**是：`plan` 和 `scaffold` 的回傳值只包含各自實際更動的 key（互不相交），**絕對不能用 `{**state, ...}` 展開整包 state**——一旦兩個分支在同一個 superstep 對同一個 key 各自寫入，就違反「無 reducer 時每個 key 只能被一個節點寫入」的前提，是未定義行為。只有 `design` 這種非平行分支的線性 node 才能用 `{**state, ...}`（見七的 stub 慣例）。`implement` 節點**內部**對 module/task 的平行處理才真的需要 reducer（見六）。
+> fan-in 不需要 reducer 的**前提**是：`record_tests`／`design`／`plan`／`scaffold` 的回傳值只包含各自實際更動的 key（互不相交），**絕對不能用 `{**state, ...}` 展開整包 state**——一旦多個分支在同一個 superstep 對同一個 key 各自寫入，就違反「無 reducer 時每個 key 只能被一個節點寫入」的前提，是未定義行為。`design` 雖然只有單一前驅（`parse`），但因為它同時也是 `record_tests` 的平行分支，仍需遵守「只回傳自己實際更動的 key」——不能再套用七章對純線性 node 的 `{**state, ...}` stub 慣例，這是本次改成平行分支後 `design_node.py` 的 stub 也要跟著調整的地方（見七章）。`implement` 節點**內部**對 module/task 的平行處理才真的需要 reducer（見六）。
 
 ### Retry 迴圈（Conditional Edge）
 
@@ -664,10 +679,10 @@ async def run(state: RefactorState) -> RefactorState:
 ### Stub 範例
 
 ```python
-# nodes/design_node.py（stub 版本，design 是線性 node，可以安心展開 state）
-async def run(state: RefactorState) -> RefactorState:
+# nodes/design_node.py（stub 版本，design 現在是平行分支 node——與 record_tests
+# 共用同一個前驅，只回傳自己實際更動的 key，不能再展開 state，見五章）
+async def run(state: RefactorState) -> dict:
     return {
-        **state,
         "python_structure": {
             "directory_tree": "app/\n  repositories/\n  services/\n  routers/",
             "interfaces": [
@@ -685,6 +700,13 @@ async def run(state: RefactorState) -> RefactorState:
 ```
 
 ```python
+# refactor_harness/langgraph_nodes/test_nodes.py 的 record_golden_output（stub 版本，
+# 平行分支 node，只回傳自己的 key，不展開 state）
+def record_golden_output(state: RefactorState) -> dict:
+    return {"golden_output": {"readonly": {}, "mutation": {}}}
+```
+
+```python
 # nodes/plan_node.py（stub 版本，平行分支 node，只回傳自己的 key，不展開 state）
 async def run(state: RefactorState) -> dict:
     return {"task_list": [{"id": "t1", "module": "user", "description": "stub task",
@@ -698,12 +720,12 @@ async def run(state: RefactorState) -> dict:
     return {"scaffold_done": True}
 ```
 
-其餘**線性** node（`parse`、`extract_spec`、`implement`……，前驅只有一個的 node）比照 `design_node` 的寫法，回傳 `{**state, ...}`；`plan`／`scaffold` 這兩個**平行分支** node 一律比照上面兩個範例，只回傳自己實際更動的 key（原因見五、平行分支段落）。
+其餘**線性** node（`parse`、`extract_spec`、`implement`……，前驅只有一個、後繼也只有一個的 node）比照七章開頭「線性 node」的既有寫法，回傳 `{**state, ...}`；`record_tests`／`design`（見五章新增的 `parse → (record_tests ∥ design)` 分支）與 `plan`／`scaffold` 這兩組**平行分支** node，一律比照上面四個範例，只回傳自己實際更動的 key（原因見五、平行分支段落——`design` 雖然邏輯上仍是「一個前驅、直接產出下一階段的權威規格」，但因為跟 `record_tests` 是同一個前驅的平行分支，一樣不能展開 state）。
 
 ### 替換順序
 
-1. 先用 stub 跑通 `extract_spec → gen_collection → parse → record_tests → design`，確認線性流程沒問題。
-2. 換上 `design` 的 stub 後，驗證 `plan`／`scaffold` 平行分支確實同時觸發、`implement` 確實等兩者都完成才跑一次（可在 stub 裡印 timestamp 觀察）。
+1. 先用 stub 跑通 `extract_spec → gen_collection → parse`，確認純線性段落沒問題。
+2. 換上 `record_tests`／`design` 的 stub 後，驗證兩者確實同時觸發、`plan`／`scaffold` 確實等兩者都完成才進入下一階段（可在 stub 裡印 timestamp 觀察）；再驗證 `plan`／`scaffold` 自己那組平行分支、`implement` 等兩者都完成才跑一次。
 3. 用假的 `test_results`（先 fail 後 pass）驗證 retry 迴圈：`debug → implement → run_tests` 是否正確迴圈、`retry_count` 超過上限是否正確走到 `give_up`。
 4. 圖的路由確認無誤後，才逐一把 stub 換成真正呼叫 Claude API / translator-cli / Harness 的實作，一次換一個 node，換完立刻單獨測試該 node。
 

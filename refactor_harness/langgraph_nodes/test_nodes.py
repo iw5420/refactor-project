@@ -18,13 +18,18 @@ JAVA_BASE_URL = os.environ["JAVA_BASE_URL"]
 
 
 # ── Agent ②：錄製 golden output（readonly + mutation）──
-def record_golden_output(state: RefactorState) -> RefactorState:
+def record_golden_output(state: RefactorState) -> dict:
     """
     分別呼叫 record()（readonly）與 record_mutation()（mutation），兩者的 DB
     reset 策略不同，已封裝在 GoldenRecorder 內部。
 
     test_dsn 傳入 state["test_dsn"]，確保 Recorder 與 run_postman_tests 的
     Verifier 連到同一顆測試 DB（見 02a 十四章）。
+
+    平行分支 node：parse 完成後與 design（③）同時觸發（見 00 一章流程圖、
+    01 五章、05a 十一章——③ 不依賴 golden_output），因此只回傳自己實際更動
+    的 key，不能用 `{**state, ...}` 整包展開，避免跟 design 同一個
+    superstep 對同一個 key 各自寫入。
     """
     recorder = GoldenRecorder(
         java_base_url=JAVA_BASE_URL,
@@ -36,7 +41,6 @@ def record_golden_output(state: RefactorState) -> RefactorState:
     recorder.write_metadata(readonly_result, mutation_result)
 
     return {
-        **state,
         "golden_output": {
             "readonly": readonly_result,
             "mutation": mutation_result,

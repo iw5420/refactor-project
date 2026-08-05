@@ -27,11 +27,11 @@ def build_graph():
     builder = StateGraph(RefactorState)
 
     # 註冊所有節點
-    builder.add_node("parse", parse_node.run)
     builder.add_node("extract_spec", spec_node.run)
     builder.add_node("gen_manual_fill_templates", collection_node.run_generate_templates)
     builder.add_node("gen_collection", collection_node.run)
     builder.add_node("await_manual_fill", await_manual_fill_node.run)
+    builder.add_node("parse", parse_node.run)
     builder.add_node("record_tests", record_golden_output)
     builder.add_node("design", design_node.run)
     builder.add_node("plan", plan_node.run)
@@ -41,12 +41,10 @@ def build_graph():
     builder.add_node("debug", debug_node.run)
     builder.add_node("give_up", give_up_node.run)
 
-    # 主線性流程：parse → extract_spec → gen_manual_fill_templates →
-    # gen_collection → record_tests → design（人工填值機制拆成兩階段，
-    # 見 03a 三章「人工填值機制」、graph/nodes/collection_node.py 模組
-    # docstring）
-    builder.set_entry_point("parse")
-    builder.add_edge("parse", "extract_spec")
+    # 主線性流程：extract_spec → gen_manual_fill_templates → gen_collection
+    # → parse（人工填值機制拆成兩階段，見 03a 三章「人工填值機制」、
+    # graph/nodes/collection_node.py 模組 docstring）
+    builder.set_entry_point("extract_spec")
     builder.add_edge("extract_spec", "gen_manual_fill_templates")
 
     # 階段一（產生人工填值模板）後的人工填值關卡：有 endpoint 待填就
@@ -61,24 +59,33 @@ def build_graph():
         },
     )
 
-    # 階段二（跑完剩下的 pipeline）後的人工補值關卡（見 01 五「人工補值
-    # 關卡」，待同步兩階段拆分）：正常情況下階段一已經擋下所有待填
-    # endpoint，這裡是防禦性的第二道關卡（例如階段一之後 openapi.json
-    # 又變動、或人工填值套用失敗），不是預期中的常態路徑。
+    # 階段二（跑完剩下的 pipeline）後的人工補值關卡：正常情況下階段一已經
+    # 擋下所有待填 endpoint，這裡是防禦性的第二道關卡（例如階段一之後
+    # openapi.json 又變動、或人工填值套用失敗），不是預期中的常態路徑。
+    # 「continue」導向 parse（① 解析 Agent），不是 record_tests——① 的
+    # skip 呼叫鏈排除（見 04a 五章）要讀 [B] 已定案的
+    # postman/unfilled_endpoints.json，排更前面這份輸入不存在。
     builder.add_conditional_edges(
         "gen_collection",
         collection_node.should_await_manual_fill_or_continue,
         {
-            "continue": "record_tests",
+            "continue": "parse",
             "await_manual_fill": "await_manual_fill",
         },
     )
     builder.add_edge("await_manual_fill", END)
 
-    builder.add_edge("record_tests", "design")
+    # 平行分支：parse 完成後，record_tests（②）與 design（③）同時進入
+    # 就緒狀態——② 不依賴③的輸出，③ 不依賴 golden_output，見
+    # 00 一章流程圖、05a 十一章
+    builder.add_edge("parse", "record_tests")
+    builder.add_edge("parse", "design")
 
-    # 平行分支：design 完成後，plan 與 scaffold 同時進入就緒狀態
+    # fan-in：plan／scaffold 的前驅是 record_tests 與 design 兩者都完成
+    # 才觸發，維持圖上單一明確的合流點，見 01 五章
+    builder.add_edge("record_tests", "plan")
     builder.add_edge("design", "plan")
+    builder.add_edge("record_tests", "scaffold")
     builder.add_edge("design", "scaffold")
 
     # fan-in：implement 的兩個前驅都完成後才觸發一次

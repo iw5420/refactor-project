@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import copy
+
 # 對應 grouping.py 產出的 MapUnit（4a 共用類別批次、4b Controller 批次
 # 共用同一份 prompt，兩者的差異只在輸入 payload 的內容組成，不在 prompt
 # 文字本身——見 04a 四章「Map 階段分兩個子階段，先共用、後專屬」）。
@@ -99,6 +101,15 @@ repository/service class；被多個 Controller 共用的 class 依業務關聯
 4. depends_on：這個模組依賴哪些其他模組（填 module 名稱，不是 class
    名稱）
 
+**java_classes 只能是輸入 classes 陣列裡出現過的 class_name，禁止填入
+任何沒出現過的名稱**：輸入的 classes 陣列就是這次要分類的完整 class
+清單，不是範例或摘要。即使你從某個方法描述聯想到「這個功能應該會用到
+一個 CreateExamRequest 或 LoginResponse 這類 DTO class」，只要這個名稱
+沒有原樣出現在輸入的 classes 陣列裡，就絕對不能把它填進 java_classes
+——這種 DTO/Request/Response class 通常沒有業務邏輯，本來就不會出現在
+你收到的 classes 清單裡，這是預期內的正常情況，不代表你需要幫忙補上。
+填入清單外的名稱不會產生任何效果，只會被直接丟棄，純粹浪費你的輸出。
+
 不要輸出任何其他文字，不要用 markdown code fence 包裹。
 """
 
@@ -123,3 +134,37 @@ REDUCE_OUTPUT_SCHEMA: dict = {
     "required": ["modules"],
     "additionalProperties": False,
 }
+
+
+def build_reduce_output_schema(valid_class_names: list[str]) -> dict:
+    """回傳 `REDUCE_OUTPUT_SCHEMA` 的動態版本：`java_classes` 陣列的每個
+    元素加上 `enum: valid_class_names` 約束，`valid_class_names` 是呼叫端
+    傳入的、這次 Map 階段實際摘要過的 class_name 完整集合（封閉集合，
+    Reduce 呼叫前就已經確定，不是猜測）。
+
+    **為什麼用 schema 約束、不只靠 prompt 指令**：REDUCE_SYSTEM_PROMPT
+    已經有「java_classes 只能是輸入 classes 陣列裡出現過的名稱，禁止
+    杜撰」的文字指令，但這只能降低模型虛構 class 名稱的機率，降不到 0
+    ——模型看到方法描述提到「建立考試」，語意上很容易聯想到一個
+    `CreateExamRequest`／`CreateExamRq` 這類 DTO 應該存在，即使明確被
+    告知不要這樣做。既然合法的 class 名稱集合在呼叫前就已經是確定的
+    封閉集合，這正是 00 二章「能用程式判斷的，就不要交給 LLM」的情況：
+    用 Structured Outputs 的 `enum` 讓 API 在生成階段就不可能輸出集合外
+    的字串，不是「生成後再靠程式碼濾掉」（`_assemble_module_drafts()`
+    的 `missing_classes` 檢查會繼續留著，當作 defense-in-depth，不因為
+    這裡加了 enum 約束就拿掉）。`enum` 只限制這個欄位「填的字串必須是
+    這些之一」，不影響模型判斷要怎麼分組、哪些 class 該歸同一個模組，
+    Reduce 階段原本的判斷空間完全不受影響。
+
+    `depends_on` 刻意不做同樣的 enum 約束：`depends_on` 引用的是這次
+    回應**自己產出**的 module 名稱，屬於自我參照，呼叫前不存在一個
+    「合法 module 名稱」的封閉集合可以拿來約束（`module` 名稱本身也是
+    這次回應才決定的），這個欄位仍然只能依賴 `_assemble_module_drafts()`
+    既有的事後驗證（見 04a 四章「depends_on 引用不存在的 module 名稱」）。
+    """
+    schema = copy.deepcopy(REDUCE_OUTPUT_SCHEMA)  # 淺拷貝不夠，這裡巢狀結構要整份複製，避免動到共用的模組常數
+    schema["properties"]["modules"]["items"]["properties"]["java_classes"]["items"] = {
+        "type": "string",
+        "enum": valid_class_names,
+    }
+    return schema

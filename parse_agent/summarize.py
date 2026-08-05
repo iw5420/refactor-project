@@ -37,8 +37,8 @@ from parse_agent.llm import DEFAULT_MODEL
 from parse_agent.prompts import (
     MAP_OUTPUT_SCHEMA,
     MAP_SYSTEM_PROMPT,
-    REDUCE_OUTPUT_SCHEMA,
     REDUCE_SYSTEM_PROMPT,
+    build_reduce_output_schema,
 )
 from parse_agent.types import ClassInfo, MapClassResult, MapMethodResult, MethodId, ParsedProject, method_id
 
@@ -121,24 +121,42 @@ def _map_analyze_batch(unit: MapUnit) -> list[MapClassResult]:
         MapClassResult(
             class_name=entry["class_name"],
             summary=entry["summary"],
-            methods=[
-                MapMethodResult(
-                    _normalize_method_name(m["method_name"], known_methods_by_class.get(entry["class_name"], set())),
-                    m["description"],
-                    m["complexity"],
-                )
-                for m in entry["methods"]
-            ],
+            methods=_normalize_class_methods(entry, known_methods_by_class.get(entry["class_name"], set())),
             cross_group_dependency_hints=entry["cross_group_dependency_hints"],
         )
         for entry in result["classes"]
     ]
 
 
+def _normalize_class_methods(entry: dict, known_names: set[str]) -> list[MapMethodResult]:
+    """對單一 class 的 Map 回應逐筆呼叫 `_normalize_method_name()`，回傳
+    值為 `None`（完全對不上這個 class 任何真實方法，見該函式 docstring）
+    的項目直接不進最終清單——這個名稱在 javalang 掃描出的真實方法集合
+    裡不存在（常見成因：LLM 把建構子當成方法回報，如 `AuthException`／
+    `ExamException` 這類只有多載建構子、沒有一般方法的例外類別），留著
+    它只會讓 `module_list.methods` 混進一筆永遠對不到任何 Java 方法的
+    幽靈記錄——③ 架構設計 Agent 的 `_build_method_contexts()` 找不到
+    對應方法只能整批略過（05a 六章「已知限制」），[P] Plan Agent 依
+    04a 六章「以完整方法清單為準」拆 task 時也會對著這筆不存在的方法
+    產生一個永遠做不完的 task。比照 04a 五章「多連、少排除」精神在
+    method_id 這層的做法——那裡「連」的前提是候選確實可能是真實依賴；
+    這裡的情況相反，一個 method_name 完全不在 javalang 權威來源的方法
+    集合裡，不是「不確定要不要留」，是「確定這個方法不存在」，因此
+    這裡改成「明確無效就排除」，跟呼叫圖那邊的保守方向並不矛盾。
+    """
+    normalized: list[MapMethodResult] = []
+    for m in entry["methods"]:
+        name = _normalize_method_name(m["method_name"], known_names)
+        if name is None:
+            continue
+        normalized.append(MapMethodResult(name, m["description"], m["complexity"]))
+    return normalized
+
+
 _METHOD_NAME_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 
-def _normalize_method_name(raw_name: str, known_names: set[str]) -> str:
+def _normalize_method_name(raw_name: str, known_names: set[str]) -> str | None:
     """Map 階段回傳的 `method_name` 理論上應該原樣抄自輸入原始碼（見
     `prompts.MAP_SYSTEM_PROMPT`「method_name：原樣抄方法名稱」），但一個
     class 內有同名多載方法時（如兩個 `voice`，一個 `@PostMapping`、一個
@@ -152,9 +170,17 @@ def _normalize_method_name(raw_name: str, known_names: set[str]) -> str:
 
     這裡在合併回 `MapMethodResult` 之前正規化：原樣名稱若不在這個 class
     實際宣告的方法名稱集合（`known_names`，來自 javalang 掃描結果，權威
-    來源）裡，嘗試剝掉結尾的括號後綴再比對一次；還是對不上就保留原樣，
-    只記警告，不強行猜測（呼應 04a 三章「多連、少排除」同一種保守精神：
-    正規化不到就不動，讓下游該排除的排除，不偽造一個可能是錯的名稱）。
+    來源）裡，嘗試剝掉結尾的括號後綴再比對一次。
+
+    **兩種情況的處理刻意不同**：多載消歧後綴剝掉後能對上，代表這就是
+    一個真實存在的方法，只是名稱被模型加了註記，正規化回真實名稱即可。
+    但剝掉後綴仍然對不上任何真實方法時（`known_names` 是 javalang 掃描
+    出的權威來源，不是猜測），代表這個 `method_name` 根本不對應這個
+    class 的任何真實方法——最常見的成因是模型把建構子（javalang 不會把
+    建構子算進 `class_decl.methods`）誤報成方法。這種情況不是「正規化不
+    出正確名稱」，是「這筆方法本身就不存在」，因此回傳 `None`，由呼叫端
+    （`_normalize_class_methods()`）直接排除這筆記錄，不讓一個確定不存在
+    的方法混進 `module_list.methods`（見該函式 docstring）。
     """
     if raw_name in known_names:
         return raw_name
@@ -169,12 +195,13 @@ def _normalize_method_name(raw_name: str, known_names: set[str]) -> str:
         return stripped
     logger.warning(
         "Map 回應的 method_name %r 在對應 class 的實際方法清單中找不到"
-        "（剝掉消歧後綴後仍對不上），可能導致對應的 endpoint 從 "
-        "api_to_python_target 消失，請人工核對: 已知方法清單=%s",
+        "（剝掉消歧後綴後仍對不上，常見成因是模型把建構子誤報成方法），"
+        "判定這筆方法不存在，已從 module_list 排除，不需要人工介入"
+        "（見 _normalize_method_name() docstring）: 已知方法清單=%s",
         raw_name,
         sorted(known_names),
     )
-    return raw_name
+    return None
 
 
 def _run_map_batch(units: list[MapUnit]) -> tuple[list[MapClassResult], list[MapUnit]]:
@@ -256,9 +283,17 @@ def _reduce_phase(map_results: list[MapClassResult], controller_deps: dict[str, 
     """單次呼叫，輸入是 4a+4b 全部 Map 結果的彙整（濃縮後的候選結果，
     非原始碼全量，見 04a 四章 Reduce 階段）+ 程式算好的
     controller_dependencies 事實（見 04a 四章「這也是程式算出的精確
-    事實」）。回傳 REDUCE_OUTPUT_SCHEMA 的原始 dict，組裝成 ModuleInfo
-    是 7.3 的事，這裡只負責呼叫。
+    事實」）。回傳 output schema 的原始 dict，組裝成 ModuleInfo 是 7.3
+    的事，這裡只負責呼叫。
+
+    **`java_classes` 用動態 enum 約束，不是靜態 `REDUCE_OUTPUT_SCHEMA`**：
+    `map_results` 涵蓋的 class_name 集合在呼叫這次 Reduce 之前就已經
+    確定（Map 階段已經跑完），是封閉集合，透過 `build_reduce_output_
+    schema()` 把這個集合灌進 schema 的 `enum`，讓 API 在生成階段就不
+    可能吐出集合外的 class 名稱——見 `prompts.build_reduce_output_
+    schema()` docstring「為什麼用 schema 約束、不只靠 prompt 指令」。
     """
+    valid_class_names = sorted({r.class_name for r in map_results})
     payload = {
         "classes": [
             {
@@ -282,7 +317,7 @@ def _reduce_phase(map_results: list[MapClassResult], controller_deps: dict[str, 
         return call_claude_for_json(
             system_prompt=REDUCE_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            schema=REDUCE_OUTPUT_SCHEMA,
+            schema=build_reduce_output_schema(valid_class_names),
             model=DEFAULT_MODEL,
         )
     except LlmJsonError as exc:
@@ -298,15 +333,16 @@ def _reduce_phase(map_results: list[MapClassResult], controller_deps: dict[str, 
 # --------------------------------------------------------------------------
 #
 # 為什麼需要 `_ModuleDraft` 這個中繼結構：`graph/state.py` 的 `MethodInfo`
-# 只有 `java_method`／`description`／`complexity` 三個欄位，沒有
-# `class_name`——這是刻意的，因為 ③ 架構設計 Agent 之後只需要方法層級的
-# 資訊（見 04a 六章）。但 `filter_excluded_methods()`（下方）需要用
-# `method_id`（含 `class_name`／`file_path`）判斷是否落在 `skip_filter`
-# 算出的排除集合裡，如果直接組成 `MethodInfo` 就把 `class_name` 弄丟了，
-# 之後就無法正確比對。因此組裝分兩步：先組出保留 `class_name` 的內部
+# 含 `class_name`（供 ③ 架構設計 Agent 重新掃描 Java 簽名時，把方法描述
+# 比對回正確的類別——同一 module 內跨層同名方法會歧義，見 05a 二章），但
+# 沒有 `file_path`：`file_path` 已經由 `ModuleInfo.java_files` 在模組層級
+# 提供，方法層級不需要重複帶。但 `filter_excluded_methods()`（下方）需要
+# 用 `method_id`（含 `class_name`／`file_path`）判斷是否落在 `skip_filter`
+# 算出的排除集合裡，如果直接組成 `MethodInfo` 就沒有 `file_path` 可用，
+# 之後就無法正確比對。因此組裝分兩步：先組出額外保留 `file_path` 的內部
 # 草稿 `_ModuleDraft`，排除計算跟 `assemble_api_mapping()`（同樣需要
-# `class_name`）都在草稿階段完成，最後才用 `finalize_module_list()`
-# 剝除 `class_name`、產出真正符合 `ModuleInfo` 型別的公開輸出。
+# `file_path`）都在草稿階段完成，最後才用 `finalize_module_list()`
+# 剝除 `file_path`、產出真正符合 `ModuleInfo` 型別的公開輸出。
 
 
 @dataclass(frozen=True)
@@ -395,6 +431,7 @@ def _assemble_module_drafts(
                         file_path=project.classes[cls].file_path,
                         method=MethodInfo(
                             java_method=m.method_name,
+                            class_name=cls,
                             description=m.description,
                             complexity=m.complexity,  # type: ignore[typeddict-item]
                         ),
@@ -538,10 +575,11 @@ def assemble_api_mapping(
 
 
 def finalize_module_list(drafts: list[_ModuleDraft]) -> list[ModuleInfo]:
-    """剝除 `_ModuleDraft` 只有內部組裝過程需要的 `class_name`／
-    `file_path`，產出符合 `graph/state.py` `ModuleInfo` 型別的最終輸出。
-    必須在 `filter_excluded_methods()`／`assemble_api_mapping()` 都跑完
-    之後才呼叫——這兩者都依賴草稿階段保留的 `class_name`。
+    """剝除 `_ModuleDraft` 只有內部組裝過程需要的 `file_path`，產出符合
+    `graph/state.py` `ModuleInfo` 型別的最終輸出（`class_name` 已經在
+    `dm.method` 裡，不需要額外剝除，見本節前言）。必須在
+    `filter_excluded_methods()`／`assemble_api_mapping()` 都跑完之後才
+    呼叫——這兩者都依賴草稿階段保留的 `file_path`。
     """
     return [
         ModuleInfo(

@@ -16,10 +16,13 @@
      ↓                 （collection_readonly + collection_mutation；人工填值/skip 關卡在此定案，見 03a）
 ① 解析 Agent         → 輸出：模組清單 + 業務邏輯文件 + API 對應表（skip 呼叫鏈排除需讀取上一步已定案的 skip 清單，見 04a）
      ↓
-② 測試 Agent         → 【Harness 錄製端】對 Java 服務執行 Postman，記錄 golden output
-     ↓
-③ 架構設計 Agent     → 輸出：Python 專案結構（技術棧採用已定案的 FastAPI+SQLAlchemy）+ 模組 interface + route_to_file_mapping
-     ↓
+  ┌──┴──────────────────────────┐  ← 可平行執行（② 不依賴③的輸出，③ 不依賴 golden_output，兩者互不相依，見 05a 十一章）
+② 測試 Agent                   ③ 架構設計 Agent
+（Harness 錄製端，對 Java       （輸出：Python 專案結構，技術棧採用
+ 服務執行 Postman，記錄          已定案的 FastAPI+SQLAlchemy，
+ golden output）                 + 模組 interface + route_to_file_mapping）
+  └──────────┬───────────────────┘
+             ↓
   ┌──┴──────────────────┐  ← 可平行執行
 [P] Plan Agent          ④ 骨架實作 Agent
  （產出 task list）       （建立目錄與骨架）
@@ -44,7 +47,7 @@
 | [B] Collection Agent | 將 OpenAPI 轉換為兩份 Postman Collection（含人工填值/skip 關卡，skip 清單在此定案） | `03a_spec_collection_agent_architecture.md` |
 | ① 解析 Agent | 解析 Java 專案，輸出模組清單、業務邏輯摘要、API 對應表；skip 呼叫鏈排除消費上一步的 skip 清單 | `04a_parse_agent_architecture.md` / `04b_parse_agent_code.md` |
 | ② 測試 Agent（Harness 錄製端） | 對 Java 服務執行 Postman，記錄 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
-| ③ 架構設計 Agent | 輸出 Python 專案結構、模組 interface、route_to_file_mapping | `05a_design_agent_architecture.md` / `05b_design_agent_code.md`（待建立） |
+| ③ 架構設計 Agent | 輸出 Python 專案結構、模組 interface、route_to_file_mapping | `05a_design_agent_architecture.md` / `05b_design_agent_code.md` |
 | [P] Plan Agent | 產出 Agent ⑤ 的 task list | `06a_plan_agent_architecture.md` / `06b_plan_agent_code.md`（待建立） |
 | ④ 骨架實作 Agent | 建立目錄與骨架（呼叫 translator-cli「骨架生成模式」） | `08a_scaffold_agent_architecture.md` / `08b_scaffold_agent_code.md`（待建立，介面定義見 `07a_translator_cli_architecture.md`） |
 | ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md`（待建立，介面定義見 `07a_translator_cli_architecture.md`） |
@@ -58,7 +61,7 @@
 1. **Harness（02）**：程式碼先寫完，其中不依賴外部服務的純邏輯模組（Masker、DiffEngine、RouteMapper 等）可以先用假資料單元測試
 2. **[A] Spec Agent / [B] Collection Agent（03）**：儘快接上，讓 Harness 的錄製端（Agent ②）能吃到真實 Postman Collection、對真實 Java 服務做完整驗證，不用一直依賴手動準備的替代資料
 3. **① 解析 Agent（04）**：輸出模組清單，是 ③ 的必要輸入，緊接著 1、2 做。① 的 skip 呼叫鏈排除（見 04a 五章）需要讀取 [B] Collection Agent 產出的 `postman/unfilled_endpoints.json`（skip 清單在人工填值關卡定案，見 03a），這是硬性輸入依賴，因此執行期 graph 也把 ① 排在 [A]/[B] 之後（見一章流程圖）
-4. **③ 架構設計 Agent（05）**：依賴 ① 的模組清單，輸出「檔案相對路徑＋函式簽名」層級的 interface 定義——這是 ④／⑤ 唯一的權威規格，必須盡早產出，不能拖到最後才做，否則 ④／⑤ 即使工具都備妥也無事可做
+4. **③ 架構設計 Agent（05）**：依賴 ① 的模組清單，輸出「檔案相對路徑＋函式簽名」層級的 interface 定義——這是 ④／⑤ 唯一的權威規格，必須盡早產出，不能拖到最後才做，否則 ④／⑤ 即使工具都備妥也無事可做。③ 不依賴 ② 的 `golden_output`（見 05a 十一章），執行期 graph 讓 ②／③ 在 ① 完成後平行執行（見一章流程圖），縮短關鍵路徑，開發順序上兩者也可各自獨立推進，不互相卡進度
 5. **[P] Plan Agent（06）**：依賴 ① ＋ ③ 的輸出，拆解 Agent ⑤ 的 task list
 6. **translator-cli（07）**：與 3～5 沒有直接資料相依（介面契約不需要真實函式簽名就能設計），可平行開發；但完整驗證填空契約是否設計對，要等 ③ 的真實輸出穩定後才能做，建議排在 ④／⑤ 開始前的最後一步收斂
 7. **④ 骨架實作 Agent（08）＋ ⑤ 功能改寫 Agent（09）**：兩者都直接呼叫 translator-cli，且 ⑤ 的輸入是 [P] 的 task list，要等 3～6 都就緒才能真正跑起來
@@ -106,8 +109,9 @@ Orchestrator 是**純 Python 程式邏輯，不是 Agent**。
 
 - **Web 框架**：FastAPI
 - **ORM**：SQLAlchemy
+- **Python 版本**：≥ 3.10——③ 的型別對應（Java `Optional<T>` → `T | None`、OpenAPI schema 非必填欄位 → `X | None`，見 `05a_design_agent_architecture.md` 五章）用的是 PEP 604 union 語法，這個語法需要執行環境 ≥ 3.10 才能在執行期直接求值成功（Pydantic 建立 model class 時會需要真的求值型別註記，不是只在型別檢查工具裡才用得到）。Orchestrator 本身已經跑在 3.13（見 `03c_collection_agent_code.md` 對 `match`／`case` 的備註），這裡是另外對**目標 Python 服務**執行環境的明確要求，不能只憑 Orchestrator 的版本推論。
 
-這兩項由 Agent ③ 在設計 Python 專案結構時直接採用，不再由 Agent ③ 於每次執行時重新判斷。
+這三項由 Agent ③ 在設計 Python 專案結構時直接採用，不再由 Agent ③ 於每次執行時重新判斷。
 
 ### 程式碼執行工具：translator-cli（自製）
 
@@ -174,7 +178,7 @@ LangGraph 呼叫本地模型完成程式碼填寫的橋接工具，取代通用�
   ├── refactor-project/          ← Python orchestrator
   └── lang-exam-api-refactor/    ← Java 專案的複製版，專門給這次重構用
   ```
-  對應 `RefactorState.java_project_path`（① 解析 Agent、Agent A 都只需要這一個檔案系統路徑），`main.py` 組裝 `initial_state` 時讀 `.env` 的 `JAVA_PROJECT_PATH`（相對或絕對路徑皆可，如 `../lang-exam-api-refactor`），不寫死在程式碼裡——完整理由與目錄慣例見 `02a_harness_architecture.md` 十章。
+  對應 `RefactorState.java_project_path`（① 解析 Agent、Agent A、③ 架構設計 Agent 都只需要這一個檔案系統路徑——③ 對 `module_list.java_files` 做輕量簽名再掃描時需要直接讀取，見 `05a_design_agent_architecture.md` 四章），`main.py` 組裝 `initial_state` 時讀 `.env` 的 `JAVA_PROJECT_PATH`（相對或絕對路徑皆可，如 `../lang-exam-api-refactor`），不寫死在程式碼裡——完整理由與目錄慣例見 `02a_harness_architecture.md` 十章。
 - 在 `pom.xml` 加入 `springdoc-openapi-ui 1.7.0` 依賴（**保留作為長期文件用途，不在產出 Collection 後移除**）——目前 Java 專案是 **Spring Boot 2.7.11**，springdoc-openapi v1.7.0 是最後一版支援 Spring Boot 2.x／1.x 的 OSS 版本；`springdoc-openapi-starter-webmvc-ui` 這個 artifact 是給 Spring Boot 3.x（Jakarta EE 9、Java 17+）用的，兩者不可互換，用錯會導致 `UnsupportedClassVersionError`（class file 版本不符）
 - 啟動方式：**直接 `java -jar` 執行已打包的 jar**，不需 Maven build（加入上述依賴後需先重新 `mvn package` 一次，之後才是單純 `java -jar`）
 - `fixtures/seed.sql`：**已完成**，手動撰寫的可重複套用 INSERT 腳本（非 `pg_dump` 匯出格式），供 Harness 每次驗證前 truncate + 重灌用
@@ -231,7 +235,7 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 ### Claude API 呼叫用量記錄（成本稽核）
 
-背景：`[B] Collection Agent` 的 FILL 曾經因為 seed.sql 表名比對 bug，讓單次呼叫悄悄帶了 17 萬 token 的 context，事後只能靠帳戶餘額變化間接猜測，無法精確定位是哪個 Agent、哪個函式呼叫造成的（詳見 `03_spent_cost_estimate.md`）。往後任何 Agent（不限於 ①③⑦、[P]、[B] 現有這幾個）只要呼叫 Claude API，都必須記錄用量，不能只驗證輸出對不對，不驗證花了多少。
+任何 Agent（不限於 ①③⑦、[P]、[B] 現有這幾個）只要呼叫 Claude API，都必須記錄用量，不能只驗證輸出對不對，不驗證花了多少。
 
 - **共用工具**：`common/llm_usage_logger.py` 提供 `log_usage(response, *, model)`，所有 Claude API 呼叫點（各 Agent 各自的 LLM 呼叫函式）呼叫 API 之後、回傳結果之前，直接呼叫這個函式一次，不需要自己組 log 格式。
 - **呼叫端不必手動標記自己是誰**：`log_usage()` 內部用 `inspect.stack()[1]` 抓呼叫端所在的檔名＋函式名稱（例如 `value_filler.fill_example_values`），自動組出「哪個 Agent、哪個 function」，避免每個呼叫點手動填標籤、日後改名或搬檔案時忘記同步更新而失準。前提：`log_usage()` 必須在實際呼叫 `messages.create()` 的函式內**直接**呼叫，不能包一層中間函式再轉呼叫，否則抓到的會是中間層、不是真正的呼叫端。
@@ -262,6 +266,13 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 - `common/chunking.chunk_by_char_budget(items, size_of, budget) -> list[list[items 的型別]]`：唯一對外函式，`size_of` 是呼叫端提供的「單一項目怎麼算字元數」函式，`budget` 是門檻值
 - 門檻值本身（多少字元、用哪個環境變數）仍由各 Agent 自己決定（如 `SPEC_COLLECTION_AGENT_MAP_CHUNK_CHARS`／`PARSE_AGENT_MAP_CHUNK_CHARS`），`common/chunking.py` 不知道、也不需要知道這些環境變數命名慣例——跟 `common/llm_client.py` 不代為決定「沒指定模型時退回什麼」是同一種分工原則
 - [B]、① 需要依字元預算切批次時直接呼叫這個函式，不各自重新寫迴圈
+
+### OpenAPI `$ref` 展開（共用工具）
+
+`[B] Collection Agent`（見 03a）與 `③ 架構設計 Agent`（見 05a 五章）都需要對 `openapi_spec` 的 operation/schema 片段做同一件事：遞迴展開 `$ref`，只展開這次任務相關的片段（不整包攤平 `components.schemas`），遞迴展開到底，不處理 `allOf`／`oneOf`／`anyOf` 組合語法。跟前兩節同一種情況——兩個 Agent 需要的是同一份機械邏輯，不是恰好想法一致，因此集中到 `common/openapi_ref_resolver.py`：
+
+- `common/openapi_ref_resolver.resolve_refs(fragment: dict, full_spec: dict) -> dict`：唯一對外函式，`fragment` 是呼叫端已取出的 operation/schema 片段，`full_spec` 是完整 `openapi_spec`（供 JSON Pointer 解析用）
+- **現況**：`③` 是第一個直接對齊這個共用介面的 Agent；`[B]`（03a/03c）目前仍是 `spec_collection_agent` 內部各自的展開實作，尚未遷移過去共用，屬於已知的技術債，見 `05a_design_agent_architecture.md` 十三章待決定事項
 
 ---
 
@@ -379,7 +390,7 @@ Agent 間使用結構化 JSON 傳遞，不使用自然語言，避免資訊失�
 
 ### Agent ① 輸出：模組清單
 
-每個模組記錄 Java 原始檔路徑、對應的 Python 目標檔路徑、所屬 module 名稱（對應 `fixtures/golden/` 子目錄）、依賴的其他模組、方法清單（Java 方法名、Python 方法名、描述、複雜度）。API 對應表另記錄 endpoint、HTTP method、Java Controller、Python 目標檔、所屬 module；schema 資訊不在此處，由 Agent A 提供。
+每個模組記錄 Java 原始檔路徑、所屬 module 名稱（對應 `fixtures/golden/` 子目錄）、依賴的其他模組、方法清單（Java 方法名、所屬 class、描述、複雜度）。API 對應表另記錄 endpoint、HTTP method、Java Controller、所屬 module；schema 資訊不在此處，由 Agent A 提供。**不含 Python 目標檔路徑／Python 方法名**——Java → Python 的檔案/函式對應由 Agent ③ 的 `python_structure.interfaces` 決定，① 不產出這份對應，見 04a 六章、05a 二～九章。
 
 ### [P] Plan Agent 的 task list
 
@@ -411,7 +422,6 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 ## 十、待決定事項
 
 - [ ] translator-cli 的 git commit 顆粒度與平行寫入的鎖機制，細節待 `07a_translator_cli_architecture.md` 定案
-- [ ] `graph/builder.py`／`main.py` 的 node 順序尚未同步一章流程圖與 `01_langgraph_architecture.md` 四、五章定案的「[A]→[B]→①→②→③」順序（目前程式碼仍以 `parse` 為 entry point，排在 `extract_spec`／`gen_collection` 之前），需修正 `builder.set_entry_point` 與相關 `add_edge`
 
 ---
 

@@ -5,13 +5,12 @@
 輸出：module_list, api_to_python_target
 見 04a_parse_agent_architecture.md、04b_parse_agent_code.md
 
-排在 gen_collection（[B] Collection Agent 階段二）之後、record_tests
-（② 測試 Agent）之前，見 04a 二章、01 五章「parse（① 解析 Agent）排在
-[B] 之後」；graph/builder.py 目前的 node 順序尚未同步這個編排（見
-00 十章「已知落差」），本檔案的 run() 函式本身不受影響，只是還沒被排在
-正確的位置上呼叫。這個順序同時也是 openapi_spec 一定已經在 state 裡的
-前提——parse 排在 extract_spec（[A]）之後，state["openapi_spec"] 這時
-必定已經填好。
+排在 gen_collection（[B] Collection Agent 階段二）之後，見 04a 二章、
+01 五章「parse（① 解析 Agent）排在 [B] 之後」；這個順序同時也是
+openapi_spec 一定已經在 state 裡的前提——parse 排在 extract_spec（[A]）
+之後，state["openapi_spec"] 這時必定已經填好。parse 完成後平行觸發
+record_tests（②）與 design（③），③ 需要 module_list／api_to_python_target
+（本節點的輸出）＋ openapi_spec 才能設計 Python 結構，見 05a 二章。
 """
 from __future__ import annotations
 

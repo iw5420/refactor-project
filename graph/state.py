@@ -5,6 +5,8 @@ import operator
 # ── Agent ① 輸出的子型別 ──────────────────────────────
 class MethodInfo(TypedDict):
     java_method: str
+    class_name: str        # 所屬 Java class，供 ③ 重新掃描簽名時比對回正確的類別
+                            # （同一 module 內跨層同名方法會歧義，見 05a 二章）
     description: str
     complexity: Literal["low", "medium", "high"]
 
