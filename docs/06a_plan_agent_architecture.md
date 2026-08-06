@@ -84,12 +84,12 @@ Harness 端 `get_module()` 與 `ModuleInfo.module` 之間過去確實存在既�
 
 | 欄位 | 說明 |
 |---|---|
-| `file_path`／`class_name`／`function_name` | 原樣抄回輸入，供核對完整性用，做法比照 04a 四章 Map 階段的 `class_name` 核對 |
+| `file_path`／`class_name`／`function_name` | 原樣抄回輸入，供核對完整性用，做法比照 04b 七章 7.1 `_map_analyze_batch()` 的 `class_name` 核對 |
 | `description` | 整合對應 Java method 業務邏輯後，給 translator-cli 的任務描述 |
 | `context` | 補充依賴關係／邊界條件文字 |
 | `referenced_interfaces` | 這個函式業務邏輯上會呼叫到的其他 interface（同 module 或依賴 module 皆可），每筆用 `file_path`／`class_name`／`function_name` 三元組標示；查無業務關聯時為空陣列 |
 
-**核對規則**：回應的 `(file_path, class_name, function_name)` 集合必須與輸入的 `interfaces` 集合完全一致，缺漏視同呼叫失敗（比照 04a 7.1 `_map_analyze_batch()`「核對到遺漏時視同呼叫失敗」，不放行不完整結果）。`referenced_interfaces` 若指向不存在的 `(file_path, class_name, function_name)` 組合（LLM 虛構或拼錯），六／七章組裝時一律過濾並記警告，不中止（比照 04a 7.3 `_assemble_module_drafts()` 對 `depends_on`／`java_classes` 的既有驗證方式）。
+**核對規則**：回應的 `(file_path, class_name, function_name)` 集合必須與輸入的 `interfaces` 集合完全一致，缺漏視同呼叫失敗（比照 04b 7.1 `_map_analyze_batch()`「核對到遺漏時視同呼叫失敗」，不放行不完整結果）。`referenced_interfaces` 若指向不存在的 `(file_path, class_name, function_name)` 組合（LLM 虛構或拼錯），六／七章組裝時一律過濾並記警告，不中止（比照 04b 7.3 `_assemble_module_drafts()` 對 `depends_on`／`java_classes` 的既有驗證方式）。
 
 **失敗處理**：比照 05a 六章——單一 module 失敗列入待重試清單，這一輪其餘 module 跑完後等待 5 分鐘統一重試一次；仍失敗中止整條 `plan` run（理由同 05a：`task_list` 是⑤唯一輸入，任一 module 的 task 缺失會讓涵蓋率保證失效，風險遠高於重新執行一次）。
 
@@ -124,8 +124,11 @@ Harness 端 `get_module()` 與 `ModuleInfo.module` 之間過去確實存在既�
 | 五章 `referenced_interfaces` 對應的 `file_path` | 不論同 module 或跨 module，機械查表取得（同 module 的還會反映進六章 `depends_on`；跨 module 的只反映在這裡） | 機械查表，[P] 不重新判斷「要不要納入」——LLM 已在五章判斷過業務關聯性 |
 | 本 module 的 `schemas/{module}.py`（若存在） | `directory_tree` 是否有這個檔案的 Schema 定義段（見 05a 三章格式慣例） | 機械：這個 task 屬於 `routers` 或 `services` 層（見四章判定）且該檔案存在時一律加入，不細究具體用到哪幾個欄位——`services` 層之所以也納入，是因為它經常直接收發 router 傳下來的同一組 Pydantic model（05a 五章型別對應表本身也承認「專案內自訂 class 的實際定義由 schemas／models／service 回傳型別決定」，無法從型別字串機械判斷歸屬），呼應 04a／05a 反覆出現的「多連、少排除」保守精神 |
 | 本 module 的 `models/{module}.py` | 無條件（見下方說明） | 機械：這個 task 屬於 `services` 或 `repositories` 層時一律加入，不做存在性判斷 |
+| 跨 module 的 `referenced_interfaces` 所屬外部 module 的 `schemas/{module}.py`／`models/{module}.py` | 隨 `referenced_interfaces` 附帶判定（若存在） | 機械：比照上兩列「本 module」的規則，只是套用在 `referenced_interfaces` 指向的外部 module 身上——依**外部介面自身所在層級**判定：該外部介面屬 `routers`／`services` 層 → 一併加入外部 module 的 `schemas/{module}.py`（存在性判斷同上）；屬 `services`／`repositories` 層 → 一併加入外部 module 的 `models/{module}.py`（無條件同上）|
 
 **`models/{module}.py` 為什麼是無條件加入，不是比照 `schemas` 做存在性判斷**：`schemas/{module}.py` 只在 `modules_with_schema_file` 集合裡的 module 才會真的產出（05a 六章、05b「已驗證」段），需要先判斷存不存在，否則會指向一個 directory_tree 裡不存在的幽靈檔案（05a 八章）；`models/{module}.py` 則是**每個 module 都無條件產出**的 SQLAlchemy ORM 佔位檔案（05a 三章、05b 十一章「目錄結構段涵蓋 schemas／models」已驗證：`app/models/{module}.py` 對 `all_module_names` 全部列出，不像 schemas 有子集限制），沒有幽靈檔案風險，不需要額外判斷。`repositories` 層方法幾乎必然回傳／查詢 ORM entity（00 六章例子本身就是「實作 `UserRepository.get_by_id()` 時，只需傳入 `user_repository.py` 和 `user.py`」——這裡的 `user.py` 就是 model 檔案），`services` 層則經常直接處理 repository 回傳的 entity，兩層都納入。`routers` 層不納入 `models`：router 層方法的 `params`／`return_type` 依 05a 五章「API 邊界方法改用 openapi_spec 覆寫」規則，改用 `schemas`（Pydantic）而非 Java entity 型別，不應該直接碰觸 ORM model。⑤若仍因缺檔案而生成錯誤，交給 module 局部驗證與⑦ Debug Agent 的既有回饋機制處理（02a 十三章），不在 [P] 這一步窮舉解決。
+
+**為什麼「本 module」的兩列規則要延伸到跨 module 的 `referenced_interfaces`**：本 module 的規則只保證「這個 task 自己所屬 module 的型別定義都在 context 裡」，但 `referenced_interfaces` 跨 module 時，目前只帶入外部介面的**函式簽名檔**（如 `services/order_service.py`），不含簽名裡型別（如回傳的 `OrderResponse`）實際定義在哪個檔案——本機模型看得到「呼叫這個函式會拿到 `OrderResponse`」，卻看不到 `OrderResponse` 有哪些欄位，容易對欄位存取產生幻覺或誤用。這與 00 六章「只需傳入 `user_repository.py` 和 `user.py`」的既有配對邏輯是同一件事，只是延伸到跨 module 的情境，不是新增的判斷原則。
 
 ---
 
@@ -145,7 +148,7 @@ class TaskSpec(TypedDict):
 
 **`id` 產生規則**：全部 task 依「module（依 `module_list` 原始順序）→ 層級（`repositories`／`services`／`routers`）→ `function_name` 字母序」的固定全序（即六章防環規則用的同一套全序）依序編號 `task_{:03d}`——沿用同一套排序，除了編號穩定、可重現（同一份輸入重跑會產生同樣的 id 分配，方便除錯與比對），也不需要為編號另外設計第二套排序邏輯。
 
-**涵蓋率驗證（機械，收尾步驟）**：`task_list` 產出後，驗證每個 `InterfaceSpec` 都被恰好一個 task 認領（`target_files[0]` 對應到的 `file_path`／`class_name`／`function_name` 三元組覆蓋 `python_structure.interfaces` 全集，且無重複認領）。任何缺漏或重複視為 [P] 自己組裝邏輯的 bug，直接拋出中止——不是需要人工判斷的模糊情況，是程式該保證但沒保證到的不變量。
+**涵蓋率驗證（機械，收尾步驟）**：`task_list` 產出後，驗證每個 `InterfaceSpec` 都被恰好一個 task 認領——組裝階段的內部草稿仍保有五章原樣抄回的 `file_path`／`class_name`／`function_name` 三元組，據此核對是否恰好覆蓋 `python_structure.interfaces` 全集且無重複認領；最終序列化進 `TaskSpec.target_files[0]` 的只是其中的 `file_path`，`class_name`／`function_name` 不落地進最終輸出。任何缺漏或重複視為 [P] 自己組裝邏輯的 bug，直接拋出中止——不是需要人工判斷的模糊情況，是程式該保證但沒保證到的不變量。
 
 ---
 

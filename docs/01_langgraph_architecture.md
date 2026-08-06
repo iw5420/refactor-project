@@ -462,9 +462,13 @@ class ModuleScheduler:
         # 從 task_list 的 target_files 彙整，而不是 module_list 的檔名——① 的檔名只是猜測，
         # ③ 可能整個改寫；task_list.target_files 必須是 python_structure.interfaces 中已存在的
         # file_path，才是這個時間點真正權威的檔案路徑來源（見 04a 六章）。
+        # 只取 target_files[0]：這是 translator-cli 實際寫入的唯一目標檔案，target_files 其餘
+        # 元素只是唯讀 context（referenced_interfaces、跨 module 的 schemas/models，見 06a 七章），
+        # 若整份 target_files 都算「擁有」，會把只是讀取過的其他 module 檔案誤判成這個 module 名下，
+        # 造成不相干 module 的偽 regression。
         self.module_owned_files: dict[str, set[str]] = {}
         for module, tasks in self.tasks_by_module.items():
-            self.module_owned_files[module] = {f for t in tasks for f in t["target_files"]}
+            self.module_owned_files[module] = {t["target_files"][0] for t in tasks}
 
         self._backfill_missing_task_deps()
 
@@ -622,8 +626,10 @@ async def run(state: RefactorState) -> RefactorState:
 
             # regression 偵測：這次寫入的檔案若落在別的已驗證 module 名下，
             # 把該 module 打回 needs_reverify，強制重驗，而不是等到全量測試才發現。
+            # 只傳 target_files[0]（實際寫入目標），不是整份 target_files——
+            # 其餘元素是唯讀 context，task 並沒有真的寫入那些檔案，理由同上方 module_owned_files 註解。
             if result.success:
-                for regressed in scheduler.check_upstream_regression(task["target_files"], skip_module=task["module"]):
+                for regressed in scheduler.check_upstream_regression([task["target_files"][0]], skip_module=task["module"]):
                     scheduler.flag_for_reverify(regressed)
 
         # 一般完工觸發的局部驗證

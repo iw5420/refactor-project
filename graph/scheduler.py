@@ -35,9 +35,13 @@ class ModuleScheduler:
         # ① 的檔名只是猜測，③ 架構設計 Agent 可能整個改寫；task_list.target_files
         # 必須是 python_structure.interfaces 中已存在的 file_path（見 graph/state.py
         # TaskSpec 註解），才是這個時間點真正權威的檔案路徑來源。
+        # 只取 target_files[0]：這是 translator-cli 實際寫入的唯一目標檔案，target_files 其餘
+        # 元素只是唯讀 context（referenced_interfaces、跨 module 的 schemas/models，見 06a 七章），
+        # 若整份 target_files 都算「擁有」，會把只是讀取過的其他 module 檔案誤判成這個 module 名下，
+        # 造成不相干 module 的偽 regression。
         self.module_owned_files: dict[str, set[str]] = {}
         for module, tasks in self.tasks_by_module.items():
-            self.module_owned_files[module] = {f for t in tasks for f in t["target_files"]}
+            self.module_owned_files[module] = {t["target_files"][0] for t in tasks}
 
         self._backfill_missing_task_deps()
 

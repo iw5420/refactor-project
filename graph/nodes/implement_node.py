@@ -90,9 +90,11 @@ async def run(state: RefactorState) -> RefactorState:
             touched_modules.add(task["module"])
             (completed if result["success"] else failed).append(task["id"])
 
-            # regression 偵測
+            # regression 偵測：只傳 target_files[0]（實際寫入目標），不是整份 target_files——
+            # 其餘元素是唯讀 context，task 並沒有真的寫入那些檔案，理由見 graph/scheduler.py
+            # module_owned_files 註解。
             if result["success"]:
-                for regressed in scheduler.check_upstream_regression(task["target_files"], skip_module=task["module"]):
+                for regressed in scheduler.check_upstream_regression([task["target_files"][0]], skip_module=task["module"]):
                     scheduler.flag_for_reverify(regressed)
 
         # 一般完工觸發的局部驗證

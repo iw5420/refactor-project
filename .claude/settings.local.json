@@ -238,7 +238,18 @@
       "Bash(python -m py_compile design_agent/exceptions.py design_agent/design.py)",
       "Bash(python \"C:/Users/ace/AppData/Local/Temp/claude/D--test-2026-refactor-project/0b372160-b423-4937-9983-3ddad8308914/scratchpad/verify_coverage_error.py\")",
       "Bash(git show *)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(python -m pytest tests/refactor_harness/ -v)",
+      "Bash(iconv -f utf-8 -t utf-8 /tmp/out.txt)",
+      "Bash(ls -d ../lang-exam-api-refactor 2>/dev/null && echo \"EXISTS\" || echo \"NOT FOUND\"; git log --oneline -- design_agent/design.py | tail -5; echo \"---fixture commit---\"; git log --oneline -- tests/design_agent/fixtures/real_python_structure.json)",
+      "Bash(ANTHROPIC_API_KEY=dummy python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\44055b81-9c10-443d-8e99-0d2d8fdd1907\\\\scratchpad\\\\dry_run_plan_agent.py\")",
+      "Bash(iconv -f cp950 -t utf-8)",
+      "Bash(ANTHROPIC_API_KEY=dummy python -c ' *)",
+      "Bash(ANTHROPIC_API_KEY=dummy python -m pytest -q)",
+      "Bash(python -m pytest --collect-only -q)",
+      "Bash(python -m pytest -q --ignore=refactor_harness/langgraph_nodes/test_nodes.py)",
+      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\11ba446c-31ba-4b23-b023-5e51506c921a\\\\scratchpad\\\\dedupe_fixture.py\")",
+      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\11ba446c-31ba-4b23-b023-5e51506c921a\\\\scratchpad\\\\run_real_plan_agent.py\")"
     ]
   }
 }
