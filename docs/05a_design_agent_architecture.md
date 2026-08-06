@@ -392,7 +392,7 @@ refactor-project/
 - [ ] **03a/03c 遷移至 `common/openapi_ref_resolver.py`**：五章已定案③新增的 `$ref` 展開邏輯直接對齊 `common/openapi_ref_resolver.py` 這個共用介面，但 03a/03c 既有實作尚未搬過去共用，目前是兩份行為相同、程式碼各自獨立的實作——後續應把 03a/03c 改成呼叫同一個 `common` 函式，避免長期維護兩份，不在③本次設計範圍內執行
 - [ ] 無 stereotype 類別的層級歸屬（三章）、框架注入物件轉換（五章）、框架慣例參數注入（七章）這三處「LLM 判斷」的實際 prompt 設計與品質，待接上真實專案輸出後校準
 - [ ] `directory_tree` 的 Schema 定義段／基礎設施段（三章）固定格式在 08a 設計 `generate_scaffold()` 實際解析方式時，需要反向確認本地模型（qwen2.5-coder:32b）對這個格式的辨識穩定度是否足夠，必要時調整 fenced code block 的標記慣例
-- [x] ~~router 層方法目前沒有任何管道把 HTTP method／路徑帶給④~~——**已解決，直接在 `InterfaceSpec` 補兩個 nullable 欄位**：`http_method`／`route_path`（見五章「router 層 API 邊界方法額外帶 http_method／route_path」、九章型別定義），不新開一條 `api_to_python_target` 傳遞管道，也不需要④／07a 自行反查——那樣等於在下游重跑一次③內部「camelCase 轉換＋多載消歧」邏輯。`translator_cli.generate_scaffold(python_structure)` 的既有介面（只吃 `PythonStructure`）因此不需要擴充參數，07a／08a 只需要單純消費 `interfaces` 裡已經帶好的這兩個欄位；`APIRouter(prefix=...)` 或裝飾器完整路徑寫法這類慣例仍是 07a／08a 的決定範圍
+- [x] ~~router 層方法目前沒有任何管道把 HTTP method／路徑帶給④~~——已解決，見五章「router 層 API 邊界方法額外帶 http_method／route_path」與九章型別定義
 
 ---
 
