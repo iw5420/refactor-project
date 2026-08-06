@@ -197,6 +197,8 @@ app/
 
 **路徑／查詢參數**：`operation.parameters` 裡的 path/query 參數，型別直接用其 `schema.type`（走 OpenAPI 型別 → Python 型別的簡單對照，如 `integer`→`int`、`string`→`str`），不需要回頭比對 Java `@PathVariable`/`@RequestParam` 的宣告型別——`openapi_spec` 已經是可信來源。
 
+**router 層 API 邊界方法額外帶 `http_method`／`route_path`**：`InterfaceSpec` 新增兩個 nullable 欄位（見九章），只在這個方法是 router 層的 API 邊界方法時才非 `None`，值直接取自本章「查找方式」已經反查到的 `ApiMapping.http_method`／`ApiMapping.endpoint`——這筆對應在③組出這個 `InterfaceSpec` 的當下就已經算好，不是新的判斷，只是把既有的中繼結果一併寫進輸出。這樣做是為了解決④骨架生成階段的一個既有缺口：`translator_cli.generate_scaffold(python_structure)` 只吃 `PythonStructure`，若不把 HTTP method／路徑帶進 `InterfaceSpec`，④無法知道 router 函式該掛哪個 `@router.get(...)` 裝飾器；改由④／07a 自行拿 `api_to_python_target` 反查也行不通——`ApiMapping` 只到 `(module, java_controller)` 顆粒度，沒有 `function_name`，要配對到具體函式得重跑③內部「camelCase→snake_case＋多載消歧」那套邏輯（見七章「`function_name` 消歧」），等於在下游重新實作一次③已經做過的事。`route_path` 直接是 `ApiMapping.endpoint` 的原始字面值（如 `/api/v1/users/{userId}`），不需要額外轉換——path/query 參數的 `ParamSpec.name` 沿用原始 Java 參數命名、不轉 snake_case（見上方「路徑／查詢參數」），FastAPI 裝飾器裡的 `{userId}` 佔位符因此天然對得上函式參數名稱。多載方法只有 `_select_boundary_overload()`（05b 七章）選中、真正對應這個 endpoint 的那一個多載會帶上這兩個欄位，其餘多載維持 `None`，跟五章其餘欄位（`params`／`return_type`）已有的處理方式一致。`APIRouter(prefix=...)` 或裝飾器要不要寫完整路徑這類慣例，仍是④／08a 的決定範圍，③只保證資料送得到。
+
 ### 框架注入物件：openapi_spec 覆寫的例外
 
 上面「API 邊界方法改以 `openapi_spec` 為準」只涵蓋**業務參數**（path/query/body，也就是 API 契約真正約定的形狀）。Java Controller 方法簽名裡常見的 Spring 框架注入物件——`HttpServletRequest`／`HttpSession`／`Authentication`／`Principal`／`@RequestHeader` 取出的 token 等——這些**不屬於 API 契約**，springdoc 本來就不會把它們列進 `parameters`，若照字面「以 openapi_spec 為準」把 Java 簽名整個丟掉，會連同這些框架物件一起消失，而 FastAPI 這邊多半仍需要對應的東西（如 session/使用者身份），只是換一套慣用法（`request: Request`、`Depends(get_current_user)` 之類）。
@@ -322,6 +324,8 @@ class InterfaceSpec(TypedDict):
     function_name: str
     params: list[ParamSpec]
     return_type: str
+    http_method: NotRequired[str | None]  # 僅 routers 層 API 邊界方法非 None，見五章
+    route_path: NotRequired[str | None]   # 僅 routers 層 API 邊界方法非 None，見五章
 
 class PythonStructure(TypedDict):
     directory_tree: str
@@ -332,7 +336,7 @@ class PythonStructure(TypedDict):
 
 **與④的邊界**：③ 的輸出是 `translator_cli.generate_scaffold(python_structure)`（見 `translator_cli/client.py`）的唯一輸入——這個既有介面只吃 `PythonStructure`，不吃 `openapi_spec`。這代表：
 
-- `interfaces`：函式簽名層級，④直接依此建立空函式骨架，這是 ⑤ 呼叫 translator-cli 填空模式的目標（00 七章④）
+- `interfaces`：函式簽名層級，④直接依此建立空函式骨架，這是 ⑤ 呼叫 translator-cli 填空模式的目標（00 七章④）；routers 層的 API 邊界方法額外帶 `http_method`／`route_path`（見五章），讓④知道該掛哪個 `@router` 裝飾器
 - Pydantic schema／SQLAlchemy model 的**欄位內容**：`InterfaceSpec` 沒有欄位可以表達資料類別的欄位定義，因此③把這部分內容以文字形式併入 `directory_tree`（見三章、五章）；DB schema 本身（SQLAlchemy model 對應的資料表結構）不是③的職責，由④直接從既有 Postgres 測試 DB（`MOC_MATSUEXAM_TEST`，schema 已於 00 五章確認同步完成）或 Java entity 原始碼取得，00 七章原文即已明訂「④…建立目錄、base class、router 骨架、config、**DB schema**」
 
 ③ 不越界去產生 DB schema 的欄位層級規格，也不需要在 `python_structure` 之外新增 State 欄位——所有必要資訊都在既有兩個欄位的既有型別範圍內傳遞。
@@ -388,7 +392,7 @@ refactor-project/
 - [ ] **03a/03c 遷移至 `common/openapi_ref_resolver.py`**：五章已定案③新增的 `$ref` 展開邏輯直接對齊 `common/openapi_ref_resolver.py` 這個共用介面，但 03a/03c 既有實作尚未搬過去共用，目前是兩份行為相同、程式碼各自獨立的實作——後續應把 03a/03c 改成呼叫同一個 `common` 函式，避免長期維護兩份，不在③本次設計範圍內執行
 - [ ] 無 stereotype 類別的層級歸屬（三章）、框架注入物件轉換（五章）、框架慣例參數注入（七章）這三處「LLM 判斷」的實際 prompt 設計與品質，待接上真實專案輸出後校準
 - [ ] `directory_tree` 的 Schema 定義段／基礎設施段（三章）固定格式在 08a 設計 `generate_scaffold()` 實際解析方式時，需要反向確認本地模型（qwen2.5-coder:32b）對這個格式的辨識穩定度是否足夠，必要時調整 fenced code block 的標記慣例
-- [ ] **router 層方法目前沒有任何管道把 HTTP method／路徑帶給④**：`InterfaceSpec` 只有 `file_path`／`class_name`／`function_name`／`params`／`return_type`，沒有欄位表達「這個函式要掛 `@router.get("/api/v1/users/{id}")`」；`api_to_python_target`（真正帶 endpoint／http_method 的資料）也沒有進到 `translator_cli.generate_scaffold(python_structure)` 這個既有介面（見九章「與④的邊界」，目前只吃 `PythonStructure`）。這代表④骨架生成階段實際上無法知道 router 函式該綁哪個 HTTP method／路徑（連帶「router 是否設定 `APIRouter(prefix=...)`，或每個 endpoint 裝飾器寫完整路徑」這類慣例，也要等這個管道確定後才有意義討論）。`translator_cli/client.py` 現在的 `generate_scaffold()` 簽名本身就是待補的 stub（見 07a/07b，皆待建立），這個缺口留給 07a／08a 設計時一併解決——可能是擴充 `generate_scaffold()` 的參數、也可能是 `scaffold_node.py` 額外從 State 讀 `api_to_python_target` 一併傳入，屬於④的介面設計範圍，不在③的職責內搶先決定；不是 [P] 能補的，理由見 `06a_plan_agent_architecture.md` 十二章
+- [x] ~~router 層方法目前沒有任何管道把 HTTP method／路徑帶給④~~——**已解決，直接在 `InterfaceSpec` 補兩個 nullable 欄位**：`http_method`／`route_path`（見五章「router 層 API 邊界方法額外帶 http_method／route_path」、九章型別定義），不新開一條 `api_to_python_target` 傳遞管道，也不需要④／07a 自行反查——那樣等於在下游重跑一次③內部「camelCase 轉換＋多載消歧」邏輯。`translator_cli.generate_scaffold(python_structure)` 的既有介面（只吃 `PythonStructure`）因此不需要擴充參數，07a／08a 只需要單純消費 `interfaces` 裡已經帶好的這兩個欄位；`APIRouter(prefix=...)` 或裝飾器完整路徑寫法這類慣例仍是 07a／08a 的決定範圍
 
 ---
 

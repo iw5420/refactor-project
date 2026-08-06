@@ -15,12 +15,14 @@
           "type": "str"
         }
       ],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ResponseResult",
-      "function_name": "error",
+      "function_name": "error_2",
       "params": [
         {
           "name": "code",
@@ -35,12 +37,14 @@
           "type": "T"
         }
       ],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ResponseResult",
-      "function_name": "error",
+      "function_name": "error_3",
       "params": [
         {
           "name": "code",
@@ -51,24 +55,28 @@
           "type": "T"
         }
       ],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ResponseResult",
-      "function_name": "error",
+      "function_name": "error_4",
       "params": [
         {
           "name": "code",
           "type": "ErrorCode"
         }
       ],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ResponseResult",
-      "function_name": "error",
+      "function_name": "error_5",
       "params": [
         {
           "name": "code",
@@ -79,12 +87,14 @@
           "type": "T"
         }
       ],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ResponseResult",
-      "function_name": "error",
+      "function_name": "error_6",
       "params": [
         {
           "name": "code",
@@ -95,31 +105,37 @@
           "type": "str"
         }
       ],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ResponseResult",
       "function_name": "ok",
       "params": [],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ResponseResult",
-      "function_name": "ok",
+      "function_name": "ok_2",
       "params": [
         {
           "name": "data",
           "type": "T"
         }
       ],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ResponseResult",
-      "function_name": "ok",
+      "function_name": "ok_3",
       "params": [
         {
           "name": "code",
@@ -134,7 +150,9 @@
           "type": "T"
         }
       ],
-      "return_type": "ResponseResult<T>"
+      "return_type": "ResponseResult<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
@@ -146,14 +164,18 @@
           "type": "T"
         }
       ],
-      "return_type": "Result<T>"
+      "return_type": "Result<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "Result",
-      "function_name": "success",
+      "function_name": "success_2",
       "params": [],
-      "return_type": "Result<T>"
+      "return_type": "Result<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
@@ -169,24 +191,28 @@
           "type": "str"
         }
       ],
-      "return_type": "Result<T>"
+      "return_type": "Result<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "Result",
-      "function_name": "failure",
+      "function_name": "failure_2",
       "params": [
         {
           "name": "errorCode",
           "type": "ErrorCode"
         }
       ],
-      "return_type": "Result<T>"
+      "return_type": "Result<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "Result",
-      "function_name": "failure",
+      "function_name": "failure_3",
       "params": [
         {
           "name": "errorCode",
@@ -197,28 +223,36 @@
           "type": "str"
         }
       ],
-      "return_type": "Result<T>"
+      "return_type": "Result<T>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "Result",
       "function_name": "is_failure",
       "params": [],
-      "return_type": "bool"
+      "return_type": "bool",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ErrorCode",
       "function_name": "get_code",
       "params": [],
-      "return_type": "int"
+      "return_type": "int",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "ErrorCode",
       "function_name": "get_msg",
       "params": [],
-      "return_type": "str"
+      "return_type": "str",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
@@ -230,7 +264,9 @@
           "type": "str"
         }
       ],
-      "return_type": "bool"
+      "return_type": "bool",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
@@ -242,7 +278,9 @@
           "type": "str"
         }
       ],
-      "return_type": "bool"
+      "return_type": "bool",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
@@ -258,14 +296,18 @@
           "type": "Function<T, String>"
         }
       ],
-      "return_type": "list[str]"
+      "return_type": "list[str]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
       "class_name": "CodeUtil",
       "function_name": "generate_random_code",
       "params": [],
-      "return_type": "str"
+      "return_type": "str",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/common_service.py",
@@ -277,7 +319,9 @@
           "type": "str"
         }
       ],
-      "return_type": "str"
+      "return_type": "str",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/routers/file_router.py",
@@ -305,12 +349,14 @@
           "type": "MultipartFile"
         }
       ],
-      "return_type": "ResponseResult<String>"
+      "return_type": "ResponseResult<String>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/routers/file_router.py",
       "class_name": null,
-      "function_name": "voice",
+      "function_name": "voice_2",
       "params": [
         {
           "name": "kind",
@@ -329,59 +375,9 @@
           "type": "str"
         }
       ],
-      "return_type": "object"
-    },
-    {
-      "file_path": "app/routers/file_router.py",
-      "class_name": null,
-      "function_name": "voice",
-      "params": [
-        {
-          "name": "kind",
-          "type": "str"
-        },
-        {
-          "name": "randomId",
-          "type": "str"
-        },
-        {
-          "name": "partNumber",
-          "type": "str"
-        },
-        {
-          "name": "questionNumber",
-          "type": "str"
-        },
-        {
-          "name": "file",
-          "type": "MultipartFile"
-        }
-      ],
-      "return_type": "ResponseResult<String>"
-    },
-    {
-      "file_path": "app/routers/file_router.py",
-      "class_name": null,
-      "function_name": "voice",
-      "params": [
-        {
-          "name": "kind",
-          "type": "str"
-        },
-        {
-          "name": "randomId",
-          "type": "str"
-        },
-        {
-          "name": "partNumber",
-          "type": "str"
-        },
-        {
-          "name": "questionNumber",
-          "type": "str"
-        }
-      ],
-      "return_type": "object"
+      "return_type": "object",
+      "http_method": "GET",
+      "route_path": "/api/file/voice"
     },
     {
       "file_path": "app/routers/file_router.py",
@@ -405,12 +401,14 @@
           "type": "MultipartFile"
         }
       ],
-      "return_type": "ResponseResult<Map<String, Object>>"
+      "return_type": "ResponseResult<Map<String, Object>>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/routers/file_router.py",
       "class_name": null,
-      "function_name": "image",
+      "function_name": "image_2",
       "params": [
         {
           "name": "kind",
@@ -425,58 +423,18 @@
           "type": "str"
         }
       ],
-      "return_type": "object"
-    },
-    {
-      "file_path": "app/routers/file_router.py",
-      "class_name": null,
-      "function_name": "image",
-      "params": [
-        {
-          "name": "kind",
-          "type": "str"
-        },
-        {
-          "name": "randomId",
-          "type": "str"
-        },
-        {
-          "name": "side",
-          "type": "str"
-        },
-        {
-          "name": "file",
-          "type": "MultipartFile"
-        }
-      ],
-      "return_type": "ResponseResult<Map<String, Object>>"
-    },
-    {
-      "file_path": "app/routers/file_router.py",
-      "class_name": null,
-      "function_name": "image",
-      "params": [
-        {
-          "name": "kind",
-          "type": "str"
-        },
-        {
-          "name": "randomId",
-          "type": "str"
-        },
-        {
-          "name": "side",
-          "type": "str"
-        }
-      ],
-      "return_type": "object"
+      "return_type": "object",
+      "http_method": "GET",
+      "route_path": "/api/file/image"
     },
     {
       "file_path": "app/routers/general_router.py",
       "class_name": null,
       "function_name": "language",
       "params": [],
-      "return_type": "ResponseResultLanguageRq"
+      "return_type": "ResponseResultLanguageRq",
+      "http_method": "GET",
+      "route_path": "/api/general/language"
     },
     {
       "file_path": "app/routers/general_router.py",
@@ -488,7 +446,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetAllGradeRs"
+      "return_type": "ResponseResultGetAllGradeRs",
+      "http_method": "GET",
+      "route_path": "/api/general/grades"
     },
     {
       "file_path": "app/routers/general_router.py",
@@ -500,7 +460,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetAllLocalRs"
+      "return_type": "ResponseResultGetAllLocalRs",
+      "http_method": "GET",
+      "route_path": "/api/general/localtions"
     },
     {
       "file_path": "app/routers/general_router.py",
@@ -516,14 +478,18 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetSchoolRs"
+      "return_type": "ResponseResultGetSchoolRs",
+      "http_method": "POST",
+      "route_path": "/api/general/schools"
     },
     {
       "file_path": "app/routers/general_router.py",
       "class_name": null,
       "function_name": "get_version",
       "params": [],
-      "return_type": "str"
+      "return_type": "str",
+      "http_method": "GET",
+      "route_path": "/api/general/version"
     },
     {
       "file_path": "app/repositories/general_repository.py",
@@ -543,7 +509,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[SchoolEntity]"
+      "return_type": "list[SchoolEntity]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/routers/candidate_router.py",
@@ -555,7 +523,9 @@
           "type": "CardRq"
         }
       ],
-      "return_type": "ResponseResultUserProfileRs"
+      "return_type": "ResponseResultUserProfileRs",
+      "http_method": "POST",
+      "route_path": "/api/candidate/search"
     },
     {
       "file_path": "app/routers/candidate_router.py",
@@ -567,7 +537,9 @@
           "type": "CreaterandomRq"
         }
       ],
-      "return_type": "ResponseResultCreaterandomRs"
+      "return_type": "ResponseResultCreaterandomRs",
+      "http_method": "POST",
+      "route_path": "/api/candidate/generateRandomId"
     },
     {
       "file_path": "app/services/candidate_service.py",
@@ -579,7 +551,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[ExamEntity]"
+      "return_type": "list[ExamEntity]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/candidate_service.py",
@@ -595,7 +569,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "ExamEntity | None"
+      "return_type": "ExamEntity | None",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/candidate_service.py",
@@ -611,7 +587,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "Result<CreaterandomRs>"
+      "return_type": "Result<CreaterandomRs>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -627,7 +605,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[ExamEntity]"
+      "return_type": "list[ExamEntity]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -647,7 +627,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "ExamEntity | None"
+      "return_type": "ExamEntity | None",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -663,7 +645,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "ExamEntity | None"
+      "return_type": "ExamEntity | None",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -679,7 +663,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "ExamEntity | None"
+      "return_type": "ExamEntity | None",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -691,7 +677,9 @@
           "type": "str"
         }
       ],
-      "return_type": "Specification<ExamEntity>"
+      "return_type": "Specification<ExamEntity>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -703,7 +691,9 @@
           "type": "str"
         }
       ],
-      "return_type": "Specification<ExamEntity>"
+      "return_type": "Specification<ExamEntity>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -715,7 +705,9 @@
           "type": "str"
         }
       ],
-      "return_type": "Specification<ExamEntity>"
+      "return_type": "Specification<ExamEntity>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -727,7 +719,9 @@
           "type": "str"
         }
       ],
-      "return_type": "Specification<ExamEntity>"
+      "return_type": "Specification<ExamEntity>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -739,7 +733,9 @@
           "type": "str"
         }
       ],
-      "return_type": "Specification<ExamEntity>"
+      "return_type": "Specification<ExamEntity>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -751,7 +747,9 @@
           "type": "str"
         }
       ],
-      "return_type": "Specification<ExamEntity>"
+      "return_type": "Specification<ExamEntity>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/candidate_repository.py",
@@ -763,7 +761,9 @@
           "type": "str"
         }
       ],
-      "return_type": "Specification<ExamEntity>"
+      "return_type": "Specification<ExamEntity>",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/candidate_service.py",
@@ -775,7 +775,9 @@
           "type": "ExamEntity"
         }
       ],
-      "return_type": "UserProfileRs"
+      "return_type": "UserProfileRs",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/routers/registration_router.py",
@@ -787,7 +789,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetAllClassesRs"
+      "return_type": "ResponseResultGetAllClassesRs",
+      "http_method": "GET",
+      "route_path": "/api/registration/exam/classes"
     },
     {
       "file_path": "app/routers/registration_router.py",
@@ -799,7 +803,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetAllGradeRs"
+      "return_type": "ResponseResultGetAllGradeRs",
+      "http_method": "GET",
+      "route_path": "/api/registration/exam/grades"
     },
     {
       "file_path": "app/routers/registration_router.py",
@@ -811,7 +817,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetAllSchoolRs"
+      "return_type": "ResponseResultGetAllSchoolRs",
+      "http_method": "GET",
+      "route_path": "/api/registration/exam/schools"
     },
     {
       "file_path": "app/routers/exam_router.py",
@@ -827,7 +835,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultString"
+      "return_type": "ResponseResultString",
+      "http_method": "POST",
+      "route_path": "/api/exam/answer/save"
     },
     {
       "file_path": "app/routers/exam_router.py",
@@ -843,7 +853,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetExamRs"
+      "return_type": "ResponseResultGetExamRs",
+      "http_method": "POST",
+      "route_path": "/api/exam/search"
     },
     {
       "file_path": "app/routers/exam_router.py",
@@ -859,7 +871,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetExamResultRs"
+      "return_type": "ResponseResultGetExamResultRs",
+      "http_method": "POST",
+      "route_path": "/api/exam/answer/search"
     },
     {
       "file_path": "app/routers/exam_router.py",
@@ -875,7 +889,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetSingleExamRs"
+      "return_type": "ResponseResultGetSingleExamRs",
+      "http_method": "POST",
+      "route_path": "/api/exam/getSingleExam"
     },
     {
       "file_path": "app/routers/exam_router.py",
@@ -887,7 +903,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetAllExamRs"
+      "return_type": "ResponseResultGetAllExamRs",
+      "http_method": "POST",
+      "route_path": "/api/exam/getAll"
     },
     {
       "file_path": "app/routers/exam_router.py",
@@ -899,7 +917,9 @@
           "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultGetAllExamKindRs"
+      "return_type": "ResponseResultGetAllExamKindRs",
+      "http_method": "POST",
+      "route_path": "/api/exam/getAllExamKind"
     },
     {
       "file_path": "app/services/exam_service.py",
@@ -911,7 +931,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[ExamkindEntity]"
+      "return_type": "list[ExamkindEntity]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/exam_repository.py",
@@ -927,7 +949,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[ExamkindEntity]"
+      "return_type": "list[ExamkindEntity]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/exam_service.py",
@@ -939,7 +963,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[AnswerEntity]"
+      "return_type": "list[AnswerEntity]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/exam_repository.py",
@@ -959,7 +985,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[AnswerEntity]"
+      "return_type": "list[AnswerEntity]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/exam_repository.py",
@@ -991,7 +1019,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "AnswerEntity | None"
+      "return_type": "AnswerEntity | None",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/exam_repository.py",
@@ -1015,7 +1045,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[AnswerEntity]"
+      "return_type": "list[AnswerEntity]",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/repositories/exam_repository.py",
@@ -1031,14 +1063,18 @@
           "type": "Session"
         }
       ],
-      "return_type": "int"
+      "return_type": "int",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/routers/grading_router.py",
       "class_name": null,
       "function_name": "test_exception",
       "params": [],
-      "return_type": "str"
+      "return_type": "str",
+      "http_method": "GET",
+      "route_path": "/api/grading/test-exception"
     },
     {
       "file_path": "app/routers/grading_router.py",
@@ -1048,9 +1084,15 @@
         {
           "name": "rq",
           "type": "LoginRq"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultBoolean"
+      "return_type": "ResponseResultBoolean",
+      "http_method": "POST",
+      "route_path": "/api/grading/login"
     },
     {
       "file_path": "app/routers/grading_router.py",
@@ -1060,9 +1102,15 @@
         {
           "name": "rq_list",
           "type": "list[SaveScoreRq]"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultVoid"
+      "return_type": "ResponseResultVoid",
+      "http_method": "POST",
+      "route_path": "/api/grading/score"
     },
     {
       "file_path": "app/routers/grading_router.py",
@@ -1072,9 +1120,15 @@
         {
           "name": "rq",
           "type": "SaveTotalAndCommentRq"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultVoid"
+      "return_type": "ResponseResultVoid",
+      "http_method": "POST",
+      "route_path": "/api/grading/grade"
     },
     {
       "file_path": "app/routers/grading_router.py",
@@ -1084,9 +1138,15 @@
         {
           "name": "rq",
           "type": "AnalyzeRq"
+        },
+        {
+          "name": "db",
+          "type": "Session = Depends(get_db)"
         }
       ],
-      "return_type": "ResponseResultAnalyzeRs"
+      "return_type": "ResponseResultAnalyzeRs",
+      "http_method": "POST",
+      "route_path": "/api/grading/analyze"
     },
     {
       "file_path": "app/repositories/grading_repository.py",
@@ -1106,7 +1166,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "BackUserEntity"
+      "return_type": "BackUserEntity",
+      "http_method": null,
+      "route_path": null
     },
     {
       "file_path": "app/services/grading_service.py",
@@ -1118,7 +1180,9 @@
           "type": "Session"
         }
       ],
-      "return_type": "list[QuestionEntity]"
+      "return_type": "list[QuestionEntity]",
+      "http_method": null,
+      "route_path": null
     }
   ]
 }

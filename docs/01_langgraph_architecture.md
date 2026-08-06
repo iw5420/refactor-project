@@ -129,7 +129,7 @@ State 欄位對應到 00 一章「各階段對應文件表」列出的各個 Age
 
 ```python
 # graph/state.py
-from typing import TypedDict, Annotated, Literal
+from typing import TypedDict, Annotated, Literal, NotRequired
 import operator
 
 
@@ -171,6 +171,11 @@ class InterfaceSpec(TypedDict):
     function_name: str
     params: list[ParamSpec]
     return_type: str
+    # 僅 routers 層 API 邊界方法非 None，值沿用 ApiMapping.http_method／
+    # .endpoint（見 05a 五章、九章）；NotRequired 讓既有所有建構 InterfaceSpec
+    # 的地方（含本章七節 design_node.py stub）不需要跟著補這兩個欄位。
+    http_method: NotRequired[str | None]
+    route_path: NotRequired[str | None]
 
 
 class PythonStructure(TypedDict):

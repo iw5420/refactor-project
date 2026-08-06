@@ -249,7 +249,13 @@
       "Bash(python -m pytest --collect-only -q)",
       "Bash(python -m pytest -q --ignore=refactor_harness/langgraph_nodes/test_nodes.py)",
       "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\11ba446c-31ba-4b23-b023-5e51506c921a\\\\scratchpad\\\\dedupe_fixture.py\")",
-      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\11ba446c-31ba-4b23-b023-5e51506c921a\\\\scratchpad\\\\run_real_plan_agent.py\")"
+      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\11ba446c-31ba-4b23-b023-5e51506c921a\\\\scratchpad\\\\run_real_plan_agent.py\")",
+      "Bash(python -m pytest -q tests)",
+      "Bash(ls -d ../lang-exam-api-refactor 2>&1; echo \"---\"; grep -n \"^def \\\\|^async def \" plan_agent/__init__.py plan_agent/planning.py 2>/dev/null | head -20)",
+      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\dba7cf10-5e91-4412-a026-638309bb0b42\\\\scratchpad\\\\integration_check_05b_06b.py\")",
+      "Bash(PYTHONPATH=. python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\dba7cf10-5e91-4412-a026-638309bb0b42\\\\scratchpad\\\\integration_check_05b_06b.py\")",
+      "Bash(PYTHONPATH=. python -c ' *)",
+      "Bash(PYTHONPATH=. python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\dba7cf10-5e91-4412-a026-638309bb0b42\\\\scratchpad\\\\real_integration_05b_06b.py\")"
     ]
   }
 }

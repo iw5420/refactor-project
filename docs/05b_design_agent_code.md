@@ -1155,6 +1155,8 @@ class _MethodContext:
     uncovered_params: list[UncoveredParam]
     needs_db_session_decision: bool
     boundary_schemas: list[tuple[str, dict]] = field(default_factory=list)  # (schema_name, resolved_schema)，見五章
+    http_method: str | None = None  # 僅 boundary（selected_overload）非 None，見五章「router 層 API 邊界方法額外帶」
+    route_path: str | None = None   # 同上，直接是 boundary["endpoint"] 原始字面值，不做轉換
 
 
 def design_all_modules(
@@ -1367,11 +1369,31 @@ def _build_method_contexts(
     讓這種不一致中止整條 design run，畢竟④／⑤下游本來就只能依賴這裡
     產出的 interfaces，跳過的方法不會產生 InterfaceSpec，但也不會讓
     其餘方法的設計連帶失敗。
+
+    **`(class_name, java_method)` 先去重，才逐一展開 overloads**：①對
+    同一組多載方法會各自產生一筆獨立的 `MethodInfo`（例如
+    `FileController.voice` 的 `@PostMapping`／`@GetMapping` 兩個 overload，
+    各自帶不同的 `description`），這是①的正常行為，不是輸出錯誤。但
+    `overloads` 是依「方法名稱」查找（javalang 沒有 overload resolution，
+    見 04a 三章「決策」），同一組多載的每一筆 `MethodInfo` 查到的都是同
+    一份完整 overloads 清單——若不先去重，兩筆 `MethodInfo` 會分別把整組
+    overloads 各展開一次，[P] 的涵蓋率驗證會抓到重複的
+    `(file_path, class_name, function_name)` 三元組而中止（實測對
+    `lang-exam-api-refactor` 的 `FileController.voice`／`image` 兩組
+    overload 觸發過）。這裡的去重只影響「同一組 overloads 只展開一次」，
+    不影響 05a 四章既有的多載消歧邏輯（第一個保留原名、其餘加 `_2`/`_3`）
+    ——那段邏輯本來就是針對「一次展開」設計的，去重後才符合它的前提。
     """
     known_classes = frozenset(class_signatures)
     contexts: list[_MethodContext] = []
 
+    seen_method_keys: set[tuple[str, str]] = set()
     for method_info in module["methods"]:
+        method_key = (method_info["class_name"], method_info["java_method"])
+        if method_key in seen_method_keys:
+            continue
+        seen_method_keys.add(method_key)
+
         class_sig = class_signatures.get(method_info["class_name"])
         if class_sig is None:
             logger.warning(
@@ -1419,6 +1441,11 @@ def _build_method_contexts(
                 params, return_type = type_mapping.resolve_api_boundary_signature(sig, operation, openapi_spec)
                 uncovered = type_mapping.find_uncovered_framework_params(sig, operation, openapi_spec)
                 boundary_schemas = type_mapping.collect_named_schemas(operation, openapi_spec)
+                # 05a 五章「router 層 API 邊界方法額外帶 http_method／route_path」：
+                # 只有真正被選中對應這個 endpoint 的多載才帶這兩個值，其餘多載
+                # （下面 else 分支）維持 None，跟 params/return_type 的處理方式一致。
+                http_method = boundary["http_method"]
+                route_path = boundary["endpoint"]
             else:
                 params = [
                     ParamSpec(name=p.name, type=type_mapping.map_java_type(p.java_type, known_classes))
@@ -1427,6 +1454,8 @@ def _build_method_contexts(
                 return_type = type_mapping.map_java_type(sig.return_type or "void", known_classes)
                 uncovered = []
                 boundary_schemas = []
+                http_method = None
+                route_path = None
 
             base_name = _python_function_name(sig.method_name, sig.is_private)
             seen_names[base_name] = seen_names.get(base_name, 0) + 1
@@ -1450,6 +1479,8 @@ def _build_method_contexts(
                     # 呼叫到需要 db 的下游，同樣需要宣告這個參數，不能排除在外。
                     needs_db_session_decision=True,
                     boundary_schemas=boundary_schemas,
+                    http_method=http_method,
+                    route_path=route_path,
                 )
             )
     return contexts
@@ -1515,6 +1546,8 @@ def _design_module(
                 function_name=ctx.function_name,
                 params=params,
                 return_type=ctx.return_type,
+                http_method=ctx.http_method,
+                route_path=ctx.route_path,
             )
         )
 

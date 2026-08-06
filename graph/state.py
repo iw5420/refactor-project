@@ -1,4 +1,4 @@
-from typing import TypedDict, Annotated, Literal
+from typing import TypedDict, Annotated, Literal, NotRequired
 import operator
 
 
@@ -38,6 +38,11 @@ class InterfaceSpec(TypedDict):
     function_name: str
     params: list[ParamSpec]
     return_type: str
+    # 僅 routers 層 API 邊界方法非 None，值沿用 ApiMapping.http_method／
+    # .endpoint（見 05a 五章、九章）；NotRequired 讓既有所有建構 InterfaceSpec
+    # 的地方不需要跟著補這兩個欄位。
+    http_method: NotRequired[str | None]
+    route_path: NotRequired[str | None]
 
 
 class PythonStructure(TypedDict):
