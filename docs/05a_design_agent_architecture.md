@@ -13,7 +13,7 @@
 - Java → Python 型別對應，以及 API 邊界方法如何改用 `openapi_spec` 覆寫（五章）
 - LLM 設計階段的處理單位與排程順序（六章）
 - `interfaces` 的涵蓋率規則（七章）
-- `route_to_file_mapping` 的產出演算法（八章）
+- `route_to_file_mapping` 與 `route_to_module_mapping` 的產出演算法（八章）
 - 輸出資料如何對應 `RefactorState` 的 `python_structure`／`route_to_file_mapping`
 
 **本文件不涵蓋**：
@@ -113,7 +113,7 @@ app/
 
   這段模板寫死進 `directory_tree` 的基礎設施段，是為了避免④的骨架生成呼叫（本地模型 qwen）自行臆測別的環境變數名稱或連線寫法——00 五章已經定案的變數名稱，不該在③到④這一步之間，因為交給模型自由發揮而流失。
 
-  `except Exception: db.rollback()` 是明確補上的清理步驟，不是修一個既有的髒資料 bug——SQLAlchemy 的 `Session.close()` 本身在關閉前就會把還沒 commit 的交易 rollback 掉，就算沒有這段 `except`，`finally: db.close()` 也不會真的留下沒 rollback 的髒交易。加這段的理由是明確性與即時性：例外發生當下立刻 rollback，不是隱含依賴 `close()` 的內部行為，讓④／⑤產生的程式碼、以及日後接手的人都能一眼看懂交易邊界。
+  `except Exception: db.rollback()` 明確在例外發生當下立即 rollback，不依賴 `Session.close()` 的隱含 rollback 行為，讓④／⑤產生的程式碼交易邊界更明確。
 
   **維持同步（`create_engine`／`Session`），不改非同步（`asyncpg`／`AsyncEngine`／`AsyncSession`），已定案**：這是重構專案，目標是跟 Java 服務（傳統 blocking JDBC）行為對齊，不是從零打造高併發 API，見 00 三章「Python 目標技術棧」。改非同步會讓④／⑤產生的每一支碰到 DB 的函式（repository／service／router 三層）都要正確加上 `async`/`await`，這個正確性負擔會落在⑤呼叫的本地模型（qwen2.5-coder:32b）身上——本地模型的可靠度本來就是這個專案風險最高的環節（見 00 三章「LLM 分工」硬體限制），不該再加大它的出錯面。
 
@@ -142,7 +142,9 @@ app/
 
 **這不是重跑 04a 三章的呼叫圖建構**：04a 的呼叫圖需要欄位依賴、method invocation 解析、`@Qualifier`/`@Primary` 消歧，是為了「這個方法還會不會被呼叫到」；③ 要的只是「這個方法長什麼樣子」，範圍窄得多，不需要建立呼叫關係。沿用 04a 已驗證過的同一顆 `javalang`（同一個 `lang-exam-api-refactor` 專案已證實 100% 解析成功，見 04a 三章「決策」），不需要重新驗證解析器可行性，只是抽取的欄位不同。
 
-> **多載（overload）方法的處理**：延續 04a 三章「決策」的既有限制——`module_list.methods` 本身在多載情況下已有精準度限制（04a 五章也提過同樣的限制）。③ 再掃描時若遇到同名多載方法，比照④/⑤ 消費 `module_list` 時的既有認知：分別以各自完整簽名（含參數型別）建立獨立的 `InterfaceSpec`，不因為同名而合併——這裡③是直接讀完整 AST 節點（含參數型別），不像 04a 的 `method_id` 只用方法名不含簽名，天生不會有多載碰撞問題，比 04a 的 `method_id` 精確度更高。
+> **多載（overload）方法的處理**：延續 04a 三章「決策」的既有限制——`module_list.methods` 本身在多載情況下已有精準度限制（04a 五章也提過同樣的限制）。③ 再掃描時若遇到同名多載方法，比照④/⑤ 消費 `module_list` 時的既有認知：分別以各自完整簽名（含參數型別）建立獨立的 `InterfaceSpec`，不因為同名而合併——這裡③是直接讀完整 AST 節點（含參數型別），不像 04a 的 `method_id` 只用方法名不含簽名，掃描與比對階段不會有多載碰撞問題。
+>
+> **`function_name` 消歧**：`InterfaceSpec.function_name` 單純用 camelCase→snake_case 轉換（見七章）時，同一組多載會算出相同名稱——Python 不支援多載，會讓④的骨架生成撞名。③對同一組多載依 javalang 掃描到的宣告順序消歧：第一個保留原始轉換名稱，其餘依序加上數字後綴 `_2`、`_3`……，比照 04a 三章已引用的 springdoc 前例（`voice`／`voice_1`）。實作見 `05b_design_agent_code.md` 七章 `_build_method_contexts()`。
 
 **掃描失敗的處理**：比照 04a 九章，Java 原始碼若有 javalang 無法解析的語法，直接往上拋，整條 LangGraph run 中止——這是輸入端問題，不是可以重試化解的暫時性錯誤。
 
@@ -268,9 +270,9 @@ app/
 
 ---
 
-## 八、`route_to_file_mapping` 產出（機械合併）
+## 八、`route_to_file_mapping` 與 `route_to_module_mapping` 產出（機械合併）
 
-`route_to_file_mapping` 的產出**完全是程式邏輯，不需要 LLM**——所有需要的資訊（`api_to_python_target` 的 endpoint↔module 對應、每個 module 的 `interfaces` 檔案集合）在六章都已經產出完畢。
+`route_to_file_mapping` 與 `route_to_module_mapping` 的產出**完全是程式邏輯，不需要 LLM**——所有需要的資訊（`api_to_python_target` 的 endpoint↔module 對應、每個 module 的 `interfaces` 檔案集合）在六章都已經產出完畢。兩者共用同一套 key 正規化邏輯（見下方「Key 格式」），在同一次迴圈裡一併產出，不是兩個獨立步驟。
 
 **Key 格式**：沿用 02a 十一章已定案的格式，**③ 的輸出必須跟 02a `RouteMapper.normalize_path_key()` 的正規化結果完全一致**，否則 Harness 的比對會全部 miss：
 
@@ -290,6 +292,14 @@ app/
 ```
 
 **實作提醒：步驟 1／2 要按字面實作，不要用「切段、丟掉空字串、重新 join」代替**——兩者在一般路徑上結果相同，但遇到結尾多帶 `/` 的 endpoint（如 `/api/v1/users/`）就會分岔：字面實作（只去開頭一個 `/`、其餘 `/` 全部換成 `_`）會留下結尾底線（`GET_api_v1_users_`）；「切段丟空字串」會把結尾底線吃掉（`GET_api_v1_users`）。02a `RouteMapper.normalize_path_key()` 拿到的 `url_parts` 是 Postman `request.url.path` 這個已經切好的陣列，它的邏輯只是逐段判斷數字/UUID 後原樣 `"_".join(...)`，不會主動丟棄空字串——若 Postman 對這類 URL 產出帶結尾空字串的 `path` 陣列，「切段丟空字串」的實作就會跟 `RouteMapper` 對不上。不要事後對兩邊的 key 各自做 trim 去湊一致，除非能確認 `RouteMapper` 那側也真的做了同樣的 trim。
+
+**`route_to_module_mapping`：Harness module 分區的權威來源**
+
+Harness 的 `get_module()`（02a 十三章、02b `core/postman_runner.py`）原本用「URL 第一個非版本路徑段」猜測一個 request 屬於哪個 module，這其實是①已經用業務語意判斷過、寫進 `api_to_python_target.module` 的同一件事——`get_module()` 完全不知道這個判斷存在，自己重新用字串規則猜一次，深層／跨模組路由（如 `/api/v1/admin/orders/audit`）因此可能被猜成 `admin`，而不是①實際判定的 `orders`（見 02a 十三章「已知限制」）。這是 00 六章反覆強調的「兩個地方需要同一件事，應該共用，不是各自重新推導」原則的反例，不是 `get_module()` 演算法不夠聰明，而是它從一開始就不該用猜的——這個資訊①早就算出來了。
+
+**決策：③ 在計算 `route_to_file_mapping` 的同一次迴圈裡，額外輸出 `route_to_module_mapping`**（同一個正規化 key → `ApiMapping.module`，不是新的判斷，只是把六章已經算好的 `class_to_module` 結果，用跟 `route_to_file_mapping` 相同的 key 格式再存一份），寫入 `config/harness.yaml` 跟 `route_to_file_mapping` 同一層級的新段落。Harness 的 `get_module()` 改為優先查這份表，查得到就直接採用（保證跟 `ModuleInfo.module` 逐字一致，見 `06a_plan_agent_architecture.md` 四章）；查不到（真正落在①③解析範圍外的邊界情況，如 04a 十一章列出的已知限制）才 fallback 回原本「URL 第一段」的猜測，並記警告——這條 fallback 路徑本身不變，只是不再是唯一機制。
+
+**只寫入 `config/harness.yaml`，不進 `RefactorState`**：唯一消費者是 Harness 自己讀取設定檔的既有路徑，跟 `mask_rules.yaml` 一樣是純粹供 Harness 用的設定檔案，不需要複製一份進執行期 State——`route_to_file_mapping` 雖然同時是 State 欄位也是 yaml 段落，但那是既有設計，這裡不需要對稱地也加一個新 State 欄位，只會徒增沒有消費者的資料。
 
 **`related_files` 的組成**：一個 `ApiMapping` 項目的 `related_files` = 該項目 `module` 底下所有 `interfaces` 的 `file_path`（去重），**加上**（若該 module 有對應的 `schemas/{module}.py`）該 schema 檔案路徑——後者雖然沒有 `InterfaceSpec` 條目（五章、九章已說明原因），但作為除錯參考仍應納入，02a 的 `failure_type` 表格裡 `missing_fields`／`type_mismatch` 的 debug_hint 明確指向「檢查 Pydantic schema」，缺了這個檔案路徑會讓 Debug Agent 少一個關鍵線索。
 
@@ -318,7 +328,7 @@ class PythonStructure(TypedDict):
     interfaces: list[InterfaceSpec]
 ```
 
-`route_to_file_mapping: dict` 產出後直接寫入 `config/harness.yaml` 的 `route_to_file_mapping` 段（見 `00_refactor_architecture.md` 八章、`02a_harness_architecture.md` 十一章），不需人工填寫。
+`route_to_file_mapping: dict` 產出後直接寫入 `config/harness.yaml` 的 `route_to_file_mapping` 段（見 `00_refactor_architecture.md` 八章、`02a_harness_architecture.md` 十一章），不需人工填寫。`route_to_module_mapping`（見八章）與它在同一次呼叫中一併產出、寫進 `config/harness.yaml` 的另一個段落，但**不是** `RefactorState` 欄位（理由見八章「只寫入 config/harness.yaml，不進 RefactorState」）。
 
 **與④的邊界**：③ 的輸出是 `translator_cli.generate_scaffold(python_structure)`（見 `translator_cli/client.py`）的唯一輸入——這個既有介面只吃 `PythonStructure`，不吃 `openapi_spec`。這代表：
 
@@ -340,7 +350,7 @@ refactor-project/
     ├── type_mapping.py     # 五章：Java→Python 型別對應表、openapi_spec $ref 展開與覆寫邏輯
     ├── layout.py           # 三章：分層/命名規則、module 依賴拓樸排序、全域基礎設施檔案（main.py／database.py）組裝
     ├── design.py           # 六章：逐波呼叫 Claude API，組裝單一 module 的 InterfaceSpec
-    ├── route_mapping.py    # 八章：機械合併 route_to_file_mapping
+    ├── route_mapping.py    # 八章：機械合併 route_to_file_mapping、route_to_module_mapping
     └── prompts.py          # 六章 system prompt 集中於此
 ```
 
@@ -350,7 +360,7 @@ refactor-project/
 | 型別對應與 openapi 覆寫 | 對應五章 |
 | 分層與拓樸排序 | 對應三章、六章 |
 | Claude API 逐模組設計 | 對應六章、七章 |
-| route_to_file_mapping 機械組裝 | 對應八章 |
+| route_to_file_mapping／route_to_module_mapping 機械組裝 | 對應八章 |
 | 全域基礎設施檔案組裝（main.py／database.py） | 對應三章「全域基礎設施檔案」 |
 | 對外唯一入口 | 供 `graph/nodes/design_node.py` 呼叫，node 本身不直接碰觸上述任何細節 |
 
@@ -378,7 +388,7 @@ refactor-project/
 - [ ] **03a/03c 遷移至 `common/openapi_ref_resolver.py`**：五章已定案③新增的 `$ref` 展開邏輯直接對齊 `common/openapi_ref_resolver.py` 這個共用介面，但 03a/03c 既有實作尚未搬過去共用，目前是兩份行為相同、程式碼各自獨立的實作——後續應把 03a/03c 改成呼叫同一個 `common` 函式，避免長期維護兩份，不在③本次設計範圍內執行
 - [ ] 無 stereotype 類別的層級歸屬（三章）、框架注入物件轉換（五章）、框架慣例參數注入（七章）這三處「LLM 判斷」的實際 prompt 設計與品質，待接上真實專案輸出後校準
 - [ ] `directory_tree` 的 Schema 定義段／基礎設施段（三章）固定格式在 08a 設計 `generate_scaffold()` 實際解析方式時，需要反向確認本地模型（qwen2.5-coder:32b）對這個格式的辨識穩定度是否足夠，必要時調整 fenced code block 的標記慣例
-- [ ] **router 層方法目前沒有任何管道把 HTTP method／路徑帶給④**：`InterfaceSpec` 只有 `file_path`／`class_name`／`function_name`／`params`／`return_type`，沒有欄位表達「這個函式要掛 `@router.get("/api/v1/users/{id}")`」；`api_to_python_target`（真正帶 endpoint／http_method 的資料）也沒有進到 `translator_cli.generate_scaffold(python_structure)` 這個既有介面（見九章「與④的邊界」，目前只吃 `PythonStructure`）。這代表④骨架生成階段實際上無法知道 router 函式該綁哪個 HTTP method／路徑（連帶「router 是否設定 `APIRouter(prefix=...)`，或每個 endpoint 裝飾器寫完整路徑」這類慣例，也要等這個管道確定後才有意義討論）。`translator_cli/client.py` 現在的 `generate_scaffold()` 簽名本身就是待補的 stub（見 07a/07b，皆待建立），這個缺口留給 07a／08a 設計時一併解決——可能是擴充 `generate_scaffold()` 的參數、也可能是 `scaffold_node.py` 額外從 State 讀 `api_to_python_target` 一併傳入，屬於④的介面設計範圍，不在③的職責內搶先決定
+- [ ] **router 層方法目前沒有任何管道把 HTTP method／路徑帶給④**：`InterfaceSpec` 只有 `file_path`／`class_name`／`function_name`／`params`／`return_type`，沒有欄位表達「這個函式要掛 `@router.get("/api/v1/users/{id}")`」；`api_to_python_target`（真正帶 endpoint／http_method 的資料）也沒有進到 `translator_cli.generate_scaffold(python_structure)` 這個既有介面（見九章「與④的邊界」，目前只吃 `PythonStructure`）。這代表④骨架生成階段實際上無法知道 router 函式該綁哪個 HTTP method／路徑（連帶「router 是否設定 `APIRouter(prefix=...)`，或每個 endpoint 裝飾器寫完整路徑」這類慣例，也要等這個管道確定後才有意義討論）。`translator_cli/client.py` 現在的 `generate_scaffold()` 簽名本身就是待補的 stub（見 07a/07b，皆待建立），這個缺口留給 07a／08a 設計時一併解決——可能是擴充 `generate_scaffold()` 的參數、也可能是 `scaffold_node.py` 額外從 State 讀 `api_to_python_target` 一併傳入，屬於④的介面設計範圍，不在③的職責內搶先決定；不是 [P] 能補的，理由見 `06a_plan_agent_architecture.md` 十二章
 
 ---
 

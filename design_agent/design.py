@@ -65,7 +65,7 @@ def design_all_modules(
     `(全部 module 攤平的 InterfaceSpec 清單, 組裝完成的 directory_tree 字串,
     實際產出過 schemas/{module}.py 的 module 名稱集合)`。
 
-    第三個回傳值供 `route_mapping.build_route_to_file_mapping()` 判斷
+    第三個回傳值供 `route_mapping.build_route_mappings()` 判斷
     `related_files` 該不該納入 schema 檔案——不能只憑「這個 module 有沒有
     router 檔案」猜測，同一個 module 的 API 邊界方法若全部只用 inline
     schema（沒有 `$ref`，見 `type_mapping.schema_name_for()`），這個
@@ -109,7 +109,7 @@ def _render_directory_lines(
     `interfaces` 是 routers／services／repositories 三層的權威來源；
     `app/schemas/{module}.py` 只在 `modules_with_schema_file`（見
     `design_all_modules()` 「幽靈檔案」說明）裡的 module 才列出，跟
-    `route_mapping.build_route_to_file_mapping()` 判斷 `related_files`
+    `route_mapping.build_route_mappings()` 判斷 `related_files`
     用的同一個集合，避免這裡列出一個實際沒有 Schema 定義段的檔案；
     `app/models/{module}.py` 是每個 module 都有的 SQLAlchemy ORM 佔位
     檔案（05a 三章，欄位內容由④生成，見九章），因此對 `all_module_names`
@@ -300,6 +300,13 @@ def _build_method_contexts(
         # 型別錯誤地複製到不相干的多載方法上。
         selected_overload = _select_boundary_overload(overloads, operation) if operation is not None else None
 
+        # 多載消歧（05a 四章「多載方法的處理」）：同一組 overloads 的
+        # sig.method_name 相同，_python_function_name() 對每個 sig 都會
+        # 算出同一個基礎名稱，必須疊加計數器消歧，否則同一個 class／
+        # 檔案會產出兩個同名 InterfaceSpec（Python 不支援多載，屬於非法
+        # 輸出）。第一次出現保留原始名稱，第二次起加 `_2`、`_3`……
+        seen_names: dict[str, int] = {}
+
         for sig in overloads:
             if sig is selected_overload:
                 params, return_type = type_mapping.resolve_api_boundary_signature(sig, operation, openapi_spec)
@@ -314,13 +321,17 @@ def _build_method_contexts(
                 uncovered = []
                 boundary_schemas = []
 
+            base_name = _python_function_name(sig.method_name, sig.is_private)
+            seen_names[base_name] = seen_names.get(base_name, 0) + 1
+            function_name = base_name if seen_names[base_name] == 1 else f"{base_name}_{seen_names[base_name]}"
+
             contexts.append(
                 _MethodContext(
                     signature_key=sig.signature_key,
                     java_method=sig.method_name,
                     class_name=class_sig.class_name,
                     complexity=method_info["complexity"],
-                    function_name=_python_function_name(sig.method_name, sig.is_private),
+                    function_name=function_name,
                     layer=layer,
                     params=params,
                     return_type=return_type,

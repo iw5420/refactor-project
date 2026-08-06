@@ -2,7 +2,7 @@ import json
 import yaml
 from pathlib import Path
 # 套件內部一律用帶 refactor_harness. 前綴的絕對匯入
-from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id, get_module
+from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
@@ -137,7 +137,7 @@ class MutationVerifier:
             case_id = make_case_id(item)
             url_parts = item["request"]["url"]["path"]
             method = item["request"]["method"]
-            module = self._get_module(url_parts)
+            module = self._get_module(method, url_parts)
 
             golden = self._load_golden(case_id, module)
             body_diff = None
@@ -185,9 +185,10 @@ class MutationVerifier:
 
         return results
 
-    def _get_module(self, url_parts: list[str]) -> str:
-        # 委派給共用的 get_module（module 詞彙表唯一權威來源，見 core/postman_runner.py）
-        return get_module(url_parts)
+    def _get_module(self, method: str, url_parts: list[str]) -> str:
+        # 委派給共用的 RouteMapper.resolve_module()（module 詞彙表唯一
+        # 權威來源，見 02a 十三章），與 GoldenVerifier 共用。
+        return self.route_mapper.resolve_module(method, url_parts)
 
     def _load_golden(self, case_id: str, module: str) -> dict | None:
         golden_path = self.golden_dir / module / f"{case_id}.json"

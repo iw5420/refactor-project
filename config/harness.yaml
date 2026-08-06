@@ -47,3 +47,10 @@ route_to_file_mapping:
   "POST_api_v1_orders":
     - "app/routers/order_router.py"
     - "app/services/order_service.py"
+
+# route → module 對應表（module 詞彙表的唯一權威來源，見 docs/02a_harness_architecture.md
+# 十三章）；同一次由 Agent ③ 輸出，key 格式與上面完全一致。
+route_to_module_mapping:
+  "GET_api_v1_users": "users"
+  "GET_api_v1_users_{id}": "users"
+  "POST_api_v1_orders": "orders"

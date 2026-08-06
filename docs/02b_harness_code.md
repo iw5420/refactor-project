@@ -101,6 +101,17 @@ route_to_file_mapping:
   "POST_api_v1_orders":
     - "app/routers/order_router.py"
     - "app/services/order_service.py"
+
+# route → module 對應表（module 詞彙表的權威來源，見 02a 十三章、十一章）
+# ⚠️  此區段同樣由 Agent ③ 自動產生並寫入，跟 route_to_file_mapping 同一次迴圈
+#    輸出，key 格式完全相同；值不是檔案清單，是單一 module 字串
+#    （即 ApiMapping.module，也就是 ModuleInfo.module 本尊）。
+# get_module() 優先查這裡，查不到才 fallback 回 URL 推斷（見 core/postman_runner.py）。
+route_to_module_mapping:
+  "GET_api_v1_users": "user"
+  "GET_api_v1_users_{id}": "user"
+  "GET_api_v1_users_{id}_profiles": "user"
+  "POST_api_v1_orders": "order"
 ```
 
 ---
@@ -230,25 +241,23 @@ def make_case_id(item: dict) -> str:
 
 def get_module(url_parts: list[str]) -> str:
     """
-    從 URL path 推斷 module 名稱：取第一個非版本前綴的路徑段。
+    module 詞彙表的 **fallback** 推斷：取第一個非版本前綴的路徑段。
     例：["api", "v1", "orders", "123"] → "orders"
 
-    ⚠️ 這個函式是整個 Harness 的 module 詞彙表「唯一權威來源」：
-    - golden 檔案的存放目錄（fixtures/golden/{module}/）用它決定
-    - verify_module(module_filter) 的過濾條件用它比對
-    - 02a 十三章規定 task 的 module 欄位「對應 fixtures/golden/ 的子目錄名稱」，
-      因此 [P] Plan Agent 填入 task.module 時**必須使用與本函式相同的推斷結果**。
-      兩邊詞彙不一致時不會報錯，而是 verify_module 靜默漏測——例如 Plan Agent
-      認定 /api/v1/admin/orders/audit 屬於 "orders" 模組，但本函式推斷為 "admin"，
-      該 case 就永遠不會被納入 orders 的局部驗證（golden 寫入與載入端內部自洽，
-      所以不會假失敗，只會無聲消失在局部驗證的涵蓋範圍外，比假失敗更難發現）。
+    ⚠️ 這個函式不再是 module 詞彙表的唯一來源——**唯一權威來源是
+    `config/harness.yaml` 的 `route_to_module_mapping`**（Agent ③ 產出，
+    見 02a 十三章、十一章、`05a_design_agent_architecture.md` 八章），由
+    `RouteMapper.resolve_module()` 優先查詢；這個函式只在查無對應時，作為
+    `resolve_module()` 內部呼叫的 fallback 使用，不應該再被其他模組直接呼叫
+    （`golden_writer.py`／`comparator.py`／`mutation_verifier.py` 一律經由
+    `self.route_mapper.resolve_module(method, url_parts)`，見 core/route_mapper.py）。
 
-    ⚠️ 深層／跨模組路由的已知限制：本推斷只看第一個非版本段，
-    /api/v1/admin/orders/audit 會歸入 "admin" 而非語意上的 "orders"。
-    若專案存在這類路由，兩個對策擇一：
-    (a) 讓 Plan Agent 直接採用本函式的推斷結果作為 task.module（機械一致，推薦）；
-    (b) 未來擴充：由 Agent ③ 在 harness.yaml 產出 route → module 對應表，
-        本函式改查表、URL 推斷降為 fallback（目前未實作，列於 02a 十六章）。
+    ⚠️ 深層／跨模組路由的已知限制只留在這個 fallback 分支：本推斷只看第一個
+    非版本段，/api/v1/admin/orders/audit 會歸入 "admin" 而非語意上的
+    "orders"。只要這個 endpoint 有出現在 `api_to_python_target`（進而出現在
+    `route_to_module_mapping`），`resolve_module()` 就不會走到這裡，這個限制
+    只影響①③解析範圍外、`route_to_module_mapping` 查無對應的殘餘情況
+    （如 04a 十一章列出的已知限制，或 skip 呼叫鏈已排除的端點）。
     """
     return next(
         (p for p in url_parts if p not in ("api", "v1", "v2")),
@@ -422,14 +431,21 @@ class DiffEngine:
 route → Python 原始碼檔案的解析器，`GoldenVerifier` 與 `MutationVerifier` 共用同一份，確保 `related_files` 的解析行為在 readonly / mutation 兩邊完全一致，也讓 Debug Agent 在 mutation failure 時同樣能拿到引導檔案。
 
 ```python
+import logging
 import re
 import yaml
+
+from refactor_harness.core.postman_runner import get_module
+
+logger = logging.getLogger(__name__)
 
 
 class RouteMapper:
     """
-    讀取 config/harness.yaml 的 route_to_file_mapping（由 Agent ③ 自動產生，
-    見 02a 十一章），把 route 解析成對應的 Python 原始碼檔案清單。
+    讀取 config/harness.yaml 的 route_to_file_mapping／route_to_module_mapping
+    （皆由 Agent ③ 自動產生，同一次呼叫一併輸出，見 02a 十一章、
+    `05a_design_agent_architecture.md` 八章），把 route 解析成對應的 Python
+    原始碼檔案清單，或對應的 module 名稱。
     """
 
     _UUID_RE = re.compile(
@@ -440,6 +456,7 @@ class RouteMapper:
         with open(config_path) as f:
             config = yaml.safe_load(f)
         self.route_mapping = config.get("route_to_file_mapping", {})
+        self.module_mapping = config.get("route_to_module_mapping", {})
 
     def normalize_path_key(self, method: str, url_parts: list[str]) -> str:
         """
@@ -480,6 +497,38 @@ class RouteMapper:
             return files
 
         return []
+
+    def resolve_module(self, method: str, url_parts: list[str]) -> str:
+        """
+        module 詞彙表的**唯一權威來源**（見 02a 十三章）：優先精確匹配
+        route_to_module_mapping（跟 resolve_related_files() 共用同一套
+        normalize_path_key()，key 格式完全一致——route_to_file_mapping／
+        route_to_module_mapping 是 Agent ③ 同一次迴圈產出的兩份表，見
+        `05a_design_agent_architecture.md` 八章）。
+
+        故意不做 resolve_related_files() 那種「前綴匹配」fallback：
+        route_to_module_mapping 的值是單一 module 字串，不是清單，前綴匹配
+        撈到的候選之間沒有「取最長最精確」這種可比較的排序意義——查不到就
+        直接落到下面的 get_module() URL 推斷 fallback，不嘗試模糊比對。
+
+        查無精確對應時 fallback 回 core/postman_runner.get_module() 的
+        URL 推斷（記警告，供人工核對是否為①③解析範圍外的殘餘情況，如
+        04a 十一章列出的已知限制，或 skip 呼叫鏈已排除的端點——這種情況下
+        沒有 ApiMapping 可用，Plan Agent 也不會為對應的方法產生 task，因此
+        這裡的推斷結果不會影響任何 task.module 的一致性，純粹是 golden
+        檔案還是需要一個目錄可以歸類）。
+        """
+        key = self.normalize_path_key(method, url_parts)
+
+        if key in self.module_mapping:
+            return self.module_mapping[key]
+
+        logger.warning(
+            "route_to_module_mapping 查無對應 key=%s，fallback 回 URL 推斷"
+            "（見 core/postman_runner.get_module() 說明）",
+            key,
+        )
+        return get_module(url_parts)
 ```
 
 ---
@@ -684,7 +733,8 @@ from datetime import datetime
 from pathlib import Path
 # 套件內部一律用帶 refactor_harness. 前綴的絕對匯入（見 02a 二章「匯入慣例」）
 from refactor_harness.core.masker import ResponseMasker
-from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id, get_module
+from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id
+from refactor_harness.core.route_mapper import RouteMapper
 from refactor_harness.fixtures.db_env import DbEnvironment
 
 # mutation collection 只接受 2xx（含 204）視為預期成功；不在此範圍內的一律判定為
@@ -710,6 +760,10 @@ class GoldenRecorder:
         self.java_base_url = java_base_url
         self.golden_dir = Path(golden_dir)
         self.masker = ResponseMasker()
+        # module 分區用共用的 RouteMapper.resolve_module()，與 GoldenVerifier／
+        # MutationVerifier 共用同一套（route_to_module_mapping 優先，get_module()
+        # URL 推斷 fallback，見 core/route_mapper.py、02a 十三章）。
+        self.route_mapper = RouteMapper(config_path)
 
         with open(config_path) as f:
             config = yaml.safe_load(f)
@@ -921,9 +975,11 @@ class GoldenRecorder:
         return golden, None
 
     def _write_golden(self, case_id: str, golden: dict):
-        # module 推斷用共用的 get_module（見 core/postman_runner.py），
-        # 與驗證端的載入／過濾用同一套詞彙。
-        module = get_module(golden["request"]["path"])
+        # module 分區用共用的 RouteMapper.resolve_module()（route_to_module_mapping
+        # 優先，見 core/route_mapper.py），與驗證端的載入／過濾用同一套詞彙。
+        module = self.route_mapper.resolve_module(
+            golden["request"]["method"], golden["request"]["path"]
+        )
         dir_path = self.golden_dir / module
         dir_path.mkdir(parents=True, exist_ok=True)
 
@@ -942,7 +998,7 @@ from pathlib import Path
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
-from refactor_harness.core.postman_runner import run_newman, make_case_id, get_module
+from refactor_harness.core.postman_runner import run_newman, make_case_id
 from refactor_harness.core.route_mapper import RouteMapper
 
 class GoldenVerifier:
@@ -976,13 +1032,16 @@ class GoldenVerifier:
 
         filtered = [
             ex for ex in executions
-            if self._get_module(ex["item"]["request"]["url"]["path"]) == module_filter
+            if self._get_module(
+                ex["item"]["request"]["method"], ex["item"]["request"]["url"]["path"]
+            ) == module_filter
         ]
         return self.reporter.build_report(self._process_executions(filtered))
 
-    def _get_module(self, url_parts: list[str]) -> str:
-        # 委派給共用的 get_module（module 詞彙表唯一權威來源，見 core/postman_runner.py）
-        return get_module(url_parts)
+    def _get_module(self, method: str, url_parts: list[str]) -> str:
+        # 委派給共用的 RouteMapper.resolve_module()（module 詞彙表唯一權威
+        # 來源，見 core/route_mapper.py、02a 十三章）。
+        return self.route_mapper.resolve_module(method, url_parts)
 
     def _process_executions(self, executions: list[dict]) -> list[dict]:
         """回傳尚未分類（未呼叫 build_report）的原始 case 結果清單。"""
@@ -994,7 +1053,7 @@ class GoldenVerifier:
             case_id = make_case_id(item)  # 共用函式，與錄製端演算法一致（含消毒）
             url_parts = item["request"]["url"]["path"]
             method = item["request"]["method"]
-            module = self._get_module(url_parts)
+            module = self._get_module(method, url_parts)
 
             golden = self._load_golden(case_id, module)
             if golden is None:
@@ -1061,7 +1120,7 @@ import json
 import yaml
 from pathlib import Path
 # 套件內部一律用帶 refactor_harness. 前綴的絕對匯入（見 02a 二章「匯入慣例」）
-from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id, get_module
+from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
@@ -1195,7 +1254,7 @@ class MutationVerifier:
             case_id = make_case_id(item)
             url_parts = item["request"]["url"]["path"]
             method = item["request"]["method"]
-            module = self._get_module(url_parts)
+            module = self._get_module(method, url_parts)
 
             golden = self._load_golden(case_id, module)
             body_diff = None
@@ -1243,9 +1302,10 @@ class MutationVerifier:
 
         return results
 
-    def _get_module(self, url_parts: list[str]) -> str:
-        # 委派給共用的 get_module（module 詞彙表唯一權威來源，見 core/postman_runner.py）
-        return get_module(url_parts)
+    def _get_module(self, method: str, url_parts: list[str]) -> str:
+        # 委派給共用的 RouteMapper.resolve_module()（module 詞彙表唯一權威
+        # 來源，見 core/route_mapper.py、02a 十三章），與 GoldenVerifier 共用。
+        return self.route_mapper.resolve_module(method, url_parts)
 
     def _load_golden(self, case_id: str, module: str) -> dict | None:
         golden_path = self.golden_dir / module / f"{case_id}.json"

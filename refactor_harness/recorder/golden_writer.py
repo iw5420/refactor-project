@@ -4,7 +4,8 @@ from datetime import datetime
 from pathlib import Path
 # 套件內部一律用帶 refactor_harness. 前綴的絕對匯入（見 02a 二章「匯入慣例」）
 from refactor_harness.core.masker import ResponseMasker
-from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id, get_module
+from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id
+from refactor_harness.core.route_mapper import RouteMapper
 from refactor_harness.fixtures.db_env import DbEnvironment
 
 # mutation collection 只接受 2xx（含 204）視為預期成功；不在此範圍內的一律判定為
@@ -31,6 +32,9 @@ class GoldenRecorder:
         self.java_base_url = java_base_url
         self.golden_dir = Path(golden_dir)
         self.masker = ResponseMasker()
+        # module 分區用共用的 RouteMapper.resolve_module()，與 GoldenVerifier／
+        # MutationVerifier 共用同一套（見 core/route_mapper.py、02a 十三章）。
+        self.route_mapper = RouteMapper(config_path)
 
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
@@ -242,9 +246,11 @@ class GoldenRecorder:
         return golden, None
 
     def _write_golden(self, case_id: str, golden: dict):
-        # module 推斷用共用的 get_module（見 core/postman_runner.py），
-        # 與驗證端的載入／過濾用同一套詞彙。
-        module = get_module(golden["request"]["path"])
+        # module 分區用共用的 RouteMapper.resolve_module()（見
+        # core/route_mapper.py），與驗證端的載入／過濾用同一套詞彙。
+        module = self.route_mapper.resolve_module(
+            golden["request"]["method"], golden["request"]["path"]
+        )
         dir_path = self.golden_dir / module
         dir_path.mkdir(parents=True, exist_ok=True)
 

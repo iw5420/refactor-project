@@ -80,15 +80,14 @@ def make_case_id(item: dict) -> str:
 
 def get_module(url_parts: list[str]) -> str:
     """
-    從 URL path 推斷 module 名稱：取第一個非版本前綴的路徑段。
+    module 詞彙表的 fallback 推斷：取第一個非版本前綴的路徑段。
     例：["api", "v1", "orders", "123"] → "orders"
 
-    ⚠️ 這個函式是整個 Harness 的 module 詞彙表「唯一權威來源」：
-    - golden 檔案的存放目錄（fixtures/golden/{module}/）用它決定
-    - verify_module(module_filter) 的過濾條件用它比對
-    - 02a 十三章規定 task 的 module 欄位「對應 fixtures/golden/ 的子目錄名稱」，
-      因此 [P] Plan Agent 填入 task.module 時**必須使用與本函式相同的推斷結果**。
-      兩邊詞彙不一致時不會報錯，而是 verify_module 靜默漏測。
+    ⚠️ 唯一權威來源是 config/harness.yaml 的 route_to_module_mapping
+    （見 02a 十三章、十一章、05a 八章），由 RouteMapper.resolve_module()
+    優先查詢；這個函式只在查無對應時當 fallback，不應被其他模組直接呼叫
+    （golden_writer.py／comparator.py／mutation_verifier.py 一律經由
+    self.route_mapper.resolve_module(method, url_parts)）。
     """
     return next(
         (p for p in url_parts if p not in ("api", "v1", "v2")),

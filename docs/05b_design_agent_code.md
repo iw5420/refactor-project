@@ -17,7 +17,7 @@
 | `design_agent/prompts.py` | 05a 六章 | Claude system prompt 與 output schema |
 | `design_agent/llm.py` | 05a 六章 | ③ 專屬的模型選擇 |
 | `design_agent/design.py` | 05a 六章 | 逐波呼叫 Claude API、組裝 InterfaceSpec |
-| `design_agent/route_mapping.py` | 05a 八、九章 | `route_to_file_mapping` 機械合併，並寫入 `config/harness.yaml` |
+| `design_agent/route_mapping.py` | 05a 八、九章 | `route_to_file_mapping`／`route_to_module_mapping` 機械合併，並寫入 `config/harness.yaml` |
 | `design_agent/__init__.py` | 05a 十章 | 對外唯一入口 `run_design_agent()` |
 | `graph/nodes/design_node.py` | 05a 十一章 | LangGraph node（取代原本的 stub） |
 
@@ -1167,7 +1167,7 @@ def design_all_modules(
     `(全部 module 攤平的 InterfaceSpec 清單, 組裝完成的 directory_tree 字串,
     實際產出過 schemas/{module}.py 的 module 名稱集合)`。
 
-    第三個回傳值供 `route_mapping.build_route_to_file_mapping()` 判斷
+    第三個回傳值供 `route_mapping.build_route_mappings()` 判斷
     `related_files` 該不該納入 schema 檔案——不能只憑「這個 module 有沒有
     router 檔案」猜測，同一個 module 的 API 邊界方法若全部只用 inline
     schema（沒有 `$ref`，見 `type_mapping.schema_name_for()`），這個
@@ -1211,7 +1211,7 @@ def _render_directory_lines(
     `interfaces` 是 routers／services／repositories 三層的權威來源；
     `app/schemas/{module}.py` 只在 `modules_with_schema_file`（見
     `design_all_modules()` 「幽靈檔案」說明）裡的 module 才列出，跟
-    `route_mapping.build_route_to_file_mapping()` 判斷 `related_files`
+    `route_mapping.build_route_mappings()` 判斷 `related_files`
     用的同一個集合，避免這裡列出一個實際沒有 Schema 定義段的檔案；
     `app/models/{module}.py` 是每個 module 都有的 SQLAlchemy ORM 佔位
     檔案（05a 三章，欄位內容由④生成，見九章），因此對 `all_module_names`
@@ -1323,7 +1323,10 @@ def _build_boundary_index(api_to_python_target: list[ApiMapping]) -> dict[tuple[
 def _python_function_name(java_method: str, is_private: bool) -> str:
     """05a 七章「私有／內部方法的命名慣例」：camelCase → snake_case，
     Java `private` 方法加底線前綴，保留在同一個 class／檔案內，不特別
-    切出獨立檔案。
+    切出獨立檔案。只算單一 method 的基礎名稱，不處理多載消歧——多載時
+    同一組 `overloads` 內每個 `sig` 呼叫這裡都會拿到相同字串，消歧邏輯
+    在呼叫端 `_build_method_contexts()`（見該函式與 05a 四章「多載方法
+    的處理」）。
     """
     name = type_mapping.camel_to_snake(java_method)
     return f"_{name}" if is_private else name
@@ -1402,6 +1405,15 @@ def _build_method_contexts(
         # 型別錯誤地複製到不相干的多載方法上。
         selected_overload = _select_boundary_overload(overloads, operation) if operation is not None else None
 
+        # 多載消歧（05a 四章「多載方法的處理」）：同一組 overloads 的
+        # sig.method_name 完全相同，_python_function_name() 對每個 sig
+        # 都會算出同一個基礎名稱，必須在這裡依宣告順序疊加計數器消歧，
+        # 否則同一個 class／檔案會產出兩個同名 InterfaceSpec（Python 不
+        # 支援多載，這是非法輸出，不只是精準度問題）。第一次出現保留
+        # 原始名稱，第二次起加 `_2`、`_3`……——比照 04a 三章引用過的
+        # springdoc voice/voice_1 前例，用「從 2 開始」單純是對人類讀者
+        # 更直覺，不是唯一合法編號方式。
+        seen_names: dict[str, int] = {}
         for sig in overloads:
             if sig is selected_overload:
                 params, return_type = type_mapping.resolve_api_boundary_signature(sig, operation, openapi_spec)
@@ -1416,13 +1428,17 @@ def _build_method_contexts(
                 uncovered = []
                 boundary_schemas = []
 
+            base_name = _python_function_name(sig.method_name, sig.is_private)
+            seen_names[base_name] = seen_names.get(base_name, 0) + 1
+            function_name = base_name if seen_names[base_name] == 1 else f"{base_name}_{seen_names[base_name]}"
+
             contexts.append(
                 _MethodContext(
                     signature_key=sig.signature_key,
                     java_method=sig.method_name,
                     class_name=class_sig.class_name,
                     complexity=method_info["complexity"],
-                    function_name=_python_function_name(sig.method_name, sig.is_private),
+                    function_name=function_name,
                     layer=layer,
                     params=params,
                     return_type=return_type,
@@ -1599,19 +1615,20 @@ def _call_design_llm(
 - **`related_files` 不含幽靈檔案**：一個只有 inline response schema（無 `$ref`）的 module，`directory_tree` 不會產出 `schemas/{module}.py`，`route_to_file_mapping` 也正確不把這個檔案路徑塞進 `related_files`；換成另一個有具名 schema 的 module 則正常帶上——`modules_with_schema_file` 精確追蹤到「這個 module 六章實際有沒有產出 schema 檔案」，不是用「有沒有 router 檔案」猜測。
 - **目錄結構段（`_render_directory_lines()`）涵蓋 `schemas`／`models`**：驗證過同一組多 module 輸入，目錄結構段正確列出所有 `all_module_names` 的 `app/models/{module}.py`，以及僅 `modules_with_schema_file` 裡 module 的 `app/schemas/{module}.py`（沒有具名 schema 的 module 不會出現）——跟上一條 `related_files` 的判斷邏輯共用同一個集合，兩處不會對不上。
 - **多載方法不會共用同一份 openapi operation，且挑選依參數個數而非宣告順序**：一個 class 內兩個同名多載方法（`save(String)`／`save(String, Integer)`），只有一個掛了實際 endpoint 時，驗證過 `_select_boundary_overload()` 正確挑中參數個數跟 operation 更接近的那一個拿到 openapi 覆寫的參數/回傳型別，另一個正確退回機械型別對應（`String`→`str`／`Integer`→`int`），不會兩個都套用同一份 operation；刻意把兩個多載在 `overloads` 清單裡的宣告順序對調後重跑，選中的仍是參數個數較接近的那一個，確認不是「永遠選第一個」。
+- **多載方法的 `function_name` 消歧**（見 05a 四章）：直接呼叫 `_build_method_contexts()`（不 mock LLM，這段不涉及 Claude API）餵入一個 class 內三個同名多載方法（`voice(String)`／`voice(String, int)`／`voice(String, int, int)`），確認產出 `function_name` 依宣告順序分別是 `voice`／`voice_2`／`voice_3`，三者互不相同。
 
 ---
 
-## 八、`route_mapping.py`——`route_to_file_mapping` 機械合併與落地寫入（八、九章）
+## 八、`route_mapping.py`——`route_to_file_mapping`／`route_to_module_mapping` 機械合併與落地寫入（八、九章）
 
-除了機械合併 `route_to_file_mapping`（05a 八章），這個檔案也負責把結果實際寫入 `config/harness.yaml`（05a 九章、00 八章明訂的③職責），不是只回傳給 State 就結束——`config/harness.yaml` 是 Harness（Agent ⑥）驗證階段直接讀檔案的來源，State 裡的值到不了那裡。
+除了機械合併 `route_to_file_mapping`／`route_to_module_mapping`（05a 八章，設計理由詳見該章，這裡不重複），這個檔案也負責把結果實際寫入 `config/harness.yaml`（05a 九章、00 八章明訂的③職責），不是只回傳給 State 就結束——`config/harness.yaml` 是 Harness（Agent ⑥）驗證階段直接讀檔案的來源，State 裡的值到不了那裡；`route_to_module_mapping` 不進 `RefactorState`，只寫入 yaml（見 05a 八章）。
 
 ```python
 # design_agent/route_mapping.py
-"""③ 架構設計 Agent：route_to_file_mapping 機械合併，對應 05a 八章
-全節。完全是程式邏輯，不需要 LLM——所有需要的資訊（`api_to_python_
-target` 的 endpoint↔module 對應、每個 module 的 `interfaces` 檔案集合）
-在六章都已經產出完畢。
+"""③ 架構設計 Agent：route_to_file_mapping／route_to_module_mapping 機械
+合併，對應 05a 八章全節（設計理由詳見該章）。完全是程式邏輯，不需要
+LLM——所有需要的資訊（`api_to_python_target` 的 endpoint↔module 對應、
+每個 module 的 `interfaces` 檔案集合）在六章都已經產出完畢。
 """
 from __future__ import annotations
 
@@ -1652,23 +1669,16 @@ def normalize_path_key(http_method: str, endpoint: str) -> str:
     return f"{http_method.upper()}_{path}"
 
 
-def build_route_to_file_mapping(
+def build_route_mappings(
     api_to_python_target: list[ApiMapping],
     interfaces: list[InterfaceSpec],
     modules_with_schema_file: set[str],
-) -> dict[str, list[str]]:
-    """對應 05a 八章「`related_files` 的組成」：一個 `ApiMapping` 項目的
-    `related_files` = 該項目 `module` 底下所有 `interfaces` 的
-    `file_path`（去重），加上（若該 module 有對應的
-    `schemas/{module}.py`——即這個 module 產出過任何具名 schema）該
-    schema 檔案路徑，供 Debug Agent 除錯參考（見 05a 八章：`missing_
-    fields`／`type_mismatch` 的 debug_hint 明確指向「檢查 Pydantic
-    schema」，缺了這個檔案路徑會讓 Debug Agent 少一個關鍵線索）。
-
-    這裡的 `related_files` 給整個 module 的檔案集合，不嘗試精算「這次
-    呼叫實際上只會執行到哪幾個函式」——後者需要真正的呼叫鏈分析，成本
-    遠高於效益，也符合 04a 反覆強調的「多連、少排除」保守精神（見 05a
-    八章「設計原則延續」）。
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """對應 05a 八章全節（`related_files` 的組成、`route_to_module_
+    mapping` 的存在理由，詳見該章，這裡不重複）。回傳
+    `(route_to_file_mapping, route_to_module_mapping)`——兩者共用同一個
+    `normalize_path_key()` 迴圈一次產出，`route_to_module_mapping` 的值
+    就是這筆 `ApiMapping.module` 本尊，不是新的判斷。
 
     **`schemas/{module}.py` 是否存在的判定，必須用 `modules_with_schema_
     file` 精確比對，不能用「這個 module 有沒有 router 檔案」猜測**：同一
@@ -1686,47 +1696,54 @@ def build_route_to_file_mapping(
         module = _module_of(iface["file_path"])
         files_by_module.setdefault(module, set()).add(iface["file_path"])
 
-    mapping: dict[str, list[str]] = {}
+    file_mapping: dict[str, list[str]] = {}
+    module_mapping: dict[str, str] = {}
     for api in api_to_python_target:
         key = normalize_path_key(api["http_method"], api["endpoint"])
         related = set(files_by_module.get(api["module"], set()))
         if api["module"] in modules_with_schema_file:
             related.add(schema_file_path(api["module"]))
-        mapping[key] = sorted(related)
-    return mapping
+        file_mapping[key] = sorted(related)
+        module_mapping[key] = api["module"]
+    return file_mapping, module_mapping
 
 
-def write_route_to_file_mapping(
-    route_to_file_mapping: dict[str, list[str]], config_path: str = "config/harness.yaml"
+def write_route_mappings(
+    route_to_file_mapping: dict[str, list[str]],
+    route_to_module_mapping: dict[str, str],
+    config_path: str = "config/harness.yaml",
 ) -> None:
     """對應 05a 九章、00 八章「`route_to_file_mapping` 產出後直接寫入
-    `config/harness.yaml`，不需人工填寫」——這裡是實際落地檔案 I/O 的
-    地方，不只是回傳給 State 就結束（`config/harness.yaml` 的
-    `RouteMapper` 是純讀檔案的類別，不吃 LangGraph State，見 02a 十一章，
-    Harness 驗證階段能讀到這份 mapping 的前提就是這個檔案真的被寫到
-    磁碟上）。跟 `spec_node.py`／`collection_node.py` 呼叫的
-    `run_spec_agent()`／`run_collection_agent()` 一樣，檔案 I/O 副作用
-    放在 Agent 自己的執行過程裡完成，不留到流程末端另外用一個
-    Orchestrator 步驟去沖刷，這是這個專案既有的一貫做法。
+    `config/harness.yaml`，不需人工填寫」，以及 05a 八章
+    `route_to_module_mapping` 的落地——這裡是實際落地檔案 I/O 的地方，
+    不只是回傳給 State 就結束（`RouteMapper` 是純讀檔案的類別，不吃
+    LangGraph State，見 02a 十一章）。跟 `spec_node.py`／
+    `collection_node.py` 呼叫的 `run_spec_agent()`／
+    `run_collection_agent()` 一樣，檔案 I/O 副作用放在 Agent 自己的執行
+    過程裡完成，不留到流程末端另外用一個 Orchestrator 步驟去沖刷，這是
+    這個專案既有的一貫做法。
 
-    **只覆寫 `route_to_file_mapping` 這個 key**，其餘段落（
-    `databases`／`services`／`collections`／`diff_rules`，這些是人工在
-    00 五章、02a 設定好的環境設定，不是③的產出）讀進來後原樣保留、寫
-    回去——`config/harness.yaml` 不是③獨佔的檔案，是跟 Harness 共用的
-    設定檔，見 `config/harness.yaml` 檔案內既有的註解「此區段由 Agent
-    ③（架構設計 Agent）自動產生並寫入，不應手動維護」，只針對這一段。
+    **兩個 key 必須在同一次讀寫回合裡一起覆寫**：`safe_load`／
+    `safe_dump` 是整檔 round-trip，若分兩次呼叫各自「讀取＋覆寫單一 key
+    ＋寫回」，後一次呼叫寫回的整份 config 不會包含前一次剛寫入的那個
+    key（除非前一次已經先落地到磁碟，但那樣仍多一次不必要的 I/O 且無法
+    原子化）。其餘段落（`databases`／`services`／`collections`／
+    `diff_rules`，這些是人工在 00 五章、02a 設定好的環境設定，不是③的
+    產出）讀進來後原樣保留、寫回去——`config/harness.yaml` 不是③獨佔的
+    檔案，是跟 Harness 共用的設定檔。
 
     **已知限制**：用 PyYAML 的 `safe_load`／`safe_dump` 做「讀取＋覆寫＋
     寫回」，不是保留註解的 round-trip parser（如 `ruamel.yaml`）——
-    `config/harness.yaml` 裡原本給人看的註解（如上面提到的那行警語）在
-    第一次被③寫入後會消失，其餘機器可讀的 key/value 不受影響，只有
-    註解會不見。這是接受的取捨，不是遺漏：專案目前唯一用到的 YAML
-    函式庫是 PyYAML（`refactor_harness/core/route_mapper.py` 已經在用），
-    為了保留註解另外引入一個新函式庫，成本高於這個取捨的代價。
+    `config/harness.yaml` 裡原本給人看的註解在第一次被③寫入後會消失，
+    其餘機器可讀的 key/value 不受影響，只有註解會不見。這是接受的取捨，
+    不是遺漏：專案目前唯一用到的 YAML 函式庫是 PyYAML
+    （`refactor_harness/core/route_mapper.py` 已經在用），為了保留註解
+    另外引入一個新函式庫，成本高於這個取捨的代價。
     """
     path = Path(config_path)
     config: dict = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
     config["route_to_file_mapping"] = route_to_file_mapping
+    config["route_to_module_mapping"] = route_to_module_mapping
     path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
@@ -1744,7 +1761,7 @@ def _module_of(file_path: str) -> str:
     return stem  # 不應該發生（見 05a 三章檔名規則），保底原樣回傳
 ```
 
-**已驗證**：對一份沿用既有格式的 `config/harness.yaml`（含 `databases`／`services`／`collections`／`diff_rules`）跑過 `write_route_to_file_mapping()`，其餘段落原封不動、只有 `route_to_file_mapping` 被換成這次產出的內容，`route_mapper.RouteMapper` 讀取端的資料格式不受影響。`normalize_path_key()` 對一般 endpoint 與結尾多帶 `/` 的 endpoint 都驗證過——後者正確保留結尾底線（`GET_api_v1_users_`），不會被悄悄 filter 掉。
+**已驗證**（`route_to_file_mapping` 部分，`route_to_module_mapping` 是本輪新增、尚未跑過同等驗證，見十一章）：對一份沿用既有格式的 `config/harness.yaml`（含 `databases`／`services`／`collections`／`diff_rules`）跑過舊版 `write_route_to_file_mapping()`，其餘段落原封不動、只有 `route_to_file_mapping` 被換成這次產出的內容，`route_mapper.RouteMapper` 讀取端的資料格式不受影響。`normalize_path_key()` 對一般 endpoint 與結尾多帶 `/` 的 endpoint 都驗證過——後者正確保留結尾底線（`GET_api_v1_users_`），不會被悄悄 filter 掉。
 
 ---
 
@@ -1774,18 +1791,22 @@ def run_design_agent(
     """對應 05a 全文：設計 Python 專案結構，輸出
     `(python_structure, route_to_file_mapping)`，直接對應 `RefactorState`
     的 `python_structure`／`route_to_file_mapping` 兩個欄位（見 05a 九章）
-    ——同時把 `route_to_file_mapping` 實際寫入 `harness_config_path`
-    （見 `route_mapping.write_route_to_file_mapping()`），這不是可選的
-    附加行為，是 05a 九章、00 八章明訂的③職責本身。
+    ——同時把 `route_to_file_mapping` 與 `route_to_module_mapping` 一併
+    實際寫入 `harness_config_path`（見 `route_mapping.write_route_
+    mappings()`），這不是可選的附加行為，是 05a 九章、00 八章明訂的③
+    職責本身。`route_to_module_mapping` 不進回傳值、也不進 State（05a
+    八章已定案，只寫 yaml）。
     """
     interfaces, directory_tree, modules_with_schema_file = design.design_all_modules(
         module_list, api_to_python_target, openapi_spec, java_project_path
     )
     python_structure = PythonStructure(directory_tree=directory_tree, interfaces=interfaces)
-    route_to_file_mapping = route_mapping.build_route_to_file_mapping(
+    route_to_file_mapping, route_to_module_mapping = route_mapping.build_route_mappings(
         api_to_python_target, interfaces, modules_with_schema_file
     )
-    route_mapping.write_route_to_file_mapping(route_to_file_mapping, config_path=harness_config_path)
+    route_mapping.write_route_mappings(
+        route_to_file_mapping, route_to_module_mapping, config_path=harness_config_path
+    )
     return python_structure, route_to_file_mapping
 ```
 
@@ -1842,7 +1863,8 @@ async def run(state: RefactorState) -> dict:
 - **`_classify_params()` 的 requestBody 型別比對退化情形**：Java DTO 類別名稱與 springdoc 產生的 schema 名稱不一致、且同一方法有多個型別比對不到的參數時，全部落入 `uncovered_params`、交給六章 LLM 依描述語境判斷，沒有更精確的機械手段（見 `type_mapping._classify_params()` docstring「已知限制」，這點 05a 十三章本來就列為「待接上真實專案輸出後校準」）。
 - **`route_mapping._module_of()` 的檔名慣例耦合**：從 `file_path` 反推 module 名稱依賴 `layout.file_path_for_layer()` 的命名慣例（`{module}_{layer_singular}.py`），兩邊若日後各自演化，需要同步維護；沒有另外傳一份 `file_path -> module` 對照表的原因是這份資訊在六章當下就有（`_design_module()` 內部知道），但 `route_mapping.py` 刻意設計成純函式、只吃 `interfaces`，不額外要求呼叫端多傳一份輔助結構。
 - **`common/openapi_ref_resolver.py` 與 `spec_collection_agent/openapi_refs.py` 尚未合併**：延續 05a 十三章的既有技術債，這次只新增了共用介面、讓③直接對齊，03a/03c 遷移過去共用是後續一個獨立的小重構。
-- **`write_route_to_file_mapping()` 不保留 `config/harness.yaml` 既有註解**：PyYAML 的 `safe_load`／`safe_dump` 不是 round-trip parser，③第一次寫入後，檔案裡原本給人看的註解會消失（機器可讀的 key/value 不受影響）。接受的取捨，不是遺漏（見 `route_mapping.write_route_to_file_mapping()` docstring）。
+- **`write_route_mappings()` 不保留 `config/harness.yaml` 既有註解**：PyYAML 的 `safe_load`／`safe_dump` 不是 round-trip parser，③第一次寫入後，檔案裡原本給人看的註解會消失（機器可讀的 key/value 不受影響）。接受的取捨，不是遺漏（見 `route_mapping.write_route_mappings()` docstring）。
+- **`route_to_module_mapping`（`build_route_mappings()`／`write_route_mappings()`）是本輪新增、尚未跑過「已驗證」段落那組真實 config/harness.yaml 測試**：邏輯上與既有的 `route_to_file_mapping` 共用同一個迴圈與 key，理論上不會有獨立的失效模式，但實際跑過 `RouteMapper.resolve_module()`（02b）讀取這份新段落之前，仍算未驗證，留待接上真實③輸出後補測。
 - **`X | None` 語法要求目標 Python 服務 ≥ 3.10**：`extract_schema_fields()`／`map_java_type()` 的 `Optional` 對應都用 PEP 604 union 語法。這項前提已經明訂進 `00_refactor_architecture.md` 三章「Python 目標技術棧」，不再是隱含假設；若這個前提未來改變，`extract_schema_fields()` 跟 `map_java_type()` 都需要一併改成 `typing.Optional[T]`，不是只改其中一處（見 `type_mapping.py` 相關函式 docstring「環境前提」）。
 - **`BigDecimal` → `Decimal` 只在非 API 邊界方法生效**：API 邊界方法改用 openapi_spec 決定型別，springdoc 對 `BigDecimal` 欄位通常序列化成通用 `number` type，沒有訊號能標示「這原本是 BigDecimal」，這個欄位的 API 邊界型別仍是 `float`，是既有設計原則（openapi_spec 為邊界方法唯一權威來源）下的既知落差（見 `type_mapping.map_java_type()` docstring）。
 - **`from __future__ import annotations` 只解決同檔案內的循環參照**：跨 `schemas/{module}.py` 檔案的循環 import（`user.py` 直接 `import` `order.py`、反之亦然）不會被這一行解決，需要 `TYPE_CHECKING` guard＋`model_rebuild()`，屬於④如何實際生成、串接檔案間 import 的問題，留給 07a／08a（皆待建立）處理（見 `layout.render_schema_section()` docstring）。

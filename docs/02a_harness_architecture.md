@@ -453,6 +453,8 @@ Collection 是根據 OpenAPI Spec 自動產生的。若 Java API 有變動，只
 
 **這份 mapping 由 Agent ③（架構設計 Agent）自動產生**，在設計 Python 專案結構的同時一併輸出，寫入 `config/harness.yaml`，不需人工填寫。
 
+> `config/harness.yaml` 同一次由③寫入時，還有一個**共用下面同一套 key 格式**的姊妹表 `route_to_module_mapping`，供 `get_module()`（十三章）判斷 module 分區用——差別只在值：`route_to_file_mapping` 存 `related_files` 清單，`route_to_module_mapping` 存單一 `module` 字串（即 `ApiMapping.module`）。兩者是同一次機械組裝的兩個輸出，不是各自獨立的產出流程，細節見 `05a_design_agent_architecture.md` 八章。
+
 ### Key 格式
 
 ```
@@ -533,9 +535,9 @@ should_debug_or_done()
 
 Agent ⑤ 逐 task 呼叫 translator-cli 寫入單一函式，但**驗證不是逐 task 觸發**，而是在「該 module 底下所有 task 都已完成（成功或失敗）」時才跑一次該模組的 golden cases——驗證觸發時機是「整個 module 全部完成」而非「每個 task 完成」，避免依賴鏈未接完（例如 repository 已完成但 service／router 還沒寫）就誤觸發驗證、產生大量假失敗。實作對應 `01_langgraph_architecture.md` 六章的 `ModuleScheduler`。
 
-> **前提**：每個 task 必須含有 `module` 欄位（對應 `fixtures/golden/` 的子目錄名稱）；`module` 欄位由 [P] Plan Agent 在產生 task list 時填入，格式見主架構文件 `00_refactor_architecture.md` 第八節。
+> **前提**：每個 task 必須含有 `module` 欄位（對應 `fixtures/golden/` 的子目錄名稱）；`module` 欄位由 [P] Plan Agent 在產生 task list 時填入，逐字沿用 `ModuleInfo.module`（原因見 `06a_plan_agent_architecture.md` 四章），格式見主架構文件 `00_refactor_architecture.md` 第八節。
 >
-> **module 詞彙表的權威來源**：golden 子目錄名稱由 `core/postman_runner.py` 的 `get_module()`（取 URL 第一個非版本路徑段）機械決定，這也是 `verify_module()` 過濾 case 時使用的同一套推斷。因此 **Plan Agent 填入 `task.module` 時必須使用相同的推斷結果**——兩邊詞彙不一致時不會報錯，而是該 case **靜默地不被納入**局部驗證（golden 寫入與載入端內部自洽，不會假失敗，只會無聲消失在涵蓋範圍外）。已知限制：深層路由如 `/api/v1/admin/orders/audit` 會被推斷為 `admin` 而非語意上的 `orders`；對策見 `core/postman_runner.py` 的 `get_module()` 說明（建議 Plan Agent 直接機械採用推斷結果；route → module 對應表為未來擴充，列於十六章）。
+> **module 詞彙表的權威來源**：golden 子目錄名稱由 `core/postman_runner.py` 的 `get_module()` 決定——優先查 `config/harness.yaml` 的 `route_to_module_mapping` 段（③ 產出，見 `05a_design_agent_architecture.md` 八章，key 正規化方式與 `route_to_file_mapping` 相同，值即 `ApiMapping.module`），查得到就採用；查不到（該 endpoint 落在①③解析範圍外，如 04a 十一章列出的已知限制，或屬於 skip 呼叫鏈已排除的端點）才 fallback 回「URL 第一個非版本路徑段」的字串猜測，並記警告。fallback 路徑保留，只是不再是唯一機制（十六章「Module 詞彙一致性」待實作清單已同步更新）。
 
 ### 兩層驗證，觸發時機不同
 
@@ -710,11 +712,12 @@ PostgreSQL Server
 - [ ] 確認巢狀資源路由有獨立 key，不會被父路由假匹配
 - [ ] 確認沒有 API 對應到空的 related_files
 - [x] ~~`MutationVerifier` 補上 `route_to_file_mapping` 解析~~（已抽出至 `core/route_mapper.py` 的 `RouteMapper`，兩個 Verifier 共用，見九）
+- [ ] 確認 Agent ③ 同一次呼叫還輸出了 `route_to_module_mapping`（見十一章、`05a_design_agent_architecture.md` 八章），key 格式與 `route_to_file_mapping` 完全一致
 
 **Module 詞彙一致性**
-- [ ] 確認 Plan Agent 產出的所有 `task.module` 值，與 `get_module()` 對該模組 API 路徑的推斷結果完全一致（詞彙不一致不會報錯，只會靜默漏測，見十三章）
-- [ ] 檢查專案是否存在深層／跨模組路由（如 `/api/v1/admin/orders/...`）：若有，確認 Plan Agent 採用 `get_module()` 的機械推斷結果，或評估是否需要下一項的擴充
-- [ ] （未來擴充，視需要）由 Agent ③ 在 harness.yaml 產出 route → module 對應表，`get_module()` 改查表、URL 推斷降為 fallback
+- [x] ~~由 Agent ③ 在 harness.yaml 產出 route → module 對應表，get_module() 改查表、URL 推斷降為 fallback~~（`route_to_module_mapping`，見十一章、十三章、`05a_design_agent_architecture.md` 八章——`task.module` 因此逐字等於 `ModuleInfo.module`，不再是「兩邊各自保證一致」的人工約定）
+- [ ] 確認 `get_module()` 優先查 `route_to_module_mapping`，只有查不到時才 fallback 回 URL 推斷（見十三章）
+- [ ] 檢查專案是否存在①③解析範圍外、因此不會出現在 `route_to_module_mapping` 裡的殘餘路由（如 04a 十一章列出的已知限制、或 skip 呼叫鏈已排除的端點）：若有，確認這些路由走 fallback 時的 `get_module()` 推斷結果與 warning log 符合預期，不需要再要求 Plan Agent 手動對齊——`task.module` 一律逐字沿用 `ModuleInfo.module`（見 `06a_plan_agent_architecture.md` 四章），沒有例外情況需要特別處理
 
 **Schema 同步機制**
 - [ ] 確認 Python 服務的 Alembic migration 可以直接套用到 `MOC_MATSUEXAM_TEST`，或改用 `db.sync_schema()` 手動同步

@@ -48,7 +48,7 @@
 | ① 解析 Agent | 解析 Java 專案，輸出模組清單、業務邏輯摘要、API 對應表；skip 呼叫鏈排除消費上一步的 skip 清單 | `04a_parse_agent_architecture.md` / `04b_parse_agent_code.md` |
 | ② 測試 Agent（Harness 錄製端） | 對 Java 服務執行 Postman，記錄 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
 | ③ 架構設計 Agent | 輸出 Python 專案結構、模組 interface、route_to_file_mapping | `05a_design_agent_architecture.md` / `05b_design_agent_code.md` |
-| [P] Plan Agent | 產出 Agent ⑤ 的 task list | `06a_plan_agent_architecture.md` / `06b_plan_agent_code.md`（待建立） |
+| [P] Plan Agent | 產出 Agent ⑤ 的 task list | `06a_plan_agent_architecture.md` / `06b_plan_agent_code.md`（06b 待建立） |
 | ④ 骨架實作 Agent | 建立目錄與骨架（呼叫 translator-cli「骨架生成模式」） | `08a_scaffold_agent_architecture.md` / `08b_scaffold_agent_code.md`（待建立，介面定義見 `07a_translator_cli_architecture.md`） |
 | ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md`（待建立，介面定義見 `07a_translator_cli_architecture.md`） |
 | ⑥ 測試執行 Agent（Harness 驗證端） | 對 Python 服務執行 Postman，比對 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
@@ -342,6 +342,8 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 - **模組歸屬**：每個 task 標記 `module`，供 Agent ⑤ 判斷該 module 的所有 task 是否已全數完成
 
 - **輸出**：task list（欄位格式見第八節）
+
+→ task 拆解演算法、涵蓋率驗證、依賴排序細節見 `06a_plan_agent_architecture.md`。
 
 ---
 

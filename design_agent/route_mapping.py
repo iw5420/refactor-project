@@ -1,8 +1,9 @@
 # design_agent/route_mapping.py
-"""③ 架構設計 Agent：route_to_file_mapping 機械合併，對應 05a 八章
-全節。完全是程式邏輯，不需要 LLM——所有需要的資訊（`api_to_python_
-target` 的 endpoint↔module 對應、每個 module 的 `interfaces` 檔案集合）
-在六章都已經產出完畢。
+"""③ 架構設計 Agent：route_to_file_mapping／route_to_module_mapping 機械
+合併，對應 05a 八章全節（設計理由詳見該章，這裡不重複）。完全是程式
+邏輯，不需要 LLM——所有需要的資訊（`api_to_python_target` 的
+endpoint↔module 對應、每個 module 的 `interfaces` 檔案集合）在六章都
+已經產出完畢。
 """
 from __future__ import annotations
 
@@ -58,23 +59,16 @@ def normalize_path_key(http_method: str, endpoint: str) -> str:
     return f"{http_method.upper()}_{path}"
 
 
-def build_route_to_file_mapping(
+def build_route_mappings(
     api_to_python_target: list[ApiMapping],
     interfaces: list[InterfaceSpec],
     modules_with_schema_file: set[str],
-) -> dict[str, list[str]]:
-    """對應 05a 八章「`related_files` 的組成」：一個 `ApiMapping` 項目的
-    `related_files` = 該項目 `module` 底下所有 `interfaces` 的
-    `file_path`（去重），加上（若該 module 有對應的
-    `schemas/{module}.py`——即這個 module 產出過任何具名 schema）該
-    schema 檔案路徑，供 Debug Agent 除錯參考（見 05a 八章：`missing_
-    fields`／`type_mismatch` 的 debug_hint 明確指向「檢查 Pydantic
-    schema」，缺了這個檔案路徑會讓 Debug Agent 少一個關鍵線索）。
-
-    這裡的 `related_files` 給整個 module 的檔案集合，不嘗試精算「這次
-    呼叫實際上只會執行到哪幾個函式」——後者需要真正的呼叫鏈分析，成本
-    遠高於效益，也符合 04a 反覆強調的「多連、少排除」保守精神（見 05a
-    八章「設計原則延續」）。
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """對應 05a 八章全節（`related_files` 的組成、route_to_module_mapping
+    的存在理由，詳見該章，這裡不重複）。回傳
+    `(route_to_file_mapping, route_to_module_mapping)`——共用同一個
+    `normalize_path_key()` 迴圈一次產出，`route_to_module_mapping` 的值
+    就是這筆 `ApiMapping.module` 本尊，不是新的判斷。
 
     **`schemas/{module}.py` 是否存在的判定，必須用 `modules_with_schema_
     file` 精確比對，不能用「這個 module 有沒有 router 檔案」猜測**：同一
@@ -92,47 +86,51 @@ def build_route_to_file_mapping(
         module = _module_of(iface["file_path"])
         files_by_module.setdefault(module, set()).add(iface["file_path"])
 
-    mapping: dict[str, list[str]] = {}
+    file_mapping: dict[str, list[str]] = {}
+    module_mapping: dict[str, str] = {}
     for api in api_to_python_target:
         key = normalize_path_key(api["http_method"], api["endpoint"])
         related = set(files_by_module.get(api["module"], set()))
         if api["module"] in modules_with_schema_file:
             related.add(schema_file_path(api["module"]))
-        mapping[key] = sorted(related)
-    return mapping
+        file_mapping[key] = sorted(related)
+        module_mapping[key] = api["module"]
+    return file_mapping, module_mapping
 
 
-def write_route_to_file_mapping(
-    route_to_file_mapping: dict[str, list[str]], config_path: str = "config/harness.yaml"
+def write_route_mappings(
+    route_to_file_mapping: dict[str, list[str]],
+    route_to_module_mapping: dict[str, str],
+    config_path: str = "config/harness.yaml",
 ) -> None:
     """對應 05a 九章、00 八章「`route_to_file_mapping` 產出後直接寫入
-    `config/harness.yaml`，不需人工填寫」——這裡是實際落地檔案 I/O 的
-    地方，不只是回傳給 State 就結束（`config/harness.yaml` 的
-    `RouteMapper` 是純讀檔案的類別，不吃 LangGraph State，見 02a 十一章，
-    Harness 驗證階段能讀到這份 mapping 的前提就是這個檔案真的被寫到
-    磁碟上）。跟 `spec_node.py`／`collection_node.py` 呼叫的
-    `run_spec_agent()`／`run_collection_agent()` 一樣，檔案 I/O 副作用
-    放在 Agent 自己的執行過程裡完成，不留到流程末端另外用一個
-    Orchestrator 步驟去沖刷，這是這個專案既有的一貫做法。
+    `config/harness.yaml`，不需人工填寫」，以及 05a 八章
+    `route_to_module_mapping` 的落地——這裡是實際落地檔案 I/O 的地方，
+    不只是回傳給 State 就結束（`RouteMapper` 是純讀檔案的類別，不吃
+    LangGraph State，見 02a 十一章）。跟 `spec_node.py`／
+    `collection_node.py` 呼叫的 `run_spec_agent()`／
+    `run_collection_agent()` 一樣，檔案 I/O 副作用放在 Agent 自己的執行
+    過程裡完成，不留到流程末端另外用一個 Orchestrator 步驟去沖刷。
 
-    **只覆寫 `route_to_file_mapping` 這個 key**，其餘段落（
-    `databases`／`services`／`collections`／`diff_rules`，這些是人工在
-    00 五章、02a 設定好的環境設定，不是③的產出）讀進來後原樣保留、寫
-    回去——`config/harness.yaml` 不是③獨佔的檔案，是跟 Harness 共用的
-    設定檔，見 `config/harness.yaml` 檔案內既有的註解「此區段由 Agent
-    ③（架構設計 Agent）自動產生並寫入，不應手動維護」，只針對這一段。
+    **兩個 key 必須在同一次讀寫回合裡一起覆寫**：`safe_load`／
+    `safe_dump` 是整檔 round-trip，分兩次呼叫各自「讀取＋覆寫單一 key
+    ＋寫回」會讓後一次寫回的整份 config 蓋掉前一次剛寫入的那個 key。
+    其餘段落（`databases`／`services`／`collections`／`diff_rules`，這些
+    是人工在 00 五章、02a 設定好的環境設定，不是③的產出）讀進來後原樣
+    保留、寫回去。
 
     **已知限制**：用 PyYAML 的 `safe_load`／`safe_dump` 做「讀取＋覆寫＋
     寫回」，不是保留註解的 round-trip parser（如 `ruamel.yaml`）——
-    `config/harness.yaml` 裡原本給人看的註解（如上面提到的那行警語）在
-    第一次被③寫入後會消失，其餘機器可讀的 key/value 不受影響，只有
-    註解會不見。這是接受的取捨，不是遺漏：專案目前唯一用到的 YAML
-    函式庫是 PyYAML（`refactor_harness/core/route_mapper.py` 已經在用），
-    為了保留註解另外引入一個新函式庫，成本高於這個取捨的代價。
+    `config/harness.yaml` 裡原本給人看的註解在第一次被③寫入後會消失，
+    其餘機器可讀的 key/value 不受影響，只有註解會不見。這是接受的取捨，
+    不是遺漏：專案目前唯一用到的 YAML 函式庫是 PyYAML
+    （`refactor_harness/core/route_mapper.py` 已經在用），為了保留註解
+    另外引入一個新函式庫，成本高於這個取捨的代價。
     """
     path = Path(config_path)
     config: dict = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
     config["route_to_file_mapping"] = route_to_file_mapping
+    config["route_to_module_mapping"] = route_to_module_mapping
     path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 

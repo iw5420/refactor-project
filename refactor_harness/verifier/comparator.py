@@ -4,7 +4,7 @@ from pathlib import Path
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
-from refactor_harness.core.postman_runner import run_newman, make_case_id, get_module
+from refactor_harness.core.postman_runner import run_newman, make_case_id
 from refactor_harness.core.route_mapper import RouteMapper
 
 
@@ -38,13 +38,15 @@ class GoldenVerifier:
 
         filtered = [
             ex for ex in executions
-            if self._get_module(ex["item"]["request"]["url"]["path"]) == module_filter
+            if self._get_module(
+                ex["item"]["request"]["method"], ex["item"]["request"]["url"]["path"]
+            ) == module_filter
         ]
         return self.reporter.build_report(self._process_executions(filtered))
 
-    def _get_module(self, url_parts: list[str]) -> str:
-        # 委派給共用的 get_module
-        return get_module(url_parts)
+    def _get_module(self, method: str, url_parts: list[str]) -> str:
+        # 委派給共用的 RouteMapper.resolve_module()（見 02a 十三章）
+        return self.route_mapper.resolve_module(method, url_parts)
 
     def _process_executions(self, executions: list[dict]) -> list[dict]:
         """回傳尚未分類的原始 case 結果清單。"""
@@ -56,7 +58,7 @@ class GoldenVerifier:
             case_id = make_case_id(item)
             url_parts = item["request"]["url"]["path"]
             method = item["request"]["method"]
-            module = self._get_module(url_parts)
+            module = self._get_module(method, url_parts)
 
             golden = self._load_golden(case_id, module)
             if golden is None:

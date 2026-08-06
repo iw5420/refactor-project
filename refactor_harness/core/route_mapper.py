@@ -1,11 +1,17 @@
+import logging
 import re
 import yaml
+
+from refactor_harness.core.postman_runner import get_module
+
+logger = logging.getLogger(__name__)
 
 
 class RouteMapper:
     """
-    讀取 config/harness.yaml 的 route_to_file_mapping（由 Agent ③ 自動產生），
-    把 route 解析成對應的 Python 原始碼檔案清單。
+    讀取 config/harness.yaml 的 route_to_file_mapping／route_to_module_mapping
+    （皆由 Agent ③ 自動產生，見 02a 十一章、05a 八章），把 route 解析成對應的
+    Python 原始碼檔案清單，或對應的 module 名稱。
     """
 
     _UUID_RE = re.compile(
@@ -16,6 +22,7 @@ class RouteMapper:
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         self.route_mapping = config.get("route_to_file_mapping", {})
+        self.module_mapping = config.get("route_to_module_mapping", {})
 
     def normalize_path_key(self, method: str, url_parts: list[str]) -> str:
         """
@@ -55,3 +62,21 @@ class RouteMapper:
             return files
 
         return []
+
+    def resolve_module(self, method: str, url_parts: list[str]) -> str:
+        """
+        module 詞彙表的唯一權威來源（見 02a 十三章）：精確匹配
+        route_to_module_mapping，查無對應才 fallback 回
+        core.postman_runner.get_module() 的 URL 推斷（記警告）。不做
+        resolve_related_files() 那種前綴匹配——這裡的值是單一 module
+        字串，前綴候選之間沒有可比較的排序意義。
+        """
+        key = self.normalize_path_key(method, url_parts)
+
+        if key in self.module_mapping:
+            return self.module_mapping[key]
+
+        logger.warning(
+            "route_to_module_mapping 查無對應 key=%s，fallback 回 URL 推斷", key
+        )
+        return get_module(url_parts)
