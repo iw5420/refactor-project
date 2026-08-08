@@ -15,8 +15,7 @@
 fill_templates_or_continue`／`should_await_manual_fill_or_continue`），
 跟對應的 node 放同一個檔案（比照 refactor_harness 的
 `should_debug_or_done` 跟 run_tests 節點放一起的慣例），見
-01_langgraph_architecture.md 五「人工補值關卡」（該章節的 graph 佈線
-說明尚待同步這次的兩階段拆分，暫時以本檔案為準）。兩個判斷函式都指向
+01_langgraph_architecture.md 五「人工填值關卡」。兩個判斷函式都指向
 同一個 `await_manual_fill` 終止節點——不管是「階段一產生完模板」還是
 「階段二跑完後仍有缺口」，語意上都是同一件事：`postman/manual_fill/`
 底下還有沒填完的 endpoint，交給人工處理。

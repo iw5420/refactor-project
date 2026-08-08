@@ -36,7 +36,7 @@ refactor-project/
 │
 ├── refactor_harness/            # 見 02a / 02b（Agent ②/⑥ 與共用核心）
 ├── spec_collection_agent/       # 見 03a / 03b（[A]/[B] Agent 核心邏輯）
-├── translator_cli/              # 見 04a / 04b（Agent ④/⑤ 呼叫本地模型）
+├── translator_cli/              # 見 07a / 07b（Agent ④/⑤ 呼叫本地模型，兩份文件皆待建立）
 │
 ├── config/
 │   ├── harness.yaml
@@ -65,11 +65,14 @@ langgraph==1.2.6
 pyyaml==6.0.3
 python-dotenv==1.2.2
 httpx==0.28.1
+anthropic==0.117.0
 ```
 
 > **鎖死版本而非用 `>=`**：orchestrator 長時間無人值守運行，`langgraph` 仍在 1.x 早期，版本間可能有 breaking change（`Send` API、reducer 行為、checkpointer 介面）。用 `==` 精確鎖定，升級時主動跑 `pip install -U langgraph` 並重跑 stub-first 驗證（見七）。上面版本號僅供參考，建立專案時用 `pip index versions langgraph` 確認最新版即可。
 >
-> **不含 `langchain-anthropic`**：Claude API 呼叫統一走 `anthropic` SDK 直接呼叫（見 03b 一章「相依套件」、00 六章「Claude API 呼叫封裝」），全 repo 沒有任何地方 import `langchain`，不需要這個依賴。
+> **不含 `langchain-anthropic`**：Claude API 呼叫統一走 `anthropic` SDK 直接呼叫（見 03b 一章「相依套件」、00 六章「Claude API 呼叫封裝」），全 repo 沒有任何地方 import `langchain`，不需要這個依賴——但 `anthropic` 本身要裝，這是所有會呼叫 Claude API 的 Agent（①③⑦、[P]、[B]）共用 `common/llm_client.py` 唯一依賴的 SDK。
+>
+> 上面只列 orchestrator 骨架與跨 Agent 共用層直接會用到的套件；個別 Agent 專屬的依賴（如 ① 用的 `javalang`、Harness 用的 `psycopg2-binary`／`deepdiff`）隨各自 Agent 落地才加進來，不在這裡預先列一份會跟著實作進度過時的清單，實際完整清單以 `requirements.txt` 為準。
 >
 > `newman`、`openapi-to-postmanv2` 是 Node.js 工具，見 00 五；建議 `package.json` 同樣鎖版本，用 `npm ci`。
 
@@ -366,7 +369,7 @@ def build_graph():
     builder.add_edge("scaffold", "implement")
 ```
 
-> fan-in 不需要 reducer 的**前提**是：`record_tests`／`design`／`plan`／`scaffold` 的回傳值只包含各自實際更動的 key（互不相交），**絕對不能用 `{**state, ...}` 展開整包 state**——一旦多個分支在同一個 superstep 對同一個 key 各自寫入，就違反「無 reducer 時每個 key 只能被一個節點寫入」的前提，是未定義行為。`design` 雖然只有單一前驅（`parse`），但因為它同時也是 `record_tests` 的平行分支，仍需遵守「只回傳自己實際更動的 key」——不能再套用七章對純線性 node 的 `{**state, ...}` stub 慣例，這是本次改成平行分支後 `design_node.py` 的 stub 也要跟著調整的地方（見七章）。`implement` 節點**內部**對 module/task 的平行處理才真的需要 reducer（見六）。
+> fan-in 不需要 reducer 的**前提**是：`record_tests`／`design`／`plan`／`scaffold` 的回傳值只包含各自實際更動的 key（互不相交），**絕對不能用 `{**state, ...}` 展開整包 state**——一旦多個分支在同一個 superstep 對同一個 key 各自寫入，就違反「無 reducer 時每個 key 只能被一個節點寫入」的前提，是未定義行為。`design` 雖然只有單一前驅（`parse`），但因為它同時也是 `record_tests` 的平行分支，仍需遵守「只回傳自己實際更動的 key」——不套用七章對純線性 node 的 `{**state, ...}` stub 慣例（見七章）。`implement` 節點**內部**對 module/task 的平行處理才真的需要 reducer（見六）。
 
 ### Retry 迴圈（Conditional Edge）
 
@@ -557,13 +560,15 @@ class ModuleScheduler:
 
 ### `implement` node：串接排程器、Semaphore(1)、局部驗證
 
+**這裡展示的是接上真實 translator-cli／Harness 後的目標實作**：`translator_cli.fill_function()`／`FillResult`／`GoldenVerifier`／`DbEnvironment` 都定義在尚未建立的 `07a_translator_cli_architecture.md`（`translator_cli`）與已定案的 `02a_harness_architecture.md`（`refactor_harness`）——目前 `graph/nodes/implement_node.py` 仍是七章「Stub-First 開發策略」講的 stub 階段（`_run_one_task()` 回傳固定的字典、`db`／`verifier` 是 `None`），排程器（`ModuleScheduler`）本身已經是真實邏輯，只有 translator-cli／Harness 呼叫這幾行還沒換上。
+
 ```python
 # graph/nodes/implement_node.py
 import asyncio
 from graph.state import RefactorState
 from graph.scheduler import ModuleScheduler
 from translator_cli import client as translator_cli
-from translator_cli.types import FillResult                  # 見 04a/04b：{success, error, diff, ...}
+from translator_cli.types import FillResult                  # 見 07a/07b：{success, error, diff, ...}
 from refactor_harness.verifier.comparator import GoldenVerifier
 from refactor_harness.fixtures.db_env import DbEnvironment
 
@@ -690,8 +695,8 @@ async def run(state: RefactorState) -> RefactorState:
 ### Stub 範例
 
 ```python
-# nodes/design_node.py（stub 版本，design 現在是平行分支 node——與 record_tests
-# 共用同一個前驅，只回傳自己實際更動的 key，不能再展開 state，見五章）
+# nodes/design_node.py（stub 版本，design 是平行分支 node——與 record_tests
+# 共用同一個前驅，只回傳自己實際更動的 key，不展開 state，見五章）
 async def run(state: RefactorState) -> dict:
     return {
         "python_structure": {
@@ -731,7 +736,7 @@ async def run(state: RefactorState) -> dict:
     return {"scaffold_done": True}
 ```
 
-其餘**線性** node（`parse`、`extract_spec`、`implement`……，前驅只有一個、後繼也只有一個的 node）比照七章開頭「線性 node」的既有寫法，回傳 `{**state, ...}`；`record_tests`／`design`（見五章新增的 `parse → (record_tests ∥ design)` 分支）與 `plan`／`scaffold` 這兩組**平行分支** node，一律比照上面四個範例，只回傳自己實際更動的 key（原因見五、平行分支段落——`design` 雖然邏輯上仍是「一個前驅、直接產出下一階段的權威規格」，但因為跟 `record_tests` 是同一個前驅的平行分支，一樣不能展開 state）。
+其餘**線性** node（`parse`、`extract_spec`、`implement`……，前驅只有一個、後繼也只有一個的 node）比照七章開頭「線性 node」的既有寫法，回傳 `{**state, ...}`；`record_tests`／`design`（見五章 `parse → (record_tests ∥ design)` 分支）與 `plan`／`scaffold` 這兩組**平行分支** node，一律比照上面四個範例，只回傳自己實際更動的 key（原因見五、平行分支段落——`design` 雖然邏輯上仍是「一個前驅、直接產出下一階段的權威規格」，但因為跟 `record_tests` 是同一個前驅的平行分支，一樣不能展開 state）。
 
 ### 替換順序
 
@@ -765,32 +770,65 @@ async def run(state: RefactorState) -> dict:
 
 ```python
 # main.py
+"""
+Orchestrator 進入點：組裝 graph 並執行
+見 01_langgraph_architecture.md 九
+"""
 import asyncio
 import os
 from dotenv import load_dotenv
 from graph.builder import build_graph
 
+
 load_dotenv()
+
 
 async def main():
     graph = build_graph()
+
     initial_state = {
-        "java_project_path": os.environ["JAVA_PROJECT_PATH"],  # 進入點輸入，① 解析 Agent 讀取用，見 00 五章「環境建立」
-        "test_dsn": os.environ["TEST_DB_DSN"],           # implement node 的 DbEnvironment 用
-        "python_base_url": os.environ["PYTHON_BASE_URL"],# implement node 的 GoldenVerifier 用
-        "retry_count": 0,
+        "java_project_path": os.environ["JAVA_PROJECT_PATH"],  # ① 解析 Agent 讀取用，見 00 五章「環境建立」
+        "test_dsn": os.environ.get("TEST_DB_DSN", ""),   # implement node 用
+        "python_base_url": os.environ.get("PYTHON_BASE_URL", "http://localhost:8000"),  # implement node 用
+        "module_list": [],
+        "api_to_python_target": [],
+        "openapi_spec": {},
+        "collection_readonly_path": "",
+        "collection_mutation_path": "",
+        "collection_manual_fill_pending": [],
+        "golden_output": {},
+        "python_structure": {"directory_tree": "", "interfaces": []},
+        "route_to_file_mapping": {},
+        "task_list": [],
+        "scaffold_done": False,
         "completed_tasks": [],
         "failed_tasks": [],
         "partial_reports": [],
         "blocked_modules": [],
         "failed_modules": [],
+        "test_results": {},
+        "retry_count": 0,
     }
+
+    print("Starting Refactor Orchestrator...")
     final_state = await graph.ainvoke(initial_state)
-    print(final_state["test_results"])
+
+    print("\n=== Final State ===")
+    print(f"Test Results: {final_state.get('test_results')}")
+    print(f"Completed Tasks: {final_state.get('completed_tasks')}")
+    print(f"Failed Tasks: {final_state.get('failed_tasks')}")
+    print(f"Retry Count: {final_state.get('retry_count')}")
+
 
 if __name__ == "__main__":
+    # Windows 上避免事件迴圈關閉錯誤（見八）
+    if os.name == "nt":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
     asyncio.run(main())
 ```
+
+**跟七章的極簡 stub 慣例不同，`initial_state` 把 `RefactorState` 全部欄位都顯式初始化**（不是只列進入點必要的那幾個）：LangGraph 的 `TypedDict` state 沒有強制要求每個 key 一開始就存在，但缺欄位的 state 傳給某個提早讀取該欄位的 node（例如平行分支 node 之間互相不知道彼此進度）容易得到不直觀的 `KeyError`，顯式全部初始化成空值／預設值，讓每個 node 隨時能安全用 `.get()` 或直接索引讀取。
 
 - 執行：`python main.py`
 - 圖形檢視：LangGraph 內建 `graph.get_graph().draw_mermaid()` 可輸出 Mermaid 語法，貼到任何 Mermaid renderer 檢查平行分支與 retry 迴圈接線是否符合預期——建議在 stub 階段（見七）就先跑一次，比跑完整流程更快發現接錯線的問題。

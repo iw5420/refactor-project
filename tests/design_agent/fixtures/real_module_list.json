@@ -1,7 +1,7 @@
 [
   {
     "module": "common",
-    "summary": "提供整個系統共用的基礎設施類別，包含統一的 HTTP 回應封裝（ResponseResult）、業務邏輯層結果封裝（Result）、錯誤碼介面（ErrorCode）、以及字串驗證（ValidationUtil）、集合操作（CollectionUtil）、隨機碼生成與字元轉換（CodeUtil）等工具方法。這些類別不屬於任何單一業務領域，而是被所有模組共同依賴的橫切關注點，歸為一個基礎模組以避免循環依賴。",
+    "summary": "提供整個應用程式共用的基礎設施，包含統一的 HTTP 回應封裝（ResponseResult）、業務層結果封裝（Result）、錯誤碼規範介面（ErrorCode）、以及字串驗證（ValidationUtil）、集合處理（CollectionUtil）、隨機碼與字元轉換（CodeUtil）等工具類。這些 class 不屬於任何單一業務領域，而是被所有模組共同依賴的橫切關注點，歸為一個基礎模組以避免循環依賴。",
     "java_files": [
       "src/main/java/com/teachLanguage/model/common/api/ResponseResult.java",
       "src/main/java/com/teachLanguage/model/common/base/Result.java",
@@ -15,31 +15,31 @@
       {
         "java_method": "error",
         "class_name": "ResponseResult",
-        "description": "建立錯誤回應物件，支援多種參數組合：(code,msg)、(code,msg,data)、(code,data)、(ErrorCode)、(ErrorCode,data)、(ErrorCode,msg)",
+        "description": "建立錯誤回應，支援多種多載：自訂 code+msg、code+msg+data、code+data、ErrorCode enum、ErrorCode+data、ErrorCode+自訂msg",
         "complexity": "low"
       },
       {
         "java_method": "ok",
         "class_name": "ResponseResult",
-        "description": "建立成功回應物件，支援無資料、帶data、自訂code+msg+data三種形式",
+        "description": "建立成功回應，支援無資料、帶資料、自訂 code+msg+data 三種多載",
         "complexity": "low"
       },
       {
         "java_method": "success",
         "class_name": "Result",
-        "description": "建立成功的Result物件，可帶data或不帶data",
+        "description": "建立成功的 Result，可帶資料或不帶資料",
         "complexity": "low"
       },
       {
         "java_method": "failure",
         "class_name": "Result",
-        "description": "建立失敗的Result物件，支援(errorCode,message)、(ErrorCode)、(ErrorCode,message)三種參數組合",
+        "description": "建立失敗的 Result，支援自訂 errorCode+message 或傳入 ErrorCode enum（含可選自訂 message）",
         "complexity": "low"
       },
       {
         "java_method": "isFailure",
         "class_name": "Result",
-        "description": "判斷Result是否為失敗狀態",
+        "description": "判斷此 Result 是否為失敗狀態",
         "complexity": "low"
       },
       {
@@ -57,51 +57,146 @@
       {
         "java_method": "isNullOrEmpty",
         "class_name": "ValidationUtil",
-        "description": "判斷字串是否為null、空白或等於\"string\"（Swagger預設佔位值），是則回傳true",
+        "description": "判斷字串是否為 null、空白或等於 'string'，是則回傳 true",
         "complexity": "low"
       },
       {
         "java_method": "isValidField",
         "class_name": "ValidationUtil",
-        "description": "isNullOrEmpty的反向判斷，字串有效時回傳true",
+        "description": "判斷字串是否為有效欄位值（非 null、非空白、非 'string'），是則回傳 true",
         "complexity": "low"
       },
       {
         "java_method": "findDistinctField",
         "class_name": "CollectionUtil",
-        "description": "從泛型List中透過mapper函數提取String欄位，過濾掉null/空字串/\"string\"後去重，回傳不重複的有效值列表",
+        "description": "從 List 中以指定 mapper 函數取出字串欄位，過濾掉無效值後回傳去重後的字串列表",
         "complexity": "low"
       },
       {
         "java_method": "generateRandomCode",
         "class_name": "CodeUtil",
-        "description": "使用SecureRandom生成5位英數混合的隨機字串，用於產生考生隨機識別碼",
+        "description": "使用 SecureRandom 生成長度為 5 的隨機英數字字串，作為考試的隨機識別碼",
         "complexity": "low"
       },
       {
         "java_method": "halfWidth2FullWidth",
         "class_name": "CodeUtil",
-        "description": "將半形ASCII字元（含數字、英文、符號）轉換為對應的全形字元，空白轉為全形空白",
+        "description": "將半形字元（ASCII 33-126 及空格）轉換為對應的全形字元，用於數字或符號的全形顯示",
         "complexity": "low"
       }
     ]
   },
   {
-    "module": "candidate",
-    "summary": "負責考生身份識別與考試啟動流程。對外暴露查詢考生資料（依准考證號）與生成隨機識別碼（啟動考試）兩個 API 端點。內部透過 ExamService 封裝業務邏輯，包含驗證准考證、生成隨機碼、更新考試狀態等步驟；ExamEntity 為核心資料模型，ExamRepository 與 ExamComponentConfigRepository 提供資料存取，UserProfileRs、CreaterandomRq、CreaterandomRs、CardRq 為請求/回應 DTO。此模組是考生進入考試系統的入口。",
+    "module": "school",
+    "summary": "負責學校維度資料的查詢與通用系統資訊的對外暴露。GeneralController 提供語言設定、年級列表、地區列表、學校篩選及版本號等通用 API，底層由 SchoolRepository 對 SchoolEntity 進行資料存取。這些功能服務於報名前的選項查詢場景，與考試流程解耦，因此獨立成模組。",
+    "java_files": [
+      "src/main/java/com/teachLanguage/controller/GeneralController.java",
+      "src/main/java/com/teachLanguage/controllerRq/GetSchoolRq.java",
+      "src/main/java/com/teachLanguage/controllerRq/LanguageRq.java",
+      "src/main/java/com/teachLanguage/controllerRs/GetAllGradeRs.java",
+      "src/main/java/com/teachLanguage/controllerRs/GetAllLocalRs.java",
+      "src/main/java/com/teachLanguage/controllerRs/GetSchoolRs.java",
+      "src/main/java/com/teachLanguage/entity/SchoolEntity.java",
+      "src/main/java/com/teachLanguage/repository/SchoolRepository.java"
+    ],
+    "depends_on": [
+      "common"
+    ],
+    "methods": [
+      {
+        "java_method": "language",
+        "class_name": "GeneralController",
+        "description": "從設定檔讀取語言代碼（code）與顯示名稱（displayName），封裝成 LanguageRq 回傳，代表系統目前使用的語言設定。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "grades",
+        "class_name": "GeneralController",
+        "description": "查詢所有學校資料，萃取並去重年級欄位，回傳不重複的年級列表；若無資料則回傳 DATA_NOT_EXIST 錯誤。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "locals",
+        "class_name": "GeneralController",
+        "description": "查詢所有學校資料，萃取並去重地區欄位，回傳不重複的地區列表；若無資料則回傳 LOCATION_NOT_EXIST 錯誤。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "schools",
+        "class_name": "GeneralController",
+        "description": "接收 grade 與 local 兩個必填參數，驗證不可為空後查詢符合條件的學校，萃取並去重學校名稱後回傳；參數缺失或查無資料時分別回傳對應錯誤碼。",
+        "complexity": "medium"
+      },
+      {
+        "java_method": "getVersion",
+        "class_name": "GeneralController",
+        "description": "回傳應用程式的建置版本號字串，從 BuildProperties 取得。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "findByGradeAndLocal",
+        "class_name": "SchoolRepository",
+        "description": "依傳入的 grade（年級）與 local（地區）兩個條件查詢符合的 SchoolEntity 列表，供上層業務層篩選學校使用。",
+        "complexity": "low"
+      }
+    ]
+  },
+  {
+    "module": "registration",
+    "summary": "負責報名流程中的考生資料查詢 API，從 exam 資料表中萃取不重複的班級、年級、學校清單供前端報名表單使用。RegistrationController 直接依賴 ExamRepository 與 ExamEntity，並使用共用的回應 DTO（GetAllClassesRs、GetAllGradeRs、GetAllSchoolRs）。此模組聚焦於報名前的資料準備，與考試執行流程分離。",
+    "java_files": [
+      "src/main/java/com/teachLanguage/controller/RegistrationController.java",
+      "src/main/java/com/teachLanguage/controllerRs/GetAllClassesRs.java",
+      "src/main/java/com/teachLanguage/controllerRs/GetAllSchoolRs.java"
+    ],
+    "depends_on": [
+      "common",
+      "exam"
+    ],
+    "methods": [
+      {
+        "java_method": "classes",
+        "class_name": "RegistrationController",
+        "description": "查詢所有 ExamEntity 並萃取不重複的班級名稱清單，若清單為空回傳 CLASSES_NOT_EXIST 錯誤，否則回傳包含班級列表的成功回應。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "grades",
+        "class_name": "RegistrationController",
+        "description": "查詢所有 ExamEntity 並萃取不重複的年級清單，若清單為空回傳 GRADE_DATA_NOT_EXIST 錯誤，否則回傳包含年級列表的成功回應。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "schools",
+        "class_name": "RegistrationController",
+        "description": "查詢所有 ExamEntity 並萃取不重複的學校清單，若清單為空回傳 SCHOOLS_NOT_EXIST 錯誤，否則回傳包含學校列表的成功回應。",
+        "complexity": "low"
+      }
+    ]
+  },
+  {
+    "module": "exam",
+    "summary": "考試核心模組，涵蓋考生身份驗證、隨機識別碼生成、題目管理（新增/修改/刪除）、考生答案的儲存與查詢、試卷搜尋、完成時間記錄，以及考試元件設定查詢等完整考試流程。CandidateController 處理考生登入前的身份確認，ExamController 管理考試執行期間的所有互動，底層由 ExamService、ExamkindService、AnswerService 協調多個 Repository 完成業務邏輯。ExamSpecification 提供動態查詢能力，ExamEntity、ExamkindEntity、AnswerEntity、ExamComponentConfig 為核心資料模型。",
     "java_files": [
       "src/main/java/com/teachLanguage/controller/CandidateController.java",
+      "src/main/java/com/teachLanguage/controller/ExamController.java",
       "src/main/java/com/teachLanguage/controllerRq/CardRq.java",
       "src/main/java/com/teachLanguage/controllerRq/CreaterandomRq.java",
       "src/main/java/com/teachLanguage/controllerRs/CreaterandomRs.java",
       "src/main/java/com/teachLanguage/controllerRs/UserProfileRs.java",
+      "src/main/java/com/teachLanguage/entity/AnswerEntity.java",
       "src/main/java/com/teachLanguage/entity/ExamComponentConfig.java",
       "src/main/java/com/teachLanguage/entity/ExamEntity.java",
+      "src/main/java/com/teachLanguage/entity/ExamkindEntity.java",
       "src/main/java/com/teachLanguage/exception/ExamException.java",
+      "src/main/java/com/teachLanguage/repository/AnswerRepository.java",
       "src/main/java/com/teachLanguage/repository/ExamComponentConfigRepository.java",
       "src/main/java/com/teachLanguage/repository/ExamRepository.java",
       "src/main/java/com/teachLanguage/repository/ExamSpecification.java",
-      "src/main/java/com/teachLanguage/service/ExamService.java"
+      "src/main/java/com/teachLanguage/repository/ExamkindRepository.java",
+      "src/main/java/com/teachLanguage/service/AnswerService.java",
+      "src/main/java/com/teachLanguage/service/ExamService.java",
+      "src/main/java/com/teachLanguage/service/ExamkindService.java"
     ],
     "depends_on": [
       "common"
@@ -110,13 +205,49 @@
       {
         "java_method": "getCandidate",
         "class_name": "CandidateController",
-        "description": "接收包含 card（准考證號）的請求，驗證 card 不為空後呼叫 ExamService.getCandidateByCard 查詢考生，若查無資料回傳 USER_NOT_EXIST 錯誤，成功則將 ExamEntity 轉換為 UserProfileRs 回傳。",
+        "description": "接收含 card（准考證）的請求，驗證 card 不為空後呼叫 ExamService.getCandidateByCard 查詢考生，若查無則回傳錯誤，查到則將 ExamEntity 轉換為 UserProfileRs 回傳。",
         "complexity": "medium"
       },
       {
         "java_method": "createRandom",
         "class_name": "CandidateController",
-        "description": "接收包含 card 的請求，呼叫 ExamService.createRandom 為考生生成隨機識別碼，依 Result 成功或失敗分別回傳 CreaterandomRs 資料或對應錯誤碼與訊息。",
+        "description": "接收含 card 的請求，呼叫 ExamService.createRandom 為考生生成隨機識別碼，依 Result 成功或失敗分別回傳對應的 ResponseResult。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "saveAnswer",
+        "class_name": "ExamController",
+        "description": "批次儲存考生答案列表，每筆先驗證必要欄位，再查詢是否已有答案記錄（有則更新，無則新增），最後儲存至資料庫。",
+        "complexity": "medium"
+      },
+      {
+        "java_method": "search",
+        "class_name": "ExamController",
+        "description": "依多條件（year、grade、classes、kind、card、status、randomId）動態組合 Specification 查詢考試記錄，回傳符合條件的 ExamEntity 列表。",
+        "complexity": "medium"
+      },
+      {
+        "java_method": "searchAnswer",
+        "class_name": "ExamController",
+        "description": "依 kind 與 randomId 查詢考生的所有答案記錄，驗證參數後回傳結果。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "getSingleExam",
+        "class_name": "ExamController",
+        "description": "依 kind 查詢對應的所有題目（ExamkindEntity 列表），回傳給前端。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "getAll",
+        "class_name": "ExamController",
+        "description": "取得所有題目，過濾 kind 無效值後依 kind 分組，回傳 Map 結構的分類題目集合。",
+        "complexity": "medium"
+      },
+      {
+        "java_method": "getAllExamKind",
+        "class_name": "ExamController",
+        "description": "取得所有題目中不重複且有效的 kind 列表，供前端顯示考試種類選項。",
         "complexity": "low"
       },
       {
@@ -128,189 +259,170 @@
       {
         "java_method": "getCandidateByCard",
         "class_name": "ExamService",
-        "description": "依准考證號查詢考生的考試記錄，回傳Optional",
+        "description": "依准考證號碼查詢考生的考試記錄，回傳 Optional",
         "complexity": "low"
       },
       {
         "java_method": "createRandom",
         "class_name": "ExamService",
-        "description": "依准考證號驗證考生資格，生成5位隨機碼作為randomId並更新考試狀態為'1'，回傳包含randomId的Result；若准考證不存在則回傳失敗Result",
+        "description": "依准考證號碼驗證考生是否存在，若存在則生成隨機碼設定為 randomId 並將狀態設為 '1'，存庫後回傳包含 randomId 的成功結果；若不存在回傳失敗結果",
         "complexity": "medium"
-      },
-      {
-        "java_method": "findByKind",
-        "class_name": "ExamRepository",
-        "description": "依考試種類查詢所有對應的考試記錄列表",
-        "complexity": "low"
-      },
-      {
-        "java_method": "findByRandomIdAndKind",
-        "class_name": "ExamRepository",
-        "description": "依隨機ID與考試種類查詢單筆考試記錄",
-        "complexity": "low"
-      },
-      {
-        "java_method": "findByCard",
-        "class_name": "ExamRepository",
-        "description": "依准考證號查詢單筆考試記錄",
-        "complexity": "low"
-      },
-      {
-        "java_method": "findTopByKindOrderByIdDesc",
-        "class_name": "ExamRepository",
-        "description": "依考試種類查詢ID最大（最新）的一筆考試記錄",
-        "complexity": "low"
-      },
-      {
-        "java_method": "withYear",
-        "class_name": "ExamSpecification",
-        "description": "建立依年份過濾 ExamEntity 的 Specification，無效值時回傳無條件（conjunction）。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "withGrade",
-        "class_name": "ExamSpecification",
-        "description": "建立依年級過濾 ExamEntity 的 Specification，無效值時回傳無條件。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "withClasses",
-        "class_name": "ExamSpecification",
-        "description": "建立依班級過濾 ExamEntity 的 Specification，無效值時回傳無條件。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "withKind",
-        "class_name": "ExamSpecification",
-        "description": "建立依考試種類過濾 ExamEntity 的 Specification，無效值時回傳無條件。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "withCard",
-        "class_name": "ExamSpecification",
-        "description": "建立依准考證號過濾 ExamEntity 的 Specification，無效值時回傳無條件。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "withStatus",
-        "class_name": "ExamSpecification",
-        "description": "建立依狀態過濾 ExamEntity 的 Specification，無效值時回傳無條件。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "withRandomId",
-        "class_name": "ExamSpecification",
-        "description": "建立依隨機ID過濾 ExamEntity 的 Specification，無效值時回傳無條件。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "fromEntity",
-        "class_name": "UserProfileRs",
-        "description": "靜態工廠方法，接收 ExamEntity 物件，將其欄位映射至 UserProfileRs 各屬性並回傳新實例，用於 Controller 層將查詢結果轉換為回應格式。",
-        "complexity": "low"
-      }
-    ]
-  },
-  {
-    "module": "exam",
-    "summary": "負責考試題目管理、考生答案儲存與查詢、考試記錄搜尋及考試完成時間記錄等核心考試業務。ExamController 是主要入口，提供題目 CRUD、批次儲存答案、多條件動態搜尋考試記錄、恢復作答進度、取得考試元件設定等豐富功能。ExamkindService 與 ExamkindRepository 管理題目種類資料，AnswerService 與 AnswerRepository 管理作答記錄，ExamkindEntity 與 AnswerEntity 為核心資料模型。此模組涵蓋考試進行中的所有資料操作，是系統最核心的業務模組。",
-    "java_files": [
-      "src/main/java/com/teachLanguage/controller/ExamController.java",
-      "src/main/java/com/teachLanguage/entity/AnswerEntity.java",
-      "src/main/java/com/teachLanguage/entity/ExamkindEntity.java",
-      "src/main/java/com/teachLanguage/repository/AnswerRepository.java",
-      "src/main/java/com/teachLanguage/repository/ExamkindRepository.java",
-      "src/main/java/com/teachLanguage/service/AnswerService.java",
-      "src/main/java/com/teachLanguage/service/ExamkindService.java"
-    ],
-    "depends_on": [
-      "common",
-      "candidate"
-    ],
-    "methods": [
-      {
-        "java_method": "saveAnswer",
-        "class_name": "ExamController",
-        "description": "批次儲存考生答案列表，每筆先驗證必要欄位，再查詢是否已有答案記錄，有則更新答案，無則新建 AnswerEntity 後儲存。",
-        "complexity": "medium"
-      },
-      {
-        "java_method": "search",
-        "class_name": "ExamController",
-        "description": "依年份、年級、班級、種類、准考證、狀態、隨機ID等多條件動態查詢考試記錄，回傳符合條件的 ExamEntity 列表。",
-        "complexity": "medium"
-      },
-      {
-        "java_method": "searchAnswer",
-        "class_name": "ExamController",
-        "description": "依 kind 與 randomId 查詢考生的所有答案記錄，驗證必要欄位後回傳 AnswerEntity 列表。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "getSingleExam",
-        "class_name": "ExamController",
-        "description": "依 kind 查詢對應的所有題目（ExamkindEntity），回傳該種類的完整題目列表。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "getAll",
-        "class_name": "ExamController",
-        "description": "取得所有題目並依 kind 分組，過濾無效 kind 值後以 Map 形式回傳分類題目。",
-        "complexity": "medium"
-      },
-      {
-        "java_method": "getAllExamKind",
-        "class_name": "ExamController",
-        "description": "取得所有題目中不重複且有效的 kind 值列表，供前端顯示考試種類選項。",
-        "complexity": "low"
       },
       {
         "java_method": "getList",
         "class_name": "ExamkindService",
-        "description": "查詢並回傳所有 ExamkindEntity 記錄。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "findByKind",
-        "class_name": "ExamkindRepository",
-        "description": "依考試種類查詢所有對應的題目種類記錄",
+        "description": "查詢並回傳所有 ExamkindEntity 題目記錄。",
         "complexity": "low"
       },
       {
         "java_method": "getList",
         "class_name": "AnswerService",
-        "description": "查詢並回傳所有 AnswerEntity 記錄。",
+        "description": "查詢並回傳所有考生答案記錄。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "findByKind",
+        "class_name": "ExamRepository",
+        "description": "依考試類型 kind 查詢所有對應的考試記錄",
+        "complexity": "low"
+      },
+      {
+        "java_method": "findByRandomIdAndKind",
+        "class_name": "ExamRepository",
+        "description": "依 randomId 與 kind 查詢單筆考試記錄",
+        "complexity": "low"
+      },
+      {
+        "java_method": "findByCard",
+        "class_name": "ExamRepository",
+        "description": "依准考證號碼查詢對應的考試記錄",
+        "complexity": "low"
+      },
+      {
+        "java_method": "findTopByKindOrderByIdDesc",
+        "class_name": "ExamRepository",
+        "description": "取得指定 kind 中 id 最大（最新）的一筆考試記錄",
+        "complexity": "low"
+      },
+      {
+        "java_method": "findByKind",
+        "class_name": "ExamkindRepository",
+        "description": "依考試類型 kind 查詢所有對應的題目種類記錄",
         "complexity": "low"
       },
       {
         "java_method": "findByKindAndRandomId",
         "class_name": "AnswerRepository",
-        "description": "依考試種類(kind)與隨機ID查詢該考生在該種類下的所有答案記錄",
+        "description": "依 kind 與 randomId 查詢所有對應的答案記錄",
         "complexity": "low"
       },
       {
         "java_method": "findByRandomIdAndKindAndTypeNumberAndPartNumberAndQuestionNumber",
         "class_name": "AnswerRepository",
-        "description": "依隨機ID、種類、題型編號、部分編號、題號精確查詢單筆答案記錄",
+        "description": "依 randomId、kind、typeNumber、partNumber、questionNumber 精確查詢單筆答案",
         "complexity": "low"
       },
       {
         "java_method": "findAllByTypeNumberAndPartNumberAndQuestionNumber",
         "class_name": "AnswerRepository",
-        "description": "依題型編號、部分編號、題號查詢所有考生的答案記錄（跨考生）",
+        "description": "依題目編號（typeNumber、partNumber、questionNumber）查詢所有答案記錄",
         "complexity": "low"
       },
       {
         "java_method": "countDistinctRandomIdByKind",
         "class_name": "AnswerRepository",
-        "description": "統計指定考試種類下不重複的考生(randomId)數量",
+        "description": "統計指定 kind 下不重複的 randomId 數量，用於計算參加人數",
+        "complexity": "low"
+      },
+      {
+        "java_method": "withYear",
+        "class_name": "ExamSpecification",
+        "description": "建立依年份篩選的 Specification，無效值時回傳無條件限制。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "withGrade",
+        "class_name": "ExamSpecification",
+        "description": "建立依年級篩選的 Specification，無效值時回傳無條件限制。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "withClasses",
+        "class_name": "ExamSpecification",
+        "description": "建立依班級篩選的 Specification，無效值時回傳無條件限制。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "withKind",
+        "class_name": "ExamSpecification",
+        "description": "建立依考試種類篩選的 Specification，無效值時回傳無條件限制。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "withCard",
+        "class_name": "ExamSpecification",
+        "description": "建立依准考證篩選的 Specification，無效值時回傳無條件限制。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "withStatus",
+        "class_name": "ExamSpecification",
+        "description": "建立依狀態篩選的 Specification，無效值時回傳無條件限制。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "withRandomId",
+        "class_name": "ExamSpecification",
+        "description": "建立依隨機識別碼篩選的 Specification，無效值時回傳無條件限制。",
+        "complexity": "low"
+      },
+      {
+        "java_method": "fromEntity",
+        "class_name": "UserProfileRs",
+        "description": "靜態工廠方法，接收 ExamEntity 物件，將其欄位映射至 UserProfileRs 並回傳，用於將資料庫實體轉換為 API 回應物件。",
         "complexity": "low"
       }
     ]
   },
   {
+    "module": "file",
+    "summary": "負責考試過程中語音錄音檔與圖片的上傳與下載。FileController 提供四個 REST 端點，將檔案依 kind/randomId 目錄結構儲存至本地磁碟，並支援依參數串流回傳檔案內容。此模組不依賴任何業務 Repository，僅依賴共用工具類進行參數驗證與回應封裝，因此獨立成模組。",
+    "java_files": [
+      "src/main/java/com/teachLanguage/controller/FileController.java"
+    ],
+    "depends_on": [
+      "common"
+    ],
+    "methods": [
+      {
+        "java_method": "voice",
+        "class_name": "FileController",
+        "description": "接收 multipart 表單上傳的錄音檔，依 kind、randomId 建立目錄層級，以 partNumber_questionNumber.ext 為檔名儲存至 C:/voice 下。若副檔名無法從原始檔名取得，則依 Content-Type 推斷副檔名。成功回傳儲存路徑字串，失敗回傳對應錯誤碼。",
+        "complexity": "medium"
+      },
+      {
+        "java_method": "voice",
+        "class_name": "FileController",
+        "description": "依 kind、randomId、partNumber、questionNumber 組合路徑，在 C:/voice/{kind}/{randomId}/ 目錄下尋找去除副檔名後符合 partNumber_questionNumber 的檔案，找到後以對應 audio MIME type 串流回傳給前端（inline 方式）。",
+        "complexity": "medium"
+      },
+      {
+        "java_method": "image",
+        "class_name": "FileController",
+        "description": "接收 multipart 表單上傳的圖片，依 kind、randomId 建立目錄，以 side.ext 為檔名儲存至 C:/images 下。成功回傳儲存路徑與檔名，失敗回傳錯誤碼。",
+        "complexity": "medium"
+      },
+      {
+        "java_method": "image",
+        "class_name": "FileController",
+        "description": "依 kind、randomId、side 組合路徑，在 C:/images/{kind}/{randomId}/ 目錄下尋找檔名以 side 開頭的圖片，找到後以 attachment 方式回傳，MIME type 由 Files.probeContentType 自動偵測。",
+        "complexity": "medium"
+      }
+    ]
+  },
+  {
     "module": "grading",
-    "summary": "負責後台批改與出題管理業務。GradingController 提供後台登入驗證、逐題分數儲存、計算考生總分與評語、隨機出題，以及考試結果統計分析（各題選項分布、正確率等）。BackUserRepository 與 BackUserEntity 支援後台帳號驗證，QuestionService 與 QuestionRepository 實作從題庫隨機抽題並組裝考試題目的複雜邏輯，AuthException 與 ExamException 處理認證與考試流程例外。此模組依賴 exam 模組的答案與題目種類資料，以及 candidate 模組的考試記錄，完成批改與分析功能。",
+    "summary": "批改系統模組，負責後台人員登入驗證、單題分數批改、總分與評語計算儲存、隨機出題（從題庫依 type/part/count 抽題並組裝成考試題目）、以及對指定考試種類進行作答統計分析（正確率、選項分佈、錯誤答案分析）。GradingController 整合 QuestionService 的隨機出題邏輯與 BackUserRepository 的登入驗證，AuthException 與 ExamException 處理業務錯誤情境。此模組依賴 exam 模組的 ExamEntity、ExamkindEntity、AnswerEntity 等核心資料模型。",
     "java_files": [
       "src/main/java/com/teachLanguage/controller/GradingController.java",
       "src/main/java/com/teachLanguage/controllerRq/GetRandomQuestionsRq.java",
@@ -325,7 +437,6 @@
     ],
     "depends_on": [
       "common",
-      "candidate",
       "exam"
     ],
     "methods": [
@@ -338,162 +449,38 @@
       {
         "java_method": "login",
         "class_name": "GradingController",
-        "description": "接收帳號密碼，驗證不為空後查詢 BackUserRepository，若找不到對應使用者則拋出 AuthException，成功則回傳 true。",
+        "description": "接收帳號密碼，驗證不為空後查詢 BackUserEntity，若找不到則拋出 AuthException，成功則回傳 true。",
         "complexity": "low"
       },
       {
         "java_method": "score",
         "class_name": "GradingController",
-        "description": "接收多筆答案分數更新請求，逐一驗證 ID 與分數不為空、查找對應 AnswerEntity 後更新分數並儲存，任一筆資料不存在或參數無效則回傳錯誤。",
+        "description": "接收多筆答案分數更新請求，逐一驗證 id 與 score 不為空、查找對應 AnswerEntity 後更新分數並儲存，全部成功才回傳 ok。",
         "complexity": "medium"
       },
       {
         "java_method": "grade",
         "class_name": "GradingController",
-        "description": "接收考試種類與隨機ID，查詢所有對應答案並加總分數，再查找對應 ExamEntity 更新總分、狀態（設為'2'）及可選的評語後儲存，包含多步驟驗證與計算。",
+        "description": "接收 kind 與 randomId，查詢所有對應答案並加總分數，找到對應 ExamEntity 後更新總分、狀態（設為 '2'）及可選評語，完成後儲存。",
         "complexity": "medium"
       },
       {
         "java_method": "analyze",
         "class_name": "GradingController",
-        "description": "接收考試種類，查詢題目設定、考試記錄與所有學生作答，計算每題各選項選擇人數與百分比、正確率、最多人選的錯誤答案，以及學生成績列表，整合後回傳完整分析報告。",
+        "description": "依 kind 查詢所有題目與考試紀錄，對每道題目統計各選項作答人數與百分比、正確率、最多人選的錯誤答案，並彙整學生成績列表，組成 AnalyzeRs 回傳。",
         "complexity": "high"
-      },
-      {
-        "java_method": "findByUserNameAndPassword",
-        "class_name": "BackUserRepository",
-        "description": "依使用者名稱與密碼查詢對應的 BackUserEntity，用於登入驗證，找不到則回傳 null。",
-        "complexity": "low"
       },
       {
         "java_method": "getList",
         "class_name": "QuestionService",
-        "description": "查詢並回傳所有 QuestionEntity 列表，為簡單的全量查詢。",
-        "complexity": "low"
-      }
-    ]
-  },
-  {
-    "module": "registration",
-    "summary": "負責報名相關的查詢 API，從考試資料中提取並回傳所有不重複的班級、年級、學校清單，供前端報名表單選項使用。RegistrationController 直接依賴 ExamRepository 查詢考試記錄，並利用 CollectionUtil 去重過濾，回傳 GetAllClassesRs、GetAllGradeRs、GetAllSchoolRs 等 DTO。此模組業務單純，主要作為報名流程的資料支援層。",
-    "java_files": [
-      "src/main/java/com/teachLanguage/controller/RegistrationController.java",
-      "src/main/java/com/teachLanguage/controllerRs/GetAllClassesRs.java",
-      "src/main/java/com/teachLanguage/controllerRs/GetAllGradeRs.java",
-      "src/main/java/com/teachLanguage/controllerRs/GetAllSchoolRs.java"
-    ],
-    "depends_on": [
-      "common",
-      "candidate"
-    ],
-    "methods": [
-      {
-        "java_method": "classes",
-        "class_name": "RegistrationController",
-        "description": "查詢所有考試記錄中不重複的班級名稱清單，若無資料則回傳 CLASSES_NOT_EXIST 錯誤，否則包裝成 GetAllClassesRs 回傳。",
+        "description": "查詢並回傳所有 QuestionEntity 列表，無過濾條件。",
         "complexity": "low"
       },
       {
-        "java_method": "grades",
-        "class_name": "RegistrationController",
-        "description": "查詢所有考試記錄中不重複的年級清單，若無資料則回傳 GRADE_DATA_NOT_EXIST 錯誤，否則包裝成 GetAllGradeRs 回傳。",
+        "java_method": "findByUserNameAndPassword",
+        "class_name": "BackUserRepository",
+        "description": "依 username 與 password 查詢對應的 BackUserEntity，用於後台登入驗證，找不到則回傳 null。",
         "complexity": "low"
-      },
-      {
-        "java_method": "schools",
-        "class_name": "RegistrationController",
-        "description": "查詢所有考試記錄中不重複的學校清單，若無資料則回傳 SCHOOLS_NOT_EXIST 錯誤，否則包裝成 GetAllSchoolRs 回傳。",
-        "complexity": "low"
-      }
-    ]
-  },
-  {
-    "module": "general",
-    "summary": "提供通用查詢 API，包含語言設定、年級清單、地區清單、學校清單及版本資訊等端點。GeneralController 透過 SchoolRepository 查詢學校資料，利用 CollectionUtil 去重過濾後回傳標準化結果。SchoolEntity 與 SchoolRepository 為學校資料的核心模型與存取層，GetSchoolRq、GetSchoolRs、GetAllLocalRs、LanguageRq 為請求/回應 DTO。此模組對外提供與考試無直接關聯的基礎參考資料查詢服務。",
-    "java_files": [
-      "src/main/java/com/teachLanguage/controller/GeneralController.java",
-      "src/main/java/com/teachLanguage/controllerRq/GetSchoolRq.java",
-      "src/main/java/com/teachLanguage/controllerRq/LanguageRq.java",
-      "src/main/java/com/teachLanguage/controllerRs/GetAllLocalRs.java",
-      "src/main/java/com/teachLanguage/controllerRs/GetSchoolRs.java",
-      "src/main/java/com/teachLanguage/entity/SchoolEntity.java",
-      "src/main/java/com/teachLanguage/repository/SchoolRepository.java"
-    ],
-    "depends_on": [
-      "common"
-    ],
-    "methods": [
-      {
-        "java_method": "language",
-        "class_name": "GeneralController",
-        "description": "回傳系統設定的語言代碼與顯示名稱（從設定檔讀取），封裝為 LanguageRq 回傳。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "grades",
-        "class_name": "GeneralController",
-        "description": "查詢所有學校資料，提取並去重年級欄位，回傳不重複的年級清單；若無資料則回傳錯誤。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "locals",
-        "class_name": "GeneralController",
-        "description": "查詢所有學校資料，提取並去重地區欄位，回傳不重複的地區清單；若無資料則回傳錯誤。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "schools",
-        "class_name": "GeneralController",
-        "description": "接收 grade 與 local 參數，驗證非空後查詢符合條件的學校，去重學校名稱後回傳清單；參數為空或查無資料時回傳對應錯誤。",
-        "complexity": "medium"
-      },
-      {
-        "java_method": "getVersion",
-        "class_name": "GeneralController",
-        "description": "回傳應用程式的建置版本號字串。",
-        "complexity": "low"
-      },
-      {
-        "java_method": "findByGradeAndLocal",
-        "class_name": "SchoolRepository",
-        "description": "依傳入的 grade 與 local 兩個條件查詢符合的 SchoolEntity 清單，由 Spring Data JPA 自動實作。",
-        "complexity": "low"
-      }
-    ]
-  },
-  {
-    "module": "file",
-    "summary": "負責語音錄音檔與圖片的上傳與下載功能。FileController 提供兩組 REST API 端點，分別處理語音檔（依 kind/randomId/partNumber/questionNumber 組織目錄）與圖片（依 kind/randomId/side 組織），支援自動推斷副檔名、設定正確 Content-Type 回傳二進位資源。此模組業務獨立，僅依賴 common 模組的工具類與回應封裝，不涉及其他業務模組的資料存取。",
-    "java_files": [
-      "src/main/java/com/teachLanguage/controller/FileController.java"
-    ],
-    "depends_on": [
-      "common"
-    ],
-    "methods": [
-      {
-        "java_method": "voice",
-        "class_name": "FileController",
-        "description": "接收 multipart 語音檔上傳，依 kind/randomId 建立目錄，以 partNumber_questionNumber.ext 命名後寫入 C:/voice 目錄。若原始檔名無副檔名則依 Content-Type 推斷。成功回傳完整儲存路徑字串，失敗回傳對應錯誤碼。",
-        "complexity": "medium"
-      },
-      {
-        "java_method": "voice",
-        "class_name": "FileController",
-        "description": "依 kind/randomId/partNumber/questionNumber 參數在 C:/voice 目錄下尋找對應錄音檔（比對去除副檔名後的前綴），找到後以 inline 方式回傳音訊二進位資源並設定對應 audio/* Content-Type。",
-        "complexity": "medium"
-      },
-      {
-        "java_method": "image",
-        "class_name": "FileController",
-        "description": "接收 multipart 圖片上傳，依 kind/randomId 建立目錄，以 side+原始副檔名命名後寫入 C:/images 目錄。成功回傳包含 path 與 filename 的 Map，失敗回傳錯誤碼。",
-        "complexity": "medium"
-      },
-      {
-        "java_method": "image",
-        "class_name": "FileController",
-        "description": "依 kind/randomId/side 參數在 C:/images 目錄下尋找以 side 為前綴的圖片檔，找到後以 attachment 方式回傳圖片二進位資源，Content-Type 由 Files.probeContentType 自動偵測。",
-        "complexity": "medium"
       }
     ]
   }

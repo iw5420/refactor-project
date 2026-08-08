@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from common.chunking import chunk_by_char_budget
+from common.java_annotations import DATA_CLASS_ANNOTATIONS as _DATA_ANNOTATIONS
 from parse_agent.call_graph import build_interface_implementors, resolve_field_target_classes
 from parse_agent.types import ClassInfo, ParsedProject
 
@@ -104,11 +105,9 @@ def find_shared_classes(controller_deps: dict[str, set[str]]) -> set[str]:
 # 標記「這個類別大概率是純資料容器」的 Lombok／JPA annotation——只是觸發
 # 進一步檢查的訊號，不是最終判斷依據（見 needs_llm_summary() docstring，
 # 真正決定「有沒有邏輯」的是方法清單本身，不是這份 annotation 清單）。
-_DATA_ANNOTATIONS = {
-    "Entity", "Embeddable", "MappedSuperclass",
-    "Data", "Value", "Getter", "Setter", "Builder",
-    "NoArgsConstructor", "AllArgsConstructor", "RequiredArgsConstructor",
-}
+# 定義本身搬到 common/java_annotations.py 跟 design_agent 共用（見該檔案
+# docstring、頂部 import），這裡只留這個模組內沿用的別名，成員集合與搬移前
+# 逐一相等，不影響既有判斷結果。
 # 存取器方法命名慣例：get*/set*/is*，或 Lombok/Java 慣例產生的
 # equals/hashCode/toString/canEqual/builder/toBuilder。方法名稱只要
 # 不落在這個樣式裡，就代表「除了欄位存取以外還有其他行為」。
@@ -117,10 +116,10 @@ _ACCESSOR_METHOD_RE = re.compile(
 )
 
 
-def needs_llm_summary(class_info: ClassInfo) -> bool:
+def needs_llm_summary(class_info: ClassInfo, has_implementor: bool) -> bool:
     """判斷這個 class 值不值得花一次 Claude API 呼叫做 Map 摘要，對應
-    「Specification 特殊處理、一般類別看方法清單、其餘預設當有邏輯」
-    三層規則：
+    「Specification 特殊處理、無本體且無實作類別的介面、一般類別看方法
+    清單、其餘預設當有邏輯」四層規則：
 
     1. **用到已知動態查詢型別（`uses_dynamic_query_signal`，見
        call_graph.py `_uses_dynamic_query_signal()`）一律判定為有邏輯**
@@ -130,23 +129,42 @@ def needs_llm_summary(class_info: ClassInfo) -> bool:
        這種防呆判斷藏在 lambda 內部），不管有沒有其他 annotation，一律
        送 Map，不嘗試判斷 method body 內部藏了多少邏輯。
 
-    2. **有 `_DATA_ANNOTATIONS` 標記，且方法清單只有存取器方法（或完全
+    2. **`has_implementor=False`（`build_interface_implementors()` 查無
+       任何具體實作類別），且方法清單全部沒有本體（`all()` 在空清單上
+       天生成立，涵蓋「完全沒有自訂方法，純靠繼承 CRUD」的情況）→ 判定
+       不需要 LLM，機械處理**。這是 Spring Data JPA Repository 的典型
+       形狀（`interface XxxRepository extends JpaRepository<...>`，
+       Spring 在執行期動態生成 proxy，原始碼裡不存在任何實作）：這批
+       方法沒有方法本體，LLM 讀到的資訊跟機械解析器完全一樣（都只有
+       方法名稱／`@Query` annotation 可用），送 Map 花錢請 LLM 用比較
+       不穩定的方式做一件機械解析能做得更準、更便宜、每次結果一致的
+       事，不符合 00 二章「能用程式判斷的，就不要交給 LLM」。**刻意
+       排除在「有具體實作類別」的情況之外**：若這個介面有
+       `@Service`/`@Component`/`@Repository` 標註的具體實作類別
+       （`has_implementor=True`），真正的業務邏輯寫在實作類別自己的
+       方法裡（有本體，會正常送 Map），介面本身的抽象宣告不需要、也不
+       應該被機械處理搶答——避免同一個業務方法產生兩筆不一致的記錄
+       （見 `_mechanical_summary()` 對應這一段的處理）。
+
+    3. **有 `_DATA_ANNOTATIONS` 標記，且方法清單只有存取器方法（或完全
        沒有明確方法，如純靠 Lombok `@Data` 生成 getter/setter，javalang
        看不到這些生成的方法）→ 判定為純資料類別，不送 Map**。這裡刻意
        不是「只要有 `@Entity` 就跳過」——DDD 風格的富領域模型常把業務
        規則寫在 entity 自己的方法裡（如 `isEligible()`／`calculateTotal()`
        這類非存取器命名的方法），這種情況下即使有 `@Entity`，只要方法
-       清單裡出現任何一個不是存取器樣式的方法名稱，就會落到規則 3，
+       清單裡出現任何一個不是存取器樣式的方法名稱，就會落到規則 4，
        維持送 Map——annotation 只決定「要不要進一步檢查方法清單」，不
        單獨決定「有沒有邏輯」。
 
-    3. **其餘情況（沒有標記、或有標記但還有非存取器方法）→ 預設有
+    4. **其餘情況（沒有標記、或有標記但還有非存取器方法）→ 預設有
        邏輯，送 Map**，呼應 04a 三章「多連、少排除」同一種保守精神：
        不確定的情況一律當作「可能有邏輯」而不是「大概沒有」，多花一次
        API 呼叫的代價，遠低於漏掉真實業務邏輯的代價。
     """
     if class_info.uses_dynamic_query_signal:
         return True
+    if not has_implementor and all(not m.has_body for m in class_info.methods):
+        return False
     has_data_annotation = bool(set(class_info.annotations) & _DATA_ANNOTATIONS)
     if has_data_annotation:
         only_accessors = all(_ACCESSOR_METHOD_RE.match(m.name) for m in class_info.methods)
@@ -158,11 +176,21 @@ def needs_llm_summary(class_info: ClassInfo) -> bool:
 def classify_trivial_classes(project: ParsedProject) -> set[str]:
     """對 `project.classes` 全部類別跑一次 `needs_llm_summary()`，回傳
     判定不需要送 Map 的類別名稱集合。分類本身不呼叫 Claude API、不花
-    任何額度（純看 annotation／方法名稱），跟 04a 二章「能用程式判斷的，
-    就不要交給 LLM」同一種分工——這裡的判斷不需要語意理解，只是機械的
-    命名樣式比對。
+    任何額度（純看 annotation／方法清單／有無實作類別），跟 04a 二章
+    「能用程式判斷的，就不要交給 LLM」同一種分工——這裡的判斷不需要
+    語意理解，只是機械的結構事實比對。`interface_implementors` 重用
+    `controller_dependency_closure()` 內部已經在算的同一份資料（見
+    `build_interface_implementors()`），這裡另外算一次——`ParsedProject`
+    沒有把它落地成欄位，重算成本極低（純字典掃描），不值得為了省這一次
+    重算去改變 `ParsedProject`／`controller_dependency_closure()` 的既有
+    介面。
     """
-    return {name for name, info in project.classes.items() if not needs_llm_summary(info)}
+    interface_implementors = build_interface_implementors(project.classes)
+    return {
+        name
+        for name, info in project.classes.items()
+        if not needs_llm_summary(info, has_implementor=name in interface_implementors)
+    }
 
 
 @dataclass(frozen=True)

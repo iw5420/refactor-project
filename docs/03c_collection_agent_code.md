@@ -816,9 +816,9 @@ def group_mutation_folders(
 
 ### 2.3 `value_filler.py`——把人工填值套進 Postman Collection
 
-對應 03a 三章「人工填值機制」，設計理由（False Pass 風險、模板不刪除）見 03a 與下方 module docstring，這裡不重複。不呼叫 Claude API。函式：`guess_resource_name()`（僅供 `folder_grouper._mechanical_group_name()` 產生可讀 folder 名稱用，見其 docstring）、`_operation_param_schema()`（判斷 endpoint 是否需要生成模板／套值，人工填值模板產生與套用兩處共用）、`_apply_url_values()`（url variable/query 套用，跟 `fill_mode` 無關，`manual_fill.apply_manual_fill()` 不管哪種模式都會先呼叫，見 03a 三章「檔案上傳」更正）、`_apply_values_to_item()`（`fields` 模式套值，內部沿用 `_apply_url_values()` 處理 url 部分）、`apply_manual_fill_to_collections()`（**只**跑過 mutation Collection，套用人工填值或排除，readonly 原封不動回傳，取代舊版的 `fill_all_endpoints()`）。
+對應 03a 三章「人工填值機制」，設計理由（False Pass 風險、模板不刪除）見 03a 與下方 module docstring，這裡不重複。不呼叫 Claude API。函式：`guess_resource_name()`（僅供 `folder_grouper._mechanical_group_name()` 產生可讀 folder 名稱用，見其 docstring）、`_operation_param_schema()`（判斷 endpoint 是否需要生成模板／套值，人工填值模板產生與套用兩處共用）、`_apply_url_values()`（url variable/query 套用，跟 `fill_mode` 無關，`manual_fill.apply_manual_fill()` 不管哪種模式都會先呼叫，見 03a 三章「url variable/query 一律先套用」）、`_apply_values_to_item()`（`fields` 模式套值，內部沿用 `_apply_url_values()` 處理 url 部分）、`apply_manual_fill_to_collections()`（**只**跑過 mutation Collection，套用人工填值或排除，readonly 原封不動回傳）。
 
-> **更正**：早期實作曾經對 readonly／mutation 兩份 Collection 跑同一套「找不到 manual_fill 模板就排除」邏輯，實測發現 readonly 裡帶路徑／查詢參數的 GET（如 `GET /exam/{id}`）會被誤判成「尚未填值」而從 `collection_readonly.json` 剔除——`manual_fill.generate_manual_fill_templates()` 本來就只對 `MUTATION_METHODS` 產生模板，這些 GET 從一開始就不會有對應模板可查。這牴觸 03a 三章「Readonly / Mutation 分類規則」的明文保證：readonly 就是只含 GET、零副作用，不會被抽走。修正後 `apply_manual_fill_to_collections()` 只處理 mutation，readonly 完全不經過這段排除邏輯。
+> `apply_manual_fill_to_collections()` 只處理 mutation Collection，readonly 完全不經過「找不到 manual_fill 模板就排除」這段邏輯——`manual_fill.generate_manual_fill_templates()` 只對 `MUTATION_METHODS` 產生模板，若讓這段排除邏輯也套在 readonly 上，readonly 裡帶路徑／查詢參數的 GET（如 `GET /exam/{id}`）會被誤判成「尚未填值」而從 `collection_readonly.json` 剔除，牴觸 03a 三章「Readonly / Mutation 分類規則」的明文保證：readonly 就是只含 GET、零副作用，不會被抽走。
 
 ```python
 # spec_collection_agent/value_filler.py
@@ -1120,7 +1120,7 @@ def apply_manual_fill_to_collections(
 
 分組依據（依 tag、多 tag 取第一個、無 tag 進 `_untagged`）、併發數（機器核心數 − 1）、`_chunk_operations()` 分批機制、失敗處理粒度，都已在 03a 三章「鏈式依賴偵測與注入」定案，這裡只放程式碼落地方式。
 
-`group_operations_by_tag()` 已改成公開函式（原本是 `_group_operations_by_tag()`）——`manual_fill.generate_manual_fill_templates()`（見 2.6）也用同一套 tag 分組邏輯決定模板要產生進哪個 controller 檔案，避免兩處各自寫一份。
+`group_operations_by_tag()` 是公開函式——`manual_fill.generate_manual_fill_templates()`（見 2.6）也用同一套 tag 分組邏輯決定模板要產生進哪個 controller 檔案，避免兩處各自寫一份。
 
 `detect_chain_dependencies()` 的實際執行流程：
 
@@ -1322,8 +1322,7 @@ def _map_analyze_group(
     `MAP_OUTPUT_SCHEMA`（output_config.format）已經保證回傳結構——
     `candidate_producers`／`candidate_consumers` 一定存在、一定是必要欄位
     齊全的物件陣列（`param_location` 也鎖死在三個合法值之一），不需要再
-    逐筆 isinstance 檢查、丟棄格式不合法的候選（那是舊版靠 prompt 拜託
-    模型照做時代的防禦，見 01 五章）。呼叫失敗（例如傳輸層錯誤）才拋
+    逐筆 isinstance 檢查、丟棄格式不合法的候選。呼叫失敗（例如傳輸層錯誤）才拋
     `ChainDependencyDetectionError`（整條偵測失敗，不做局部降級——漏偵測
     到的依賴沒有其他機制能發現），並補上呼叫端才知道的資訊——這次送了
     哪個 tag、幾個 endpoint——讓失敗訊息同時看得到「送了什麼」與「模型
@@ -1427,8 +1426,7 @@ def _reduce_phase(
     （單次呼叫 Claude API，輸入為 map 階段濃縮後的候選清單）」）。輸出
     是最終權威結果。`REDUCE_OUTPUT_SCHEMA`（output_config.format）已經
     保證頂層是陣列、每筆都是五個必要欄位齊全的物件，不需要再逐筆檢查
-    型別或補救缺欄位（那是舊版靠 prompt 拜託模型照做時代的防禦，見 01
-    五章）；呼叫失敗才拋 `ChainDependencyDetectionError`。
+    型別或補救缺欄位；呼叫失敗才拋 `ChainDependencyDetectionError`。
     """
     payload = {
         "candidate_producers": [asdict(p) for p in producers],
@@ -1816,13 +1814,13 @@ def inject_chain_scripts(
 
 ### 2.6 `manual_fill.py`——人工填值機制
 
-對應 03a 三章「人工填值機制」全節。取代舊版「LLM 猜值失敗才被動產生模板」的設計——階段一（`generate_manual_fill_templates()`）在 `openapi.json` 落地後立刻主動產生全部模板，依 controller（OpenAPI `tags`）分檔案，不是每個 endpoint 一份：
+對應 03a 三章「人工填值機制」全節。階段一（`generate_manual_fill_templates()`）在 `openapi.json` 落地後立刻主動產生全部模板，依 controller（OpenAPI `tags`）分檔案，不是每個 endpoint 一份，強制涵蓋全部待填 endpoint：
 
 - `postman/manual_fill/<controller>.json`，一個 controller 一份檔案，內含該 controller 底下全部待填 endpoint 的 `ManualFillEntry` 陣列（見 `_entry_to_dict()`／`_entry_from_dict()`）
-- **模板永久保留、不刪除**——舊版解決後會 `remove_template()`，新版沒有這個函式；連帶 `list_pending()`／`list_skipped()` 都改成逐筆讀 `ManualFillEntry.is_resolved`／`decision`，不能再用「檔案存不存在」判斷（見 03a 三章「模板不刪除」）
+- **模板永久保留、不刪除**——沒有刪除模板的函式；`list_pending()`／`list_skipped()` 逐筆讀 `ManualFillEntry.is_resolved`／`decision` 判斷，不靠「檔案存不存在」判斷（見 03a 三章「模板不刪除」）
 - 三種填值模式（`fill_mode`）：`fields`（body 是 object，點號路徑 `values`）／`raw_body`（body 根層級是 array，整包覆蓋）／`file_upload`（`multipart/form-data`，見 `_apply_file_upload()`）——`_default_fill_mode()` 依 `param_schema` 的 body 形狀自動決定預設模式
 - `decision`（`fill`／`skip`）：`skip` 是人工主動判斷「這個 endpoint 不該走一般重構驗證流程」的編輯決定，不是「填不出值、放棄」（見 03a 三章「Decision.SKIP 的語意」）
-- `note` 欄位取代舊版的 `error`——現在沒有 LLM 填值這個步驟，改成選填的人工註記
+- `note` 欄位是選填的人工註記——沒有 LLM 填值這個步驟，不需要記錄系統自動填的失敗訊息
 - `last_apply_error`：系統寫入的欄位，記錄上一次套用失敗的原因，`record_apply_result()` 在每次套用嘗試後回寫（成功清空、失敗記錄）；`has_value`（值填了沒，不看 `last_apply_error`）與 `is_resolved`（這一輪算不算解決，`decision=skip` 或「值填了且上次沒失敗」）是兩個不同的屬性，見下方 `ManualFillEntry` 定義與 03a 三章「套用失敗的重填機制」
 
 **`fill_mode` 分派用 `match`，不是 `if/elif`**：三種模式處理的資料形狀完全不同，彼此不共用邏輯，`match-case`（Python 3.10+，本專案執行環境為 3.13）讓分支邊界更明確，之後要加第四種模式也只需要多一個 `case`。
@@ -2223,7 +2221,7 @@ def _apply_file_upload(item: dict, file_paths: dict[str, str]) -> None:
 - `generate_manual_fill_templates()`——階段一，落地 `openapi.json`、產生／更新人工填值模板，不呼叫 Claude API
 - `run_collection_agent()`——階段二，假設模板已經人工填完，跑完剩下的 pipeline
 
-graph 層怎麼在兩階段之間暫停等人工填值，留待 01 對應章節更新（見 03a 五章「與 LangGraph 的整合」備註），本節只涵蓋這兩個函式本身，不涵蓋 graph node 層的暫停機制。
+graph 層怎麼在兩階段之間暫停等人工填值，見 `01_langgraph_architecture.md` 五章「人工填值關卡」，本節只涵蓋這兩個函式本身，不涵蓋 graph node 層的暫停機制。
 
 ### 執行順序
 
@@ -2250,7 +2248,7 @@ graph 層怎麼在兩階段之間暫停等人工填值，留待 01 對應章節�
 
 **`run_collection_agent()` 不強制要求全部填值完成才能跑**：尚未解決的 endpoint 一樣走排除＋記錄路徑（見 2.3 `apply_manual_fill_to_collections()`），只是額外回報 `manual_fill_pending` 清單，交給 graph 層（01 對應章節）決定要不要暫停等人工。重跑本身是冪等的——同一份 `openapi.json`、同一份 `manual_fill/` 內容跑出同樣結果，差別只在有沒有新填的答案。
 
-順序限制沿用舊版已驗證的兩點，實作時才浮現，03a 沒有明講：
+兩項順序限制是實作層級的細節，03a 沒有明講：
 
 - **步驟 6 先於步驟 8**：folder 分組依據來自鏈式依賴偵測結果，而注入步驟需要 folder 已存在，才知道鏈式驗證用的 GET item 該加進哪裡。
 - **步驟 7 先於步驟 8**：鏈式依賴涉及的參數先由人工填值給一個值，再被注入步驟覆蓋成 environment variable 引用，兩者不衝突。反過來的話，套用人工填值時會看到已是 `{{env_var}}` 格式的參數值，容易誤判成需要覆寫的既有值。
@@ -2262,8 +2260,8 @@ graph 層怎麼在兩階段之間暫停等人工填值，留待 01 對應章節�
 入口」）。[B] 分兩階段：`generate_manual_fill_templates()`（階段一，落地
 openapi.json、產生人工填值模板）與 `run_collection_agent()`（階段二，假設
 模板已經人工填完，跑完剩下的 pipeline）——見 03a 三章「人工填值機制」。
-graph 層怎麼在兩階段之間暫停，留待 01 對應章節更新，本檔案只提供這兩個
-函式本身。
+graph 層怎麼在兩階段之間暫停等人工填值，見 01_langgraph_architecture.md
+五章「人工填值關卡」，本檔案只提供這兩個函式本身。
 """
 from __future__ import annotations
 
@@ -2454,7 +2452,7 @@ def run_collection_agent(
 
 ## 四、LangGraph node 封裝
 
-對應 03a 五章，但拆成**兩個** node，對應 03a 三章「人工填值機制」的兩階段（03a 五章原文仍是單一 node 的舊描述，待該章節後續同步）：
+對應 03a 五章，拆成**兩個** node，對應 03a 三章「人工填值機制」的兩階段：
 
 | graph node id | 函式 | 對應階段 |
 |---|---|---|
@@ -2486,8 +2484,7 @@ def run_collection_agent(
 fill_templates_or_continue`／`should_await_manual_fill_or_continue`），
 跟對應的 node 放同一個檔案（比照 refactor_harness 的
 `should_debug_or_done` 跟 run_tests 節點放一起的慣例），見
-01_langgraph_architecture.md 五「人工補值關卡」（該章節的 graph 佈線
-說明尚待同步這次的兩階段拆分，暫時以本檔案為準）。兩個判斷函式都指向
+01_langgraph_architecture.md 五「人工填值關卡」。兩個判斷函式都指向
 同一個 `await_manual_fill` 終止節點——不管是「階段一產生完模板」還是
 「階段二跑完後仍有缺口」，語意上都是同一件事：`postman/manual_fill/`
 底下還有沒填完的 endpoint，交給人工處理。

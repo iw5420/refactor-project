@@ -220,6 +220,7 @@ Agent ②（Harness 錄製端）直接 import 這個類別重用（見 03a「與
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import subprocess
 import threading
@@ -284,9 +285,8 @@ def _parse_jdbc_host_port(jdbc_url: str) -> tuple[str, int]:
     **刻意不在這裡支援其他資料庫 scheme**：若日後測試 DB 換成別的
     資料庫，不要直接在這個函式裡加 if/else 分支——不同資料庫的 JDBC
     連線字串語法差異可能很大（例如 SQL Server 用 `;key=value` 接參數，
-    不是 URL 風格），混在同一個函式裡容易顧此失彼。改用
-    `03b-2_spec_agent_jdbc_multi_db.md` 提供的多資料庫版本整批替換這個
-    函式與 `check_db_reachable()` 的呼叫對象。
+    不是 URL 風格），混在同一個函式裡容易顧此失彼，屆時再視實際需求另外
+    設計，不預先假設。
     """
     # urllib.parse 不認得 "jdbc:" 這個 scheme 前綴，先剝掉再交給它處理。
     without_jdbc_prefix = jdbc_url.removeprefix("jdbc:")
@@ -296,8 +296,7 @@ def _parse_jdbc_host_port(jdbc_url: str) -> tuple[str, int]:
         raise ValueError(
             f"_parse_jdbc_host_port() 目前只支援 PostgreSQL "
             f"（scheme={_JDBC_POSTGRESQL_SCHEME!r}），收到 "
-            f"scheme={parsed.scheme!r}: {jdbc_url!r}；若測試 DB 已換成"
-            "其他資料庫，見 03b-2_spec_agent_jdbc_multi_db.md"
+            f"scheme={parsed.scheme!r}: {jdbc_url!r}"
         )
 
     if not parsed.hostname:
@@ -426,8 +425,6 @@ class JavaServiceProcess:
         return self.openapi_spec
 
     def _launch_process(self) -> None:
-        import os
-
         env = {**os.environ, **self.env_overrides}
         self._process = subprocess.Popen(
             [self.java_executable, "-jar", str(self.jar_path)],
@@ -645,6 +642,6 @@ pip install requests
 
 ### 7.2 實作時需要留意的點
 
-- `_parse_jdbc_host_port()` 目前只支援 PostgreSQL——現況測試 DB（`MOC_MATSUEXAM_TEST`，見 00 五章）固定是 PostgreSQL，不需要在這個函式裡預先支援其他資料庫。若日後測試 DB 換成其他資料庫，不要直接在這個函式裡加 if/else 分支，改參考 `03b-2_spec_agent_jdbc_multi_db.md` 提供的多資料庫版本整批替換。
+- `_parse_jdbc_host_port()` 目前只支援 PostgreSQL——現況測試 DB（`MOC_MATSUEXAM_TEST`，見 00 五章）固定是 PostgreSQL，不需要在這個函式裡預先支援其他資料庫。若日後測試 DB 換成其他資料庫，不要直接在這個函式裡加 if/else 分支，屆時再視實際需求另外設計。
 
 [B] 相關的待落實事項見 03c 六章。

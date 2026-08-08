@@ -17,7 +17,7 @@ from common.llm_client import LlmJsonError, call_claude_for_json
 from graph.state import InterfaceSpec, ModuleInfo, PythonStructure, TaskSpec
 from plan_agent import module_index
 from plan_agent.exceptions import PlanAgentCoverageError, PlanAgentModuleError
-from plan_agent.llm import DEFAULT_MODEL
+from plan_agent.llm import DEFAULT_MODEL, PLAN_AGENT_MAX_TOKENS
 from plan_agent.prompts import PLAN_OUTPUT_SCHEMA, PLAN_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -201,7 +201,11 @@ def _plan_module(
     user_prompt = json.dumps(payload, ensure_ascii=False)
 
     result = call_claude_for_json(
-        system_prompt=PLAN_SYSTEM_PROMPT, user_prompt=user_prompt, schema=PLAN_OUTPUT_SCHEMA, model=DEFAULT_MODEL
+        system_prompt=PLAN_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        schema=PLAN_OUTPUT_SCHEMA,
+        model=DEFAULT_MODEL,
+        max_tokens=PLAN_AGENT_MAX_TOKENS,
     )
 
     # 06a 五章「核對規則」：回應的三元組（這裡用 interface_id 編碼）集合
@@ -403,6 +407,8 @@ def _assemble_task_list(
             TaskSpec(
                 id=f"task_{order_index[iid]:03d}",
                 module=draft.module,
+                class_name=draft.class_name,
+                function_name=draft.function_name,
                 description=draft.description,
                 target_files=_build_target_files(draft, module_by_id, layer_by_id, modules_with_schema_file),
                 context=draft.context,

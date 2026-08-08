@@ -271,6 +271,62 @@ def render_class_placeholder_section(
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+def render_dataclass_section(
+    file_path: str,
+    classes: list[tuple[str, str, bool, list[tuple[str, str]], str]],
+) -> str:
+    """`### {file_path}` + python code block 段落，跟
+    `render_class_placeholder_section()` 是同一種「`InterfaceSpec` 表達
+    不了、只能用文字渲染進 directory_tree」機制的另一個分支——差別在於
+    這裡的 class 有欄位可以列（不是只有建構子簽名），對應到的是純粹
+    當籃子傳接值用的 Python `dataclass`，不是 `render_schema_section()`
+    的 `(BaseModel)`（那是留給 API 邊界契約用的，見 05a 五章）。
+
+    **觸發情境**（見 `design.py` orphan class 決策樹）：這批 class 沒有
+    被任何 `InterfaceSpec` 覆蓋、也不是 `@Entity`（`@Entity` 直接跳過，
+    DB schema 欄位規格是④的職責，見 05a 九章），可能因為原始碼裡有
+    Lombok annotation（`@Data`／`@Value` 等，javalang 看不到 annotation
+    processor 生成的 getter/setter，`methods` 因此是空清單）、也可能
+    完全沒有 Lombok 標記、單純是沒寫存取方法的欄位容器（信心較低的
+    機械推斷，見 `confidence_note`）。兩種情況的 Python 對應寫法相同，
+    差別只在渲染出來的註解要不要提一句「這是怎麼判斷出來的」，供人工
+    核對時追溯。
+
+    `classes`：`(class_name, java_file_path, frozen, field_list,
+    confidence_note)` 清單。`frozen`：這個 class 的欄位是否全部
+    `final`（見 `JavaField.is_final`），決定渲染成
+    `@dataclass(frozen=True)` 還是一般 `@dataclass`。`field_list`：
+    `(field_name, python_type)`，型別已經由呼叫端透過
+    `type_mapping.map_java_type()` 轉換過，這裡純粹是字串組裝，跟
+    `render_class_placeholder_section()` 的既有慣例一致。
+    `confidence_note`：一句話說明判斷來源（有無 Lombok 標記），寫進
+    渲染出來的註解裡。
+    """
+    lines = [
+        f"### {file_path}",
+        "```python",
+        "from dataclasses import dataclass",
+        "",
+        "# 以下類別在 Java 端沒有被 module_list 追蹤到任何一般方法、也不是",
+        "# @Entity（DB schema 欄位規格是④的職責，這裡不重複）。依欄位宣告",
+        "# 機械推斷為單純傳接值用的資料容器，對應 Python dataclass，不是",
+        "# API 邊界的 BaseModel（那類契約走 openapi_spec 展開，見 05a 五章）。",
+        "",
+    ]
+    for class_name, java_file_path, frozen, fields, confidence_note in classes:
+        lines.append(f"# {class_name}（Java 原始碼：{java_file_path}；{confidence_note}）")
+        decorator = "@dataclass(frozen=True)" if frozen else "@dataclass"
+        lines.append(decorator)
+        lines.append(f"class {class_name}:")
+        if not fields:
+            lines.append("    pass")
+        for field_name, python_type in fields:
+            lines.append(f"    {field_name}: {python_type}")
+        lines.append("")
+    lines.append("```")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def render_code_section(file_path: str, code: str) -> str:
     """`### {file_path}` + python code block，內容是完整程式碼（給
     `render_database_py()`／`render_main_py()` 這類全域基礎設施檔案用，

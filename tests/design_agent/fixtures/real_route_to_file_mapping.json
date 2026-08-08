@@ -1,15 +1,15 @@
 {
   "POST_api_candidate_search": [
-    "app/repositories/candidate_repository.py",
-    "app/routers/candidate_router.py",
-    "app/schemas/candidate.py",
-    "app/services/candidate_service.py"
+    "app/repositories/exam_repository.py",
+    "app/routers/exam_router.py",
+    "app/schemas/exam.py",
+    "app/services/exam_service.py"
   ],
   "POST_api_candidate_generateRandomId": [
-    "app/repositories/candidate_repository.py",
-    "app/routers/candidate_router.py",
-    "app/schemas/candidate.py",
-    "app/services/candidate_service.py"
+    "app/repositories/exam_repository.py",
+    "app/routers/exam_router.py",
+    "app/schemas/exam.py",
+    "app/services/exam_service.py"
   ],
   "POST_api_exam_answer_save": [
     "app/repositories/exam_repository.py",
@@ -57,29 +57,29 @@
     "app/routers/file_router.py"
   ],
   "GET_api_general_language": [
-    "app/repositories/general_repository.py",
-    "app/routers/general_router.py",
-    "app/schemas/general.py"
+    "app/repositories/school_repository.py",
+    "app/routers/school_router.py",
+    "app/schemas/school.py"
   ],
   "GET_api_general_grades": [
-    "app/repositories/general_repository.py",
-    "app/routers/general_router.py",
-    "app/schemas/general.py"
+    "app/repositories/school_repository.py",
+    "app/routers/school_router.py",
+    "app/schemas/school.py"
   ],
   "GET_api_general_localtions": [
-    "app/repositories/general_repository.py",
-    "app/routers/general_router.py",
-    "app/schemas/general.py"
+    "app/repositories/school_repository.py",
+    "app/routers/school_router.py",
+    "app/schemas/school.py"
   ],
   "POST_api_general_schools": [
-    "app/repositories/general_repository.py",
-    "app/routers/general_router.py",
-    "app/schemas/general.py"
+    "app/repositories/school_repository.py",
+    "app/routers/school_router.py",
+    "app/schemas/school.py"
   ],
   "GET_api_general_version": [
-    "app/repositories/general_repository.py",
-    "app/routers/general_router.py",
-    "app/schemas/general.py"
+    "app/repositories/school_repository.py",
+    "app/routers/school_router.py",
+    "app/schemas/school.py"
   ],
   "GET_api_grading_test-exception": [
     "app/repositories/grading_repository.py",

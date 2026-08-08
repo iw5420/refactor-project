@@ -140,7 +140,7 @@ npx openapi-to-postmanv2 -s <openapi.json 路徑> -o <輸出路徑> -p
 
 > **常見疑慮澄清：跨 module 的頂層 folder 會不會撞上 Agent ⑤ 的模組級局部驗證？**——不會。⑤ 的局部驗證只跑該 module 的 readonly golden cases，完全不觸碰 `collection_mutation.json`（見 `02a_harness_architecture.md` 十三章「兩層驗證，觸發時機不同」）。跨 module 的 mutation folder 只在 Agent ②／⑥ 這兩個所有 module 均已存在或已驗證的時間點執行，不會在局部驗證階段產生假失敗。
 
-> **更正：folder 命名風格統一成英文底線（snake_case）**：mandatory group 的機械命名（`_mechanical_group_name()`）原本用中文後綴「_關聯流程」；singleton 命名交給 Claude API（`SINGLETON_GROUPING_SYSTEM_PROMPT`）卻完全沒規定命名語言與風格。實測發現這造成同一份 Collection 裡兩種 folder 風格對不上——mandatory group 帶中文後綴，singleton 是純英文，而且 singleton 每次執行 Claude 選的風格還不穩定（同一批輸入，不同次呼叫可能一次是 Title Case 加連字號、一次是無連字號的詞組）。修正後兩邊統一成英文小寫、底線分隔：`_mechanical_group_name()` 的後綴改成 `_flow`（猜不出資源名稱時退回 `business_flow`，資源種類過多時用 `_etc` 截斷，取代原本的中文「等」／「業務情境」）；`SINGLETON_GROUPING_SYSTEM_PROMPT` 明確要求 `folder_name` 只能用小寫英文、數字、底線，不用中文、空格、連字號或 Title Case。
+> **folder 命名風格統一成英文底線（snake_case）**：mandatory group 的機械命名（`_mechanical_group_name()`）與交給 Claude API 判斷的 singleton 命名（`SINGLETON_GROUPING_SYSTEM_PROMPT`）必須用同一套風格，否則同一份 Collection 裡會出現兩種 folder 風格對不上的情況。兩邊統一成英文小寫、底線分隔：`_mechanical_group_name()` 的後綴固定用 `_flow`（猜不出資源名稱時退回 `business_flow`，資源種類過多時用 `_etc` 截斷）；`SINGLETON_GROUPING_SYSTEM_PROMPT` 明確要求 `folder_name` 只能用小寫英文、數字、底線，不用中文、空格、連字號或 Title Case。
 
 ### OpenAPI `$ref` 展開（Claude API payload 組裝的共用前處理）
 
@@ -217,13 +217,11 @@ npx openapi-to-postmanv2 -s <openapi.json 路徑> -o <輸出路徑> -p
 
 > **真實檔案放 `local_uploads/`，不是 `fixtures/file_upload_samples/`**：人工若選擇不用假圖測試、改用真實業務內容（例如真的考生錄音、真的考生照片）驗證有實質業務邏輯的 endpoint，這些檔案**不能**放進 `fixtures/file_upload_samples/`——那個目錄沒有被 `.gitignore` 排除，會跟著 `git commit` 一起進版本歷史，而錄音／人臉照片是真實個資，這個系統又是教育考試場景（`school`/`grade`/`class` 這類欄位），考生很可能是未成年人，個資一旦寫進 git history 就不是刪檔案能清乾淨的事。改放專案根目錄下的 `local_uploads/`（已加進 `.gitignore`，見該處註解），`file_paths` 一樣填相對於專案根目錄的路徑（如 `"local_uploads/candidate_voice.mp3"`）即可，套用邏輯完全不用區分檔案放哪裡。兩個目錄的區隔：`fixtures/file_upload_samples/` 是可重複使用、無敏感內容、進 git 的通用範例檔；`local_uploads/` 是這次測試實際要用、可能含個資、刻意不進 git 的真實檔案，兩者不互相替代。
 
-> **更正：url variable/query 一律先套用，不受 `fill_mode` 限制**：實測 `POST /api/file/image` 才發現，`multipart/form-data` 的 endpoint 常常同時帶著 query 參數（`kind`／`randomId`／`side` 是 query 參數，只有 `file` 是 multipart body）。早期實作 `apply_manual_fill()` 依 `fill_mode` 三選一分派，`fill_mode="file_upload"` 只呼叫 `_apply_file_upload()`，`entry.values` 完全被忽略——這幾個必填 query 參數永遠只會是 `openapi-to-postmanv2` 產生的預設佔位值，不是人工填的真值，而且是**靜默**發生，不會有任何警告，是本節「False Pass 風險」的具體案例。`raw_body` 模式旁邊有 query 參數時也是同一個問題。修正後 `apply_manual_fill()` 不管 `fill_mode` 是什麼，一律先用 `entry.values` 套用 url variable/query（`value_filler._apply_url_values()`），再依 `fill_mode` 處理 body 本身——url 參數跟 body 是什麼格式無關，不該綁在一起判斷。
+> **url variable/query 一律先套用，不受 `fill_mode` 限制**：`multipart/form-data` 或 `raw_body` 的 endpoint 常常同時帶著 query 參數（例如 `POST /api/file/image` 的 `kind`／`randomId`／`side` 是 query 參數，只有 `file` 是 multipart body）。若依 `fill_mode` 三選一分派、只呼叫對應那一種套用函式，旁邊的 query 參數會被忽略，永遠停留在 `openapi-to-postmanv2` 產生的預設佔位值而非人工填的真值——而且是**靜默**發生，不會有任何警告，是本節「False Pass 風險」的具體案例。因此 `apply_manual_fill()` 不管 `fill_mode` 是什麼，一律先用 `entry.values` 套用 url variable/query（`value_filler._apply_url_values()`），再依 `fill_mode` 處理 body 本身——url 參數跟 body 是什麼格式無關，不該綁在一起判斷。
 
-> **更正：openapi.json 宣告錯誤時的處理**：`POST /api/file/voice` 實測發現 openapi.json 把它宣告成 `application/json` 裡一個 `format: binary` 字串欄位（走 `fields` 模式），但瀏覽器實際流量是 `multipart/form-data`，而且欄位（`typeNumber`）根本沒被宣告出來——這是 springdoc 對 `MultipartFile` 參數混搭其他 `@RequestParam` 時常見的標註缺陷，不是 [B] 這邊的問題。**只要來源 openapi.json 是錯的，`openapi-to-postmanv2` 轉出來的 Postman item 結構就是錯的，任何 `fill_mode` 都無法在 manual_fill 這層補救**——例如硬把 `fill_mode` 改成 `file_upload`，`_apply_file_upload()` 會發現 item 的 body 根本不是 formdata 結構而直接拋例外。這類 endpoint 應標記 `Decision.SKIP`（`/api/file/voice` 本身也符合 SKIP 語意舉例的「語音辨識這類需要真實內容才有意義的處理」），`note` 寫明原因；真正要修得回頭改 Java 端的 OpenAPI 標註，超出 [A]/[B] 範圍。日後若 Java 端修正，模板不會自動更新（見「模板不刪除」——已存在的 endpoint 不覆寫），需要人工刪除舊 entry 讓它被當成新 endpoint 重新產生模板。
+> **openapi.json 宣告錯誤時的處理**：`POST /api/file/voice` 是實例——openapi.json 把它宣告成 `application/json` 裡一個 `format: binary` 字串欄位（走 `fields` 模式），但瀏覽器實際流量是 `multipart/form-data`，而且欄位（`typeNumber`）根本沒被宣告出來——這是 springdoc 對 `MultipartFile` 參數混搭其他 `@RequestParam` 時常見的標註缺陷，不是 [B] 這邊的問題。**只要來源 openapi.json 是錯的，`openapi-to-postmanv2` 轉出來的 Postman item 結構就是錯的，任何 `fill_mode` 都無法在 manual_fill 這層補救**——例如硬把 `fill_mode` 改成 `file_upload`，`_apply_file_upload()` 會發現 item 的 body 根本不是 formdata 結構而直接拋例外。這類 endpoint 應標記 `Decision.SKIP`（`/api/file/voice` 本身也符合 SKIP 語意舉例的「語音辨識這類需要真實內容才有意義的處理」），`note` 寫明原因；真正要修得回頭改 Java 端的 OpenAPI 標註，超出 [A]/[B] 範圍。日後若 Java 端修正，模板不會自動更新（見「模板不刪除」——已存在的 endpoint 不覆寫），需要人工刪除舊 entry 讓它被當成新 endpoint 重新產生模板。
 
-**刪除的部分**：舊的 LLM 填值路徑（`value_filler.py` 的 `fill_example_values()`）整個移除，連帶清掉沒有其他呼叫端的孤兒程式碼：`prompts.py` 的 `FILL_SYSTEM_PROMPT`／`FILL_OUTPUT_SCHEMA`；`value_filler.py` 的 `extract_seed_excerpt()`／`_split_sql_statements()`／`_INSERT_TABLE_PATTERN`（這組原本是為了幫 LLM 填值窄化 `seed.sql` context，現在沒有 LLM 呼叫需要窄化，一併移除）。`value_filler.py` 保留：`_apply_values_to_item()`（`fields` 模式套值，manual_fill 沿用）、`_scalar_param_value()`、`_prune_excluded()`、`_operation_param_schema()`（判斷 endpoint 是否需要生成模板）。
-
-> **更正**：`guess_resource_name()` **不刪除**——`folder_grouper.py` 的 `_mechanical_group_name()` 還在用它猜 mandatory group 的人類可讀 folder 名稱，跟 seed.sql 完全無關的另一個用途（見 `value_filler.py` 該函式最新 docstring）。
+**刪除的部分**：舊的 LLM 填值路徑（`value_filler.py` 的 `fill_example_values()`）整個移除，連帶清掉沒有其他呼叫端的孤兒程式碼：`prompts.py` 的 `FILL_SYSTEM_PROMPT`／`FILL_OUTPUT_SCHEMA`；`value_filler.py` 的 `extract_seed_excerpt()`／`_split_sql_statements()`／`_INSERT_TABLE_PATTERN`（這組原本是為了幫 LLM 填值窄化 `seed.sql` context，現在沒有 LLM 呼叫需要窄化，一併移除）。`value_filler.py` 保留：`_apply_values_to_item()`（`fields` 模式套值，manual_fill 沿用）、`_scalar_param_value()`、`_prune_excluded()`、`_operation_param_schema()`（判斷 endpoint 是否需要生成模板）、`guess_resource_name()`（`folder_grouper.py` 的 `_mechanical_group_name()` 用它猜 mandatory group 的人類可讀 folder 名稱，跟 seed.sql 無關的另一個用途）。
 
 → 實作見：`spec_collection_agent/manual_fill.py`（`03c_collection_agent_code.md`）
 
@@ -248,7 +246,7 @@ Map 階段輸出的是「候選清單」，不是最終配對結果——同一�
 
 **分組依據與併發數**：以 OpenAPI operation 的 `tags` 欄位當 controller 邊界——一個 operation 可能掛多個 tag，取第一個決定分組；完全沒有 tag 的歸進同一個 `_untagged` 桶。分組的同時，每個 operation 的 `$ref` 也在這一步展開（見上方「OpenAPI `$ref` 展開」），送進 Map 階段時已是展開完的欄位結構。平行呼叫的併發數呼叫 `common/concurrency.py` 的 `default_concurrency()` 決定（可用核心數 − 1，執行期動態計算，不寫死，避免佔滿本機其餘資源——同一台機器通常還跑著 translator-cli 的本地模型），跟 ① 解析 Agent 共用同一份實作，不各自重新推導（見 00 六章「Map 階段併發數（共用工具）」）。單一 tag 的 endpoint 數量或 schema 複雜度過大時，依 payload 大小把該 tag 拆成多個子批次分別呼叫（見 `03c_collection_agent_code.md` `_chunk_operations()`）——tag 仍是分組邊界，子批次只是同一 controller 的候選分析分幾次呼叫完成，下一段「失敗處理粒度」的判斷單位對齊到子批次。
 
-**失敗處理粒度**：延續 00 六章／本文件六章「LLM 呼叫失敗即硬性失敗」的邊界，但分兩層看：任一 controller 的 map 呼叫本身失敗（逾時、回傳格式整體不合法），視為整個偵測失敗，直接中止，因為漏掉的候選不會被任何後續機制發現；但單一 controller 候選清單裡，個別一筆格式不合法（例如缺欄位），只丟棄那一筆、其餘照常送進 reduce 階段——候選清單是 best-effort 中間產物，reduce 階段的最終配對輸出才是需要嚴格把關的權威結果。
+**失敗處理粒度**：延續本文件六章「LLM 呼叫失敗即硬性失敗」的邊界，但分兩層看：任一 controller 的 map 呼叫本身失敗（逾時、回傳格式整體不合法），視為整個偵測失敗，直接中止，因為漏掉的候選不會被任何後續機制發現；但單一 controller 候選清單裡，個別一筆格式不合法（例如缺欄位），只丟棄那一筆、其餘照常送進 reduce 階段——候選清單是 best-effort 中間產物，reduce 階段的最終配對輸出才是需要嚴格把關的權威結果。
 
 **Reduce 階段（單次呼叫 Claude API，輸入為 map 階段濃縮後的候選清單，非原始 schema 全量）**：彙整所有 controller 的候選 producer／consumer，做跨 controller 最終配對，找出「哪個候選 producer 欄位對應哪個候選 consumer 參數」。找不到任何鏈式依賴是合法結果；map 階段任一邊整體為空時，reduce 無論如何配不出東西，直接省略這次呼叫。輸出資料形狀：
 
@@ -333,11 +331,11 @@ refactor-project/
 
 ## 五、與 LangGraph 的整合
 
-對應 01 四的節點表格，`extract_spec`／`gen_collection` 是主流程的線性 node（01 五：`parse → extract_spec → gen_collection → record_tests → design`），兩者只做「從 State 取值、呼叫四的對外入口、把結果寫回 State」，不包含任何四所述的內部邏輯。兩者讀寫哪些 State Keys 以 01 三章 State Schema 為權威定義，本文件不重複列表；兩者都是線性 node，可比照 01 七 stub 慣例整包展開 state（`{**state, ...}`），不像 `plan`／`scaffold` 是平行分支、必須只回傳自己更動的 key。
+對應 01 四的節點表格，`extract_spec`／`gen_manual_fill_templates`／`gen_collection` 是主流程的線性 node（01 五：`parse → extract_spec → gen_manual_fill_templates → gen_collection → record_tests → design`，`gen_manual_fill_templates`／`gen_collection` 之間各接一道條件邊，見下方說明），三者只做「從 State 取值、呼叫四的對外入口、把結果寫回 State」，不包含任何四所述的內部邏輯。三者讀寫哪些 State Keys 以 01 三章 State Schema 為權威定義，本文件不重複列表；三者都是線性 node，可比照 01 七 stub 慣例整包展開 state（`{**state, ...}`），不像 `plan`／`scaffold` 是平行分支、必須只回傳自己更動的 key。
 
 `extract_spec` 另外直接讀取 `JAVA_JAR_PATH`、`JAVA_BASE_URL`、`SPRING_DATASOURCE_*` 這幾個環境變數（見下方備註），這部分 01 未涵蓋。
 
-> **已實作**：三章「人工填值機制」把暫停點從「`gen_collection` 之後」提早到「`extract_spec` 之後、`gen_collection` 真正開始跑鏈式依賴偵測之前」——`collection_node.py` 已拆成 `run_generate_templates`（graph node id：`gen_manual_fill_templates`，階段一）與 `run`（沿用舊 node id `gen_collection`，階段二），中間的暫停判斷是 `should_await_manual_fill_templates_or_continue`，跟階段二既有的 `should_await_manual_fill_or_continue` 一樣指向同一個 `await_manual_fill` 終止節點。`graph/builder.py` 佈線細節見 `03c_collection_agent_code.md` 三、四章；01 五章「`gen_collection` 之後：人工補值關卡」原本只描述單一暫停點的舊設計，尚待同步這次的兩階段拆分。
+> 三章「人工填值機制」把暫停點從「`gen_collection` 之後」提早到「`extract_spec` 之後、`gen_collection` 真正開始跑鏈式依賴偵測之前」——`collection_node.py` 拆成 `run_generate_templates`（graph node id：`gen_manual_fill_templates`，階段一）與 `run`（沿用舊 node id `gen_collection`，階段二），中間的暫停判斷是 `should_await_manual_fill_templates_or_continue`，跟階段二既有的 `should_await_manual_fill_or_continue` 一樣指向同一個 `await_manual_fill` 終止節點。`graph/builder.py` 佈線細節見 `03c_collection_agent_code.md` 三、四章；兩階段拆分已同步進 `01_langgraph_architecture.md` 四、五章的節點表格與流程圖。
 
 > **備註**：`JAVA_JAR_PATH`、`SPRING_DATASOURCE_*` 這幾個啟動 Java 服務用的設定，**不放進 `RefactorState`**，`spec_node.py` 內部直接讀 `os.environ`。理由：`RefactorState` 應該只放 pipeline 執行期間動態產生、需要跨 node 傳遞的資料（如 `openapi_spec`），這幾個值是啟動當下就固定、只有 `spec_node.py` 一個 node 用得到的靜態設定，不需要經過 State 傳遞。這跟 01 三章 `test_dsn`／`python_base_url` 放進 State 不完全一致——那兩個值被 `implement_node` 內部的 `DbEnvironment`／`GoldenVerifier` 跨模組共用；`JAVA_JAR_PATH` 只有單一 node 用，直接讀環境變數更省事。
 

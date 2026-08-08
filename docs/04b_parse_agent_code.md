@@ -105,6 +105,11 @@ class FieldInfo:
 class MethodEntry:
     name: str
     return_type: str | None = None  # 回傳型別的外層名稱（void 或無法取得時為 None），供三章 3.3 鏈式呼叫接續解析用
+    has_body: bool = True  # 是否有方法本體（javalang MethodDeclaration.body is not None）。interface 的抽象宣告／
+    # Spring Data JPA 衍生查詢方法一律是 False——供 grouping.needs_llm_summary() 判斷「這個方法 LLM 讀到的
+    # 資訊是否跟機械解析器完全一樣（都只有名稱可用）」，見該函式 docstring 規則 2。
+    query_value: str | None = None  # @Query("...")／@Query(value="...") 的字面字串值；沒有這個 annotation 或
+    # 引用非字面字串常量解析不出來時為 None，供 summarize._describe_bodyless_method() 優先抄錄用。
 
 
 @dataclass
@@ -138,7 +143,14 @@ class ParsedProject:
     classes: dict[str, ClassInfo]  # key 為 class 簡單名稱，見本節前言「已知限制」
     call_graph: dict[MethodId, set[MethodId]]  # 直接呼叫關係（三章步驟 4）
     route_index: dict[str, list[MethodId]]  # endpoint_key -> method_id 清單（三章步驟 5，可能多個見五章備註）
-    project_root: str  # java_project_path，供 grouping.py／summarize.py 用 class_info.file_path（相對路徑）還原絕對路徑讀原始碼；file_path 本身在 method_id／輸出裡維持相對路徑
+    project_root: str  # java_project_path，供 grouping.py／summarize.py 用 class_info.file_path（相對路徑，見上方）還原絕對路徑讀原始碼；04a／04b 未點名這個欄位，是實作時發現「file_path 只相對 java_project_path，不相對 cwd」的落差後補上的，不影響 file_path 本身在 method_id／輸出裡維持相對路徑的設計
+
+
+@dataclass(frozen=True)
+class MapMethodResult:
+    method_name: str
+    description: str
+    complexity: str  # "low" / "medium" / "high"
 
 
 @dataclass(frozen=True)
@@ -147,15 +159,8 @@ class MapClassResult:
 
     class_name: str
     summary: str
-    methods: list["MapMethodResult"]
+    methods: list[MapMethodResult]
     cross_group_dependency_hints: list[str]  # 「看起來」被依賴/依賴到的其他 class 名稱，僅供 Reduce 參考，不下最終判斷
-
-
-@dataclass(frozen=True)
-class MapMethodResult:
-    method_name: str
-    description: str
-    complexity: str  # "low" / "medium" / "high"
 ```
 
 ---
@@ -183,7 +188,7 @@ import javalang.ast
 import javalang.tree
 import yaml
 
-from parse_agent.types import ClassInfo, FieldInfo, MethodEntry, MethodId, ParsedProject, method_id
+from parse_agent.types import ClassInfo, FieldInfo, MethodEntry, MethodId, ParsedProject, RouteDecl, method_id
 
 logger = logging.getLogger(__name__)
 
@@ -228,20 +233,23 @@ def parse_java_project(java_project_path: str) -> ParsedProject:
 
         rel_path = str(file_path.relative_to(project_root)).replace("\\", "/")  # 統一用 / 分隔，跨平台一致（見 01 八章）
         # _extract_interfaces()（見下方）補上 interface 宣告——最常見的是
-        # Spring Data JPA Repository，這類 interface 若不建 ClassInfo，
-        # _resolve_type_name_to_classes() 對這個型別的欄位會直接回傳空
-        # 清單（完全無法解析），Repository 這層永遠進不了依賴圖、Map
-        # 摘要、module_list.java_files（見 04a 四章「Repository interface
-        # 的補充掃描」）。跟 _extract_classes() 共用同一套重複名稱偵測，
+        # Spring Data JPA Repository（`interface XxxRepository extends
+        # JpaRepository<...>`，沒有手寫實作類別，Spring 執行期動態產生
+        # proxy），這類 interface 若不建 ClassInfo，_resolve_type_name_
+        # to_classes() 對這個型別的欄位會直接回傳空清單（完全無法解析），
+        # 連「留白」都談不上，Repository 這層永遠進不了依賴圖、Map 摘要、
+        # module_list.java_files（見 04a 四章「Repository interface 的
+        # 補充掃描」）。跟 _extract_classes() 共用同一套重複名稱偵測，
         # 不另外處理。
-        #
         # 這個檔案 import 的專案內類別名稱，補足欄位/呼叫圖都解析不到的
         # 依賴（見 _extract_project_imports() docstring）；同一檔案若有
-        # 多個 top-level class（少見，見十一章已知限制），全部共用同一份
-        # import 清單，沒有另外拆分的必要——import 陳述式本來就是整個
-        # 檔案共用，不是個別 class 的屬性。uses_dynamic_query_signal 同理
-        # 整份檔案共用（見四章 needs_llm_summary()）。
+        # 多個 top-level class（少見，見 04b 十一章已知限制），全部共用
+        # 同一份 import 清單，沒有另外拆分的必要——import 陳述式本來就是
+        # 整個檔案共用，不是個別 class 的屬性。
         file_imports = _extract_project_imports(tree)
+        # 這個檔案有沒有 import 已知會承載動態查詢邏輯的型別（見
+        # _uses_dynamic_query_signal() docstring），跟 file_imports 一樣
+        # 整份檔案共用，供 grouping.py 判斷是否需要送 Map 摘要用。
         file_uses_dynamic_query_signal = _uses_dynamic_query_signal(tree)
         for class_info in [*_extract_classes(tree, rel_path), *_extract_interfaces(tree, rel_path)]:
             class_info.imports = file_imports
@@ -387,6 +395,8 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
                     MethodEntry(
                         name=m.name,
                         return_type=m.return_type.name if m.return_type is not None else None,
+                        has_body=m.body is not None,
+                        query_value=_first_query_value(m.annotations),
                     )
                     for m in class_decl.methods
                 ],
@@ -453,6 +463,8 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
                     MethodEntry(
                         name=m.name,
                         return_type=m.return_type.name if m.return_type is not None else None,
+                        has_body=m.body is not None,
+                        query_value=_first_query_value(m.annotations),
                     )
                     for m in decl.methods
                 ],
@@ -615,6 +627,17 @@ def _element_to_strings(element) -> list[str]:
         if raw.startswith('"') and raw.endswith('"'):
             return [raw[1:-1]]
     return []
+
+
+def _first_query_value(annotations: list) -> str | None:
+    """`@Query("...")`／`@Query(value="...")` 的字面字串值，供
+    `MethodEntry.query_value`（見該欄位 docstring）。重用
+    `_annotation_values()` 同一套 `None`／`[]` 語意——這裡不需要區分
+    「沒有 @Query」跟「有但解析不出字面值」，兩種情況呼叫端都是「沒有
+    可抄錄的查詢字串」，統一收斂成 `None`。
+    """
+    values = _annotation_values(annotations, "Query")
+    return values[0] if values else None
 ```
 
 ### 3.2 欄位型別解析：`@Qualifier`／`@Primary` 消歧（三章步驟 3 第二點）
@@ -978,9 +1001,7 @@ class RouteDecl:
 ```python
 # parse_agent/call_graph.py（續，補進 3.1 _extract_classes() 的抽取邏輯）
 
-def _extract_routes(class_decl: javalang.tree.ClassDeclaration) -> list["RouteDecl"]:
-    from parse_agent.types import RouteDecl
-
+def _extract_routes(class_decl: javalang.tree.ClassDeclaration) -> list[RouteDecl]:
     routes: list[RouteDecl] = []
     for method_decl in class_decl.methods:
         for ann in method_decl.annotations:
@@ -1298,11 +1319,11 @@ def find_shared_classes(controller_deps: dict[str, set[str]]) -> set[str]:
 # 標記「這個類別大概率是純資料容器」的 Lombok／JPA annotation——只是觸發
 # 進一步檢查的訊號，不是最終判斷依據（見 needs_llm_summary() docstring，
 # 真正決定「有沒有邏輯」的是方法清單本身，不是這份 annotation 清單）。
-_DATA_ANNOTATIONS = {
-    "Entity", "Embeddable", "MappedSuperclass",
-    "Data", "Value", "Getter", "Setter", "Builder",
-    "NoArgsConstructor", "AllArgsConstructor", "RequiredArgsConstructor",
-}
+# 定義本身搬到 common/java_annotations.py 跟 design_agent 共用（見 00 六章
+# 「Java class annotation 判斷（共用工具）」），這裡只留這個模組內沿用的
+# 別名，成員集合與搬移前逐一相等，不影響本函式既有的分類結果——
+# tests/common/test_java_annotations.py 鎖定這個等價性。
+from common.java_annotations import DATA_CLASS_ANNOTATIONS as _DATA_ANNOTATIONS
 # 存取器方法命名慣例：get*/set*/is*，或 Lombok/Java 慣例產生的
 # equals/hashCode/toString/canEqual/builder/toBuilder。方法名稱只要
 # 不落在這個樣式裡，就代表「除了欄位存取以外還有其他行為」。
@@ -1311,9 +1332,10 @@ _ACCESSOR_METHOD_RE = re.compile(
 )
 
 
-def needs_llm_summary(class_info: ClassInfo) -> bool:
+def needs_llm_summary(class_info: ClassInfo, has_implementor: bool) -> bool:
     """判斷這個 class 值不值得花一次 Claude API 呼叫做 Map 摘要，對應
-    04a 四章「Map 摘要必要性判斷」的三層規則：
+    「Specification 特殊處理、無本體且無實作類別的介面、一般類別看方法
+    清單、其餘預設當有邏輯」四層規則：
 
     1. **用到已知動態查詢型別（`uses_dynamic_query_signal`，見
        call_graph.py `_uses_dynamic_query_signal()`）一律判定為有邏輯**
@@ -1323,23 +1345,42 @@ def needs_llm_summary(class_info: ClassInfo) -> bool:
        這種防呆判斷藏在 lambda 內部），不管有沒有其他 annotation，一律
        送 Map，不嘗試判斷 method body 內部藏了多少邏輯。
 
-    2. **有 `_DATA_ANNOTATIONS` 標記，且方法清單只有存取器方法（或完全
+    2. **`has_implementor=False`（`build_interface_implementors()` 查無
+       任何具體實作類別），且方法清單全部沒有本體（`all()` 在空清單上
+       天生成立，涵蓋「完全沒有自訂方法，純靠繼承 CRUD」的情況）→ 判定
+       不需要 LLM，機械處理**。這是 Spring Data JPA Repository 的典型
+       形狀（`interface XxxRepository extends JpaRepository<...>`，
+       Spring 在執行期動態生成 proxy，原始碼裡不存在任何實作）：這批
+       方法沒有方法本體，LLM 讀到的資訊跟機械解析器完全一樣（都只有
+       方法名稱／`@Query` annotation 可用），送 Map 花錢請 LLM 用比較
+       不穩定的方式做一件機械解析能做得更準、更便宜、每次結果一致的
+       事，不符合 00 二章「能用程式判斷的，就不要交給 LLM」。**刻意
+       排除在「有具體實作類別」的情況之外**：若這個介面有
+       `@Service`/`@Component`/`@Repository` 標註的具體實作類別
+       （`has_implementor=True`），真正的業務邏輯寫在實作類別自己的
+       方法裡（有本體，會正常送 Map），介面本身的抽象宣告不需要、也不
+       應該被機械處理搶答——避免同一個業務方法產生兩筆不一致的記錄
+       （見 `_mechanical_summary()` 對應這一段的處理）。
+
+    3. **有 `_DATA_ANNOTATIONS` 標記，且方法清單只有存取器方法（或完全
        沒有明確方法，如純靠 Lombok `@Data` 生成 getter/setter，javalang
        看不到這些生成的方法）→ 判定為純資料類別，不送 Map**。這裡刻意
        不是「只要有 `@Entity` 就跳過」——DDD 風格的富領域模型常把業務
        規則寫在 entity 自己的方法裡（如 `isEligible()`／`calculateTotal()`
        這類非存取器命名的方法），這種情況下即使有 `@Entity`，只要方法
-       清單裡出現任何一個不是存取器樣式的方法名稱，就會落到規則 3，
+       清單裡出現任何一個不是存取器樣式的方法名稱，就會落到規則 4，
        維持送 Map——annotation 只決定「要不要進一步檢查方法清單」，不
        單獨決定「有沒有邏輯」。
 
-    3. **其餘情況（沒有標記、或有標記但還有非存取器方法）→ 預設有
+    4. **其餘情況（沒有標記、或有標記但還有非存取器方法）→ 預設有
        邏輯，送 Map**，呼應 04a 三章「多連、少排除」同一種保守精神：
        不確定的情況一律當作「可能有邏輯」而不是「大概沒有」，多花一次
        API 呼叫的代價，遠低於漏掉真實業務邏輯的代價。
     """
     if class_info.uses_dynamic_query_signal:
         return True
+    if not has_implementor and all(not m.has_body for m in class_info.methods):
+        return False
     has_data_annotation = bool(set(class_info.annotations) & _DATA_ANNOTATIONS)
     if has_data_annotation:
         only_accessors = all(_ACCESSOR_METHOD_RE.match(m.name) for m in class_info.methods)
@@ -1351,11 +1392,21 @@ def needs_llm_summary(class_info: ClassInfo) -> bool:
 def classify_trivial_classes(project: ParsedProject) -> set[str]:
     """對 `project.classes` 全部類別跑一次 `needs_llm_summary()`，回傳
     判定不需要送 Map 的類別名稱集合。分類本身不呼叫 Claude API、不花
-    任何額度（純看 annotation／方法名稱），跟 04a 二章「能用程式判斷的，
-    就不要交給 LLM」同一種分工——這裡的判斷不需要語意理解，只是機械的
-    命名樣式比對。
+    任何額度（純看 annotation／方法清單／有無實作類別），跟 04a 二章
+    「能用程式判斷的，就不要交給 LLM」同一種分工——這裡的判斷不需要
+    語意理解，只是機械的結構事實比對。`interface_implementors` 重用
+    `controller_dependency_closure()` 內部已經在算的同一份資料（見
+    `build_interface_implementors()`），這裡另外算一次——`ParsedProject`
+    沒有把它落地成欄位，重算成本極低（純字典掃描），不值得為了省這一次
+    重算去改變 `ParsedProject`／`controller_dependency_closure()` 的既有
+    介面。
     """
-    return {name for name, info in project.classes.items() if not needs_llm_summary(info)}
+    interface_implementors = build_interface_implementors(project.classes)
+    return {
+        name
+        for name, info in project.classes.items()
+        if not needs_llm_summary(info, has_implementor=name in interface_implementors)
+    }
 
 
 @dataclass(frozen=True)
@@ -1477,6 +1528,8 @@ def _class_source_chars(project_root: str, class_info: ClassInfo) -> int:
 """
 from __future__ import annotations
 
+import copy
+
 # 對應 grouping.py 產出的 MapUnit（4a 共用類別批次、4b Controller 批次
 # 共用同一份 prompt，兩者的差異只在輸入 payload 的內容組成，不在 prompt
 # 文字本身——見 04a 四章「Map 階段分兩個子階段，先共用、後專屬」）。
@@ -1570,6 +1623,15 @@ repository/service class；被多個 Controller 共用的 class 依業務關聯
 4. depends_on：這個模組依賴哪些其他模組（填 module 名稱，不是 class
    名稱）
 
+**java_classes 只能是輸入 classes 陣列裡出現過的 class_name，禁止填入
+任何沒出現過的名稱**：輸入的 classes 陣列就是這次要分類的完整 class
+清單，不是範例或摘要。即使你從某個方法描述聯想到「這個功能應該會用到
+一個 CreateExamRequest 或 LoginResponse 這類 DTO class」，只要這個名稱
+沒有原樣出現在輸入的 classes 陣列裡，就絕對不能把它填進 java_classes
+——這種 DTO/Request/Response class 通常沒有業務邏輯，本來就不會出現在
+你收到的 classes 清單裡，這是預期內的正常情況，不代表你需要幫忙補上。
+填入清單外的名稱不會產生任何效果，只會被直接丟棄，純粹浪費你的輸出。
+
 不要輸出任何其他文字，不要用 markdown code fence 包裹。
 """
 
@@ -1594,6 +1656,40 @@ REDUCE_OUTPUT_SCHEMA: dict = {
     "required": ["modules"],
     "additionalProperties": False,
 }
+
+
+def build_reduce_output_schema(valid_class_names: list[str]) -> dict:
+    """回傳 `REDUCE_OUTPUT_SCHEMA` 的動態版本：`java_classes` 陣列的每個
+    元素加上 `enum: valid_class_names` 約束，`valid_class_names` 是呼叫端
+    傳入的、這次 Map 階段實際摘要過的 class_name 完整集合（封閉集合，
+    Reduce 呼叫前就已經確定，不是猜測）。
+
+    **為什麼用 schema 約束、不只靠 prompt 指令**：REDUCE_SYSTEM_PROMPT
+    已經有「java_classes 只能是輸入 classes 陣列裡出現過的名稱，禁止
+    杜撰」的文字指令，但這只能降低模型虛構 class 名稱的機率，降不到 0
+    ——模型看到方法描述提到「建立考試」，語意上很容易聯想到一個
+    `CreateExamRequest`／`CreateExamRq` 這類 DTO 應該存在，即使明確被
+    告知不要這樣做。既然合法的 class 名稱集合在呼叫前就已經是確定的
+    封閉集合，這正是 00 二章「能用程式判斷的，就不要交給 LLM」的情況：
+    用 Structured Outputs 的 `enum` 讓 API 在生成階段就不可能輸出集合外
+    的字串，不是「生成後再靠程式碼濾掉」（`_assemble_module_drafts()`
+    的 `missing_classes` 檢查會繼續留著，當作 defense-in-depth，不因為
+    這裡加了 enum 約束就拿掉）。`enum` 只限制這個欄位「填的字串必須是
+    這些之一」，不影響模型判斷要怎麼分組、哪些 class 該歸同一個模組，
+    Reduce 階段原本的判斷空間完全不受影響。
+
+    `depends_on` 刻意不做同樣的 enum 約束：`depends_on` 引用的是這次
+    回應**自己產出**的 module 名稱，屬於自我參照，呼叫前不存在一個
+    「合法 module 名稱」的封閉集合可以拿來約束（`module` 名稱本身也是
+    這次回應才決定的），這個欄位仍然只能依賴 `_assemble_module_drafts()`
+    既有的事後驗證（見 04a 四章「depends_on 引用不存在的 module 名稱」）。
+    """
+    schema = copy.deepcopy(REDUCE_OUTPUT_SCHEMA)  # 淺拷貝不夠，這裡巢狀結構要整份複製，避免動到共用的模組常數
+    schema["properties"]["modules"]["items"]["properties"]["java_classes"]["items"] = {
+        "type": "string",
+        "enum": valid_class_names,
+    }
+    return schema
 ```
 
 ---
@@ -1649,6 +1745,7 @@ from pathlib import Path
 from graph.state import ApiMapping, MethodInfo, ModuleInfo
 from parse_agent.exceptions import ParseAgentMapReduceError
 from parse_agent.grouping import (
+    _ACCESSOR_METHOD_RE,
     MapUnit,
     build_controller_units,
     build_shared_class_units,
@@ -1662,10 +1759,10 @@ from parse_agent.llm import DEFAULT_MODEL
 from parse_agent.prompts import (
     MAP_OUTPUT_SCHEMA,
     MAP_SYSTEM_PROMPT,
-    REDUCE_OUTPUT_SCHEMA,
     REDUCE_SYSTEM_PROMPT,
+    build_reduce_output_schema,
 )
-from parse_agent.types import ClassInfo, MapClassResult, MapMethodResult, MethodId, ParsedProject, method_id
+from parse_agent.types import ClassInfo, MapClassResult, MapMethodResult, MethodEntry, MethodId, ParsedProject, method_id
 
 logger = logging.getLogger(__name__)
 
@@ -1745,24 +1842,42 @@ def _map_analyze_batch(unit: MapUnit) -> list[MapClassResult]:
         MapClassResult(
             class_name=entry["class_name"],
             summary=entry["summary"],
-            methods=[
-                MapMethodResult(
-                    _normalize_method_name(m["method_name"], known_methods_by_class.get(entry["class_name"], set())),
-                    m["description"],
-                    m["complexity"],
-                )
-                for m in entry["methods"]
-            ],
+            methods=_normalize_class_methods(entry, known_methods_by_class.get(entry["class_name"], set())),
             cross_group_dependency_hints=entry["cross_group_dependency_hints"],
         )
         for entry in result["classes"]
     ]
 
 
+def _normalize_class_methods(entry: dict, known_names: set[str]) -> list[MapMethodResult]:
+    """對單一 class 的 Map 回應逐筆呼叫 `_normalize_method_name()`，回傳
+    值為 `None`（完全對不上這個 class 任何真實方法，見該函式 docstring）
+    的項目直接不進最終清單——這個名稱在 javalang 掃描出的真實方法集合
+    裡不存在（常見成因：LLM 把建構子當成方法回報，如 `AuthException`／
+    `ExamException` 這類只有多載建構子、沒有一般方法的例外類別），留著
+    它只會讓 `module_list.methods` 混進一筆永遠對不到任何 Java 方法的
+    幽靈記錄——③ 架構設計 Agent 的 `_build_method_contexts()` 找不到
+    對應方法只能整批略過（05a 六章「已知限制」），[P] Plan Agent 依
+    04a 六章「以完整方法清單為準」拆 task 時也會對著這筆不存在的方法
+    產生一個永遠做不完的 task。比照 04a 五章「多連、少排除」精神在
+    method_id 這層的做法——那裡「連」的前提是候選確實可能是真實依賴；
+    這裡的情況相反，一個 method_name 完全不在 javalang 權威來源的方法
+    集合裡，不是「不確定要不要留」，是「確定這個方法不存在」，因此
+    這裡改成「明確無效就排除」，跟呼叫圖那邊的保守方向並不矛盾。
+    """
+    normalized: list[MapMethodResult] = []
+    for m in entry["methods"]:
+        name = _normalize_method_name(m["method_name"], known_names)
+        if name is None:
+            continue
+        normalized.append(MapMethodResult(name, m["description"], m["complexity"]))
+    return normalized
+
+
 _METHOD_NAME_SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 
-def _normalize_method_name(raw_name: str, known_names: set[str]) -> str:
+def _normalize_method_name(raw_name: str, known_names: set[str]) -> str | None:
     """Map 階段回傳的 `method_name` 理論上應該原樣抄自輸入原始碼（見
     `prompts.MAP_SYSTEM_PROMPT`「method_name：原樣抄方法名稱」），但一個
     class 內有同名多載方法時（如兩個 `voice`，一個 `@PostMapping`、一個
@@ -1776,9 +1891,17 @@ def _normalize_method_name(raw_name: str, known_names: set[str]) -> str:
 
     這裡在合併回 `MapMethodResult` 之前正規化：原樣名稱若不在這個 class
     實際宣告的方法名稱集合（`known_names`，來自 javalang 掃描結果，權威
-    來源）裡，嘗試剝掉結尾的括號後綴再比對一次；還是對不上就保留原樣，
-    只記警告，不強行猜測（呼應 04a 三章「多連、少排除」同一種保守精神：
-    正規化不到就不動，讓下游該排除的排除，不偽造一個可能是錯的名稱）。
+    來源）裡，嘗試剝掉結尾的括號後綴再比對一次。
+
+    **兩種情況的處理刻意不同**：多載消歧後綴剝掉後能對上，代表這就是
+    一個真實存在的方法，只是名稱被模型加了註記，正規化回真實名稱即可。
+    但剝掉後綴仍然對不上任何真實方法時（`known_names` 是 javalang 掃描
+    出的權威來源，不是猜測），代表這個 `method_name` 根本不對應這個
+    class 的任何真實方法——最常見的成因是模型把建構子（javalang 不會把
+    建構子算進 `class_decl.methods`）誤報成方法。這種情況不是「正規化不
+    出正確名稱」，是「這筆方法本身就不存在」，因此回傳 `None`，由呼叫端
+    （`_normalize_class_methods()`）直接排除這筆記錄，不讓一個確定不存在
+    的方法混進 `module_list.methods`（見該函式 docstring）。
     """
     if raw_name in known_names:
         return raw_name
@@ -1793,12 +1916,13 @@ def _normalize_method_name(raw_name: str, known_names: set[str]) -> str:
         return stripped
     logger.warning(
         "Map 回應的 method_name %r 在對應 class 的實際方法清單中找不到"
-        "（剝掉消歧後綴後仍對不上），可能導致對應的 endpoint 從 "
-        "api_to_python_target 消失，請人工核對: 已知方法清單=%s",
+        "（剝掉消歧後綴後仍對不上，常見成因是模型把建構子誤報成方法），"
+        "判定這筆方法不存在，已從 module_list 排除，不需要人工介入"
+        "（見 _normalize_method_name() docstring）: 已知方法清單=%s",
         raw_name,
         sorted(known_names),
     )
-    return raw_name
+    return None
 
 
 def _run_map_batch(units: list[MapUnit]) -> tuple[list[MapClassResult], list[MapUnit]]:
@@ -1883,9 +2007,17 @@ def _reduce_phase(map_results: list[MapClassResult], controller_deps: dict[str, 
     """單次呼叫，輸入是 4a+4b 全部 Map 結果的彙整（濃縮後的候選結果，
     非原始碼全量，見 04a 四章 Reduce 階段）+ 程式算好的
     controller_dependencies 事實（見 04a 四章「這也是程式算出的精確
-    事實」）。回傳 REDUCE_OUTPUT_SCHEMA 的原始 dict，組裝成 ModuleInfo
-    是 7.3 的事，這裡只負責呼叫。
+    事實」）。回傳 output schema 的原始 dict，組裝成 ModuleInfo 是 7.3
+    的事，這裡只負責呼叫。
+
+    **`java_classes` 用動態 enum 約束，不是靜態 `REDUCE_OUTPUT_SCHEMA`**：
+    `map_results` 涵蓋的 class_name 集合在呼叫這次 Reduce 之前就已經
+    確定（Map 階段已經跑完），是封閉集合，透過 `build_reduce_output_
+    schema()` 把這個集合灌進 schema 的 `enum`，讓 API 在生成階段就不
+    可能吐出集合外的 class 名稱——見 `prompts.build_reduce_output_
+    schema()` docstring「為什麼用 schema 約束、不只靠 prompt 指令」。
     """
+    valid_class_names = sorted({r.class_name for r in map_results})
     payload = {
         "classes": [
             {
@@ -1909,17 +2041,14 @@ def _reduce_phase(map_results: list[MapClassResult], controller_deps: dict[str, 
         return call_claude_for_json(
             system_prompt=REDUCE_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            schema=REDUCE_OUTPUT_SCHEMA,
+            schema=build_reduce_output_schema(valid_class_names),
             model=DEFAULT_MODEL,
         )
     except LlmJsonError as exc:
         # Reduce 只有單次呼叫，沒有「多組互相隔離」的概念，失敗直接視為
-        # 硬性失敗（跟 Map 階段的重試佇列語意不同，這裡不重試）——
-        # 04a 四章的重試佇列機制描述限定在「單一分組（4a 或 4b 任一組）」，
-        # Reduce 本身不是分組式呼叫，重試一次能解決的通常是網路抖動這類
-        # anthropic SDK 內建 max_retries 已經處理過的暫時性錯誤（見
-        # spec_collection_agent/llm.py「傳輸層級的暫時性錯誤...已由
-        # anthropic SDK 內建處理」），這裡再重試意義不大。
+        # 硬性失敗（跟 Map 階段的重試佇列語意不同，這裡不重試）——重試一次
+        # 能解決的通常是網路抖動這類 anthropic SDK 內建 max_retries 已經
+        # 處理過的暫時性錯誤，這裡再重試意義不大。
         raise ParseAgentMapReduceError(f"Reduce 階段呼叫失敗（{len(map_results)} 筆 class 摘要）: {exc}") from exc
 ```
 
@@ -2184,26 +2313,117 @@ def finalize_module_list(drafts: list[_ModuleDraft]) -> list[ModuleInfo]:
 ```python
 # parse_agent/summarize.py（續）
 
-def _mechanical_summary(class_info: ClassInfo) -> MapClassResult:
-    """對 `grouping.classify_trivial_classes()` 判定不需要送 Map 的類別
-    （純資料類別，見該函式 docstring），機械組出一份佔位摘要，不呼叫
-    Claude API。目的單純是完整性：讓這個類別仍然能透過 Reduce 被分進
-    某個 module、出現在 `module_list.java_files`，不是真的做了語意摘要，
-    `summary` 內容本身要老實反映這件事，不偽裝成 LLM 產出的摘要。
+_DERIVED_QUERY_RE = re.compile(
+    r"^(?P<verb>find|read|get|query|stream|count|exists|delete|remove)By(?P<condition>[A-Z].*)$"
+)
+_LOOSE_DERIVED_QUERY_RE = re.compile(r"^(find|read|get|query|stream|count|exists|delete|remove)\w*By[A-Z]")
+_VERB_DESCRIPTIONS = {
+    "find": "查詢", "read": "查詢", "get": "查詢", "query": "查詢", "stream": "查詢",
+    "count": "計數", "exists": "判斷是否存在", "delete": "刪除", "remove": "刪除",
+}
+_AND_OR_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(And|Or)(?=[A-Z])")
+_CAMEL_WORD_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
-    `methods=[]`：這些方法多半是 getter/setter，個別拆成 [P] 的 task 去
-    翻譯沒有意義——Python 端通常用 dataclass／SQLAlchemy model 的屬性
-    表達，不需要逐一翻譯存取器方法；真的有非存取器方法而被判定需要
-    摘要的類別，本來就不會走到這裡（見 `needs_llm_summary()`）。
+
+def _describe_derived_query(method_name: str) -> str | None:
+    """Spring Data JPA 衍生查詢方法命名慣例的機械解析，供
+    `_describe_bodyless_method()` 使用。**刻意保守，不窮舉所有 Spring
+    Data 關鍵字**（`Top`／`Distinct`／`OrderBy`／`GreaterThan`／`Like`
+    等運算子一律不嘗試解析）：只處理「動詞 + By + 欄位條件（僅
+    And／Or 連接）」這個最常見、最沒有歧義的形狀，欄位名稱本身一定
+    正確（直接來自方法簽名，不是猜的），只是不逐一判讀運算子語意。
+    解析不出這個嚴格形狀、但外觀確實像衍生查詢方法（`_LOOSE_DERIVED_
+    QUERY_RE` 命中）時，回傳一句誠實的通用說明，不假裝完整解析出欄位
+    條件——寧可少講一點，也不要把 `Top3`／`OrderBy` 這類非欄位關鍵字誤
+    當成欄位名稱拆進描述裡，見 05a／04a 反覆強調的「不確定就不要假裝
+    知道」精神在方法層級的延伸。
+    """
+    strict = _DERIVED_QUERY_RE.match(method_name)
+    if strict is not None:
+        verb_desc = _VERB_DESCRIPTIONS[strict.group("verb")]
+        segments = [s for s in _AND_OR_SPLIT_RE.split(strict.group("condition")) if s not in ("And", "Or")]
+        fields = "、".join(_CAMEL_WORD_SPLIT_RE.sub(" ", s).strip() for s in segments)
+        return (
+            f"Spring Data 衍生查詢方法，依 {fields} 欄位條件{verb_desc}"
+            "（由方法名稱依 Spring Data JPA 命名慣例機械解析，未逐一判讀運算子如 GreaterThan／Like 等）"
+        )
+    if _LOOSE_DERIVED_QUERY_RE.match(method_name):
+        return (
+            f"Spring Data 衍生查詢方法（方法名稱 `{method_name}` 含 Top／Distinct／OrderBy 等複雜關鍵字，"
+            "機械解析僅辨識出這是衍生查詢方法，實際條件請參照方法簽名，未逐一拆解欄位）"
+        )
+    return None
+
+
+def _describe_bodyless_method(method: MethodEntry) -> tuple[str, str]:
+    """機械描述一個沒有方法本體的方法（見 `grouping.needs_llm_summary()`
+    「`has_implementor=False` 且方法清單全部沒有本體」分支）：LLM 讀到的
+    資訊跟這裡機械解析用的完全一樣（只有方法名稱／`@Query` annotation
+    可用），沒有理由讓 LLM 猜，猜的結果也不會比機械解析更可靠。依信心
+    高低分三層：
+
+    1. **有 `@Query` 字面字串** → 直接抄錄，比任何摘要都精確
+    2. **符合 Spring Data 衍生查詢命名慣例**（見 `_describe_derived_
+       query()`）→ 機械拆解欄位條件
+    3. **兩者都不是** → 誠實占位，明講「無法機械推斷語意，需人工核對」
+       ，不假裝知道，`complexity` 用 `"medium"` 標記需要多留意（而非
+       跟前兩層一樣的 `"low"`），呼應「不確定就不要假裝知道」精神。
+    """
+    if method.query_value:
+        return f"自訂查詢（`@Query`）：{method.query_value}", "low"
+    derived = _describe_derived_query(method.name)
+    if derived is not None:
+        return derived, "low"
+    return (
+        "抽象方法，無方法本體，且無法從命名慣例或 @Query 機械推斷語意，建議人工核對實際語意",
+        "medium",
+    )
+
+
+def _mechanical_summary(class_info: ClassInfo) -> MapClassResult:
+    """對 `grouping.classify_trivial_classes()` 判定不需要送 Map 的類別，
+    機械組出一份佔位摘要，不呼叫 Claude API。目的單純是完整性：讓這個
+    類別仍然能透過 Reduce 被分進某個 module、出現在
+    `module_list.java_files`，不是真的做了語意摘要，`summary` 內容本身
+    要老實反映這件事，不偽裝成 LLM 產出的摘要。
+
+    `needs_llm_summary()` 有兩種不同理由判定「不需要 LLM」，`methods`
+    的機械組裝方式因此不同：
+
+    - **存取器方法**（`get*`／`set*`／`is*`／`equals`／`hashCode`／
+      `toString`）：略過，不產生任何 `MapMethodResult`——這些方法多半是
+      Lombok／手寫 getter/setter，個別拆成 [P] 的 task 去翻譯沒有意義，
+      Python 端通常用 dataclass／SQLAlchemy model 的屬性表達。
+    - **無方法本體、非存取器的方法**（`needs_llm_summary()` 規則 2，如
+      Spring Data JPA 衍生查詢方法）：透過 `_describe_bodyless_method()`
+      機械組出真正有意義的描述，不是空清單——這批方法是真實業務行為，
+      只是不需要（也不該）讓 LLM 猜。
+    - **其餘情況**（理論上不該出現在這裡：有本體又不是存取器的方法，
+      代表會落在規則 3／4，本來就該送 Map，不會被判定為 trivial）：
+      防禦性地記一筆 warning 並略過，不中止——真的發生代表分類邏輯本身
+      有 bug，需要回頭檢查 `needs_llm_summary()`，不是這個函式能修正的。
     """
     annotation_note = "、".join(class_info.annotations) or "無 Lombok/JPA 標記"
+    methods: list[MapMethodResult] = []
+    for m in class_info.methods:
+        if _ACCESSOR_METHOD_RE.match(m.name):
+            continue
+        if not m.has_body:
+            description, complexity = _describe_bodyless_method(m)
+            methods.append(MapMethodResult(m.name, description, complexity))
+            continue
+        logger.warning(
+            "%s.%s 被 needs_llm_summary() 判定為不需要 LLM 摘要，但有方法本體且非存取器方法，"
+            "理論上不該發生（見 _mechanical_summary() docstring「其餘情況」），已略過此方法",
+            class_info.class_name, m.name,
+        )
     return MapClassResult(
         class_name=class_info.class_name,
         summary=(
-            f"純資料類別（{annotation_note}），僅有存取器方法，機械判定無自訂業務邏輯，"
-            "未呼叫 Claude API 摘要（見 grouping.needs_llm_summary()）。"
+            f"機械判定不需要 Claude API 摘要（{annotation_note}），未呼叫 LLM"
+            "（見 grouping.needs_llm_summary()）。"
         ),
-        methods=[],
+        methods=methods,
         cross_group_dependency_hints=[],
     )
 
@@ -2473,7 +2693,7 @@ def run_parse_agent(
 
 ## 十、`graph/nodes/parse_node.py`——LangGraph node 實作
 
-取代目前的 stub（見 04a 二章前言：「本文件不出現可執行的實作邏輯」——這裡才是實際落地）。比照 `spec_node.py`／`collection_node.py` 的慣例：`run_parse_agent()` 內部是同步阻塞呼叫（javalang 掃描＋多次 Claude API 呼叫，且 Map 重試佇列的 5 分鐘等待，見 04a 四章），丟到執行緒跑，避免卡住事件迴圈。
+比照 `spec_node.py`／`collection_node.py` 的慣例：`run_parse_agent()` 內部是同步阻塞呼叫（javalang 掃描＋多次 Claude API 呼叫，且 Map 重試佇列的 5 分鐘等待，見 04a 四章），丟到執行緒跑，避免卡住事件迴圈。
 
 ```python
 # graph/nodes/parse_node.py
@@ -2484,13 +2704,12 @@ def run_parse_agent(
 輸出：module_list, api_to_python_target
 見 04a_parse_agent_architecture.md、04b_parse_agent_code.md
 
-排在 gen_collection（[B] Collection Agent 階段二）之後、record_tests
-（② 測試 Agent）之前，見 04a 二章、01 五章「parse（① 解析 Agent）排在
-[B] 之後」；graph/builder.py 目前的 node 順序尚未同步這個編排（見
-00 十章「已知落差」），本檔案的 run() 函式本身不受影響，只是還沒被排在
-正確的位置上呼叫。這個順序同時也是 openapi_spec 一定已經在 state 裡的
-前提——parse 排在 extract_spec（[A]）之後，state["openapi_spec"] 這時
-必定已經填好。
+排在 gen_collection（[B] Collection Agent 階段二）之後，見 04a 二章、
+01 五章「parse（① 解析 Agent）排在 [B] 之後」；這個順序同時也是
+openapi_spec 一定已經在 state 裡的前提——parse 排在 extract_spec（[A]）
+之後，state["openapi_spec"] 這時必定已經填好。parse 完成後平行觸發
+record_tests（②）與 design（③），③ 需要 module_list／api_to_python_target
+（本節點的輸出）＋ openapi_spec 才能設計 Python 結構，見 05a 二章。
 """
 from __future__ import annotations
 
@@ -2502,6 +2721,9 @@ from parse_agent import run_parse_agent
 
 
 async def run(state: RefactorState) -> RefactorState:
+    # run_parse_agent() 內部是同步阻塞呼叫（javalang 掃描＋多次 Claude
+    # API 呼叫，且 Map 重試佇列的 5 分鐘等待，見 04a 四章），丟到執行緒
+    # 跑，避免卡住事件迴圈（與 spec_node.py／collection_node.py 做法一致）。
     module_list, api_to_python_target = await asyncio.to_thread(
         run_parse_agent,
         java_project_path=state["java_project_path"],
@@ -2520,7 +2742,7 @@ async def run(state: RefactorState) -> RefactorState:
 
 ## 十一、已知限制與待驗證事項
 
-04a 十章已定案、在 04b 落地為具體行為的四項（`@RequestMapping` 非字面值解析、`@Qualifier` 消歧失敗頻率、4a 批次拆分門檻、Map/Reduce 重試仍失敗後的策略）見三章各處註解、四章 7.1 `run_map_phase_with_retry()`，不在這裡重複列出；`graph/builder.py` 尚未同步一項跟 04b 無關（見 04a 十章「尚待定案」），也不在這裡討論。以下是實作過程中浮現、04a 沒有點名的實作層級限制。除非特別註明，「目標專案」均指 `lang-exam-api-refactor`；「沒有觸發」不等於「已證明沒問題」，只代表這個專案剛好沒踩到，換一個專案仍可能踩到，不可因此刪除：
+04a 十章已定案、在 04b 落地為具體行為的四項（`@RequestMapping` 非字面值解析、`@Qualifier` 消歧失敗頻率、4a 批次拆分門檻、Map/Reduce 重試仍失敗後的策略）見三章各處註解、四章 7.1 `run_map_phase_with_retry()`，不在這裡重複列出。以下是實作過程中浮現、04a 沒有點名的實作層級限制。除非特別註明，「目標專案」均指 `lang-exam-api-refactor`；「沒有觸發」不等於「已證明沒問題」，只代表這個專案剛好沒踩到，換一個專案仍可能踩到，不可因此刪除：
 
 - **Repository interface 的 `default`／`static` method body 不會被追蹤**（見三章 3.1 `_extract_interfaces()`，設計見 04a 四章「Repository interface 的補充掃描」）——這類方法本身會被正確納入 `ClassInfo.methods`（能被 `_yield_call()` 辨識成呼叫目標），但方法自己內部呼叫的東西不會被追蹤（`_build_call_graph()` 只走 `ClassDeclaration`，不含 interface）。Spring Data Repository 極少用這個寫法，目標專案沒有觸發，維持既有「連結留白、預設保留」的安全方向，留待接上真的用到這個寫法的專案再評估。
 - **鏈式呼叫解析（三章 3.3 `_resolve_qualifier_string()`／`_continue_chain()`／`_walk_and_resolve()`）是新寫的遞迴演算法，語意解析的精確度還沒有真實案例驗證過**——javalang 能成功 parse 只證明語法層沒問題，不代表「呼叫圖的語意解析（誰呼叫誰）精不精確」也對。這個演算法假設了 javalang 對純欄位存取鏈（沒有方法呼叫打斷）會把它折成點號字串塞進 `qualifier`、只在遇到方法呼叫時才展開成巢狀 `.selectors`，以及 `this.x.y()` 的 `"this"` 一定出現在 qualifier 字串最前面，第一次接上真實專案後應該優先檢查呼叫圖的連結數量是否合理（多連比漏連安全，但連結數量若跟 class 數量、方法數量的比例明顯失真，可能代表這裡對 javalang 節點結構的假設有誤，需要對照當時安裝的 javalang 版本原始碼核對）。選擇器層級（`.selectors` 內）的節點若自己還帶非空 `qualifier`（javalang 通常不會這樣產生），目前直接視為無法解析，不強行模擬，也是同一類尚待驗證的邊界情況。
@@ -2534,4 +2756,5 @@ async def run(state: RefactorState) -> RefactorState:
 - **`@RequestMapping` 沒有指定 `method` 屬性時，Spring 實際語意是「回應所有 HTTP method」，但 `_extract_request_mapping_methods()`（三章 3.4）目前回傳空清單、記警告、不索引任何 HTTP method**（見三章 3.4 該函式 docstring）——這種端點會整個從 `route_index` 消失，影響跟上一項「interface 方法上的 route annotation」同一等級：非-skip 組查表時會觸發「查無對應」warning，可從 log 發現，但無法讓端點自己變回合法的 BFS 起點。這種不指定 method 的寫法在 REST controller 較罕見，目標專案沒有觸發，暫不處理。
 - **`module_list` 對「同名多載方法、其中一個 route 是 skip」這種情況仍有精準度限制，`api_to_python_target` 沒有這個問題**（見七章 3.3 `assemble_api_mapping()`、八章 `compute_excluded_methods()`）——`api_to_python_target` 已對 `skip_endpoints` 做無條件的 endpoint 層級排除；但 `module_list` 那個方法的描述（Map 階段對這個 `method_id` 產出的所有 `MethodInfo` 條目）仍會被「共用方法會被保護」規則整批保留，可能同時混著 skip 分支與非-skip 分支的行為描述，沒有欄位能區分兩者。`compute_excluded_methods()` 對這種 method_id 碰撞會記警告（見八章），但只是提示、不會自動修正描述內容，需要人工核對；徹底解決需要在 `route_index`／Map 輸出裡引入 per-route（而非 per-method-name）的識別，屬於比目前規模更大的設計變更，暫不處理。
 - **Import 依賴掃描（三章 `_extract_project_imports()`，設計見 04a 四章「Import 依賴補充」）只認 import 陳述式，同套件內不需要 import 就能互相參照的情況（Java 語言特性）仍解析不到**——目標專案的跨層依賴一律跨 package、都有明確 import，沒有觸發；留待接上真的有這種寫法的專案再評估是否需要另外掃套件宣告＋目錄結構比對。
-- **`needs_llm_summary()`／`classify_trivial_classes()`（四章，設計見 04a 四章「Map 摘要必要性判斷」）的分類是啟發式，不是完美判斷**——只有 Lombok／JPA 資料類別標記＋方法清單只有存取器方法時才跳過 Map，其餘一律送 Map，不確定時偏向保守（多送不少判斷少）。已知一個無害的邊界情況：只有建構子、沒有一般方法的例外類別（如自訂 `XxxException`），Map 有時會回傳一個跟類別同名的偽方法（把建構子描述當成方法），觸發 `_normalize_method_name()` 的「找不到對應方法」警告——這類例外類別不是 Controller，沒有自己的 route，不影響 `api_to_python_target`，只是 `module_list.methods` 多一筆命名有點怪、但內容正確的描述，不處理。
+- **`needs_llm_summary()`／`classify_trivial_classes()`（四章，設計見 04a 四章「Map 摘要必要性判斷」）的分類是啟發式，不是完美判斷**——只有「無實作類別的介面、方法清單全部沒有本體」（Spring Data Repository 典型形狀）與「Lombok／JPA 資料類別標記＋方法清單只有存取器方法」這兩種情況跳過 Map，其餘一律送 Map，不確定時偏向保守（多送不少判斷少）。已知一個無害的邊界情況：只有建構子、沒有一般方法的例外類別（如自訂 `XxxException`），Map 有時會回傳一個跟類別同名的偽方法（把建構子描述當成方法）——`_normalize_method_name()` 剝掉多載消歧後綴後仍對不上 javalang 掃描出的真實方法清單時判定這筆方法不存在，`_normalize_class_methods()` 直接排除、不進最終 `module_list.methods`，只記一筆 warning 供人工核對，不需要額外處理。
+- **Spring Data 衍生查詢命名慣例解析（`_describe_derived_query()`，七章）只認「動詞緊接 `By`」這個嚴格形狀**——`findAllBy`／`findFirstBy` 這類動詞與 `By` 之間夾了修飾詞的寫法，會退回「認得出是衍生查詢方法、但不逐一拆解欄位」的寬鬆說明；這個寬鬆說明的文字固定引用「`Top`／`Distinct`／`OrderBy` 等複雜關鍵字」，但實際觸發原因不一定包含這些關鍵字，只是文字上不夠精確，不影響正確性（仍然是誠實的「無法逐一拆解」）。已對真實 `lang-exam-api-refactor` 專案驗證過，10 個真實 Repository 方法（`findByGradeAndLocal`／`findTopByKindOrderByIdDesc`／`findAllByTypeNumberAndPartNumberAndQuestionNumber` 等）都正確產出可用描述，沒有觸發解析錯誤或程式例外。

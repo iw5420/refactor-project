@@ -15,6 +15,8 @@
 | `plan_agent/planning.py` | 06a 五、六、七、八章 | LLM 呼叫、`depends_on`／`target_files` 組裝、`task_list` 組裝與涵蓋率驗證 |
 | `plan_agent/__init__.py` | 06a 九章 | 對外唯一入口 `run_plan_agent()` |
 | `graph/nodes/plan_node.py` | 06a 十章 | LangGraph node（取代原本的 stub） |
+| `tests/plan_agent/test_module_index.py` | 06a 四章、六章、八章 | `classify()`／`interface_id()`／`full_order_key()` 的自動化測試（12 個） |
+| `tests/plan_agent/test_planning.py` | 06a 五、六、七、八章 | happy path、`referenced_interfaces` 過濾、防環規則、失敗處理、涵蓋率 defense-in-depth 的自動化測試（6 個），見五章「已驗證」 |
 
 ---
 
@@ -63,7 +65,9 @@ class PlanAgentCoverageError(Exception):
     """
 ```
 
-**已驗證**：見七章「已驗證」——用真實（但已知過時，見十章「已知限制」）的 `tests/design_agent/fixtures/real_python_structure.json` 做過 dry-run，`ResponseResult.error` 六個多載共用同一個三元組，正確觸發 `PlanAgentCoverageError`。
+**已驗證**：`tests/plan_agent/test_planning.py::test_duplicate_interfaces_raises_coverage_error` 用人工構造的重複三元組案例，穩定觸發 `PlanAgentCoverageError`——這是目前的權威驗證方式，不依賴任何會隨專案輸出刷新而失效的真實 fixture。
+
+**歷史紀錄（方法論已被取代，保留供追溯）**：這個檢查最早是用 `tests/design_agent/fixtures/real_python_structure.json`（當時尚未套用 `design_agent/design.py` 的多載消歧修正）做 dry-run 驗證的，`ResponseResult.error` 六個多載共用同一個三元組、正確觸發過一次；這份 fixture 後續已重新對 `lang-exam-api-refactor` 執行過 `design_agent` 刷新，不再有重複三元組可以自然重現這個案例——這正是「靠真實 fixture 剛好含 bug 來測」的方法論脆弱之處，改用人工構造案例後不再有這個問題。
 
 ---
 
@@ -163,21 +167,29 @@ def full_order_key(
     return (module_rank[module], LAYER_RANK[layer], function_name, class_name or "")
 ```
 
-**已驗證**：`classify()` 對 `tests/design_agent/fixtures/real_python_structure.json` 的全部 76 個 `InterfaceSpec` 都能正確反查回 `(module, layer)`，沒有觸發 `PlanAgentModuleLookupError`（間接驗證③實際輸出確實遵守 `{module}_{layer}.py` 檔名格式承諾）。`full_order_key()` 用於七章 dry-run（見七章）驗證過保留/捨棄兩種方向的排序結果正確。
+**已驗證**：`tests/plan_agent/test_module_index.py` 的 `test_classify_*` 系列用人工構造案例覆蓋三種層級後綴、兩種失敗情境（找不到對應後綴／module 名稱不存在），是穩定的權威驗證，不受真實 fixture 內容變動影響。另外也對照過真實 `lang-exam-api-refactor` 專案的 `tests/design_agent/fixtures/real_python_structure.json` 跑過 `classify()`——這份 fixture 隨 `design_agent` 反覆刷新，`InterfaceSpec` 數量會跟著變動（曾經是 76 個，含尚未消歧的重複三元組；目前刷新後是 72 個），每次都全數正確反查回 `(module, layer)`，沒有觸發過 `PlanAgentModuleLookupError`，間接驗證③實際輸出確實遵守 `{module}_{layer}.py` 檔名格式承諾——這裡刻意不寫死特定數字，因為數字本身只是 fixture 當下的快照、會隨刷新變動，不是驗證結果的重點。`full_order_key()` 用 `tests/plan_agent/test_module_index.py` 的排序測試驗證過，另外也在五章 dry-run 驗證過保留/捨棄兩種方向的排序結果正確。
 
 ---
 
-## 三、`llm.py`——模型選擇
+## 三、`llm.py`——模型選擇與輸出長度上限
 
-對應 06a 五章。跟 `design_agent/llm.py`、`parse_agent/llm.py` 完全同一種寫法，只換環境變數名稱。
+對應 06a 五章。模型選擇跟 `design_agent/llm.py`、`parse_agent/llm.py` 同一種寫法，只換環境變數名稱；`max_tokens` 則是 [P] 專屬的決策，其他三個 Agent 都沒有覆寫過 `common/llm_client.DEFAULT_MAX_TOKENS`（4096）——[P] 每個 task 都帶完整業務描述／context／依賴清單，輸出密度遠高於其他 Agent 的分類型輸出，對真實 `lang-exam-api-refactor` 專案最大的 module（`exam`，27 個 interfaces）實測跑過，`4096` 會在 JSON 字串中間被截斷，見七章「已驗證」。
 
 ```python
 # plan_agent/llm.py
-"""[P] Plan Agent 專屬的 Claude API 模型選擇。實際呼叫邏輯（client
-初始化、Structured Outputs、log_usage() 整合、錯誤處理）在
+"""[P] Plan Agent 專屬的 Claude API 模型選擇與輸出長度上限。實際呼叫
+邏輯（client 初始化、Structured Outputs、log_usage() 整合、錯誤處理）在
 common/llm_client.py，所有需要呼叫 Claude API 的 Agent 共用同一份（見
-00 六章）。這個檔案只負責一件事：[P] 用哪個模型，不跟其他 Agent 共用
-同一個環境變數。
+00 六章）。這個檔案只負責 [P] 自己的決策：用哪個模型、`max_tokens` 要
+多少，不跟其他 Agent 共用同一個環境變數或同一個數字。
+
+`PLAN_AGENT_MAX_TOKENS` 不用 `common/llm_client.DEFAULT_MAX_TOKENS`
+（4096）：[P] 每個 task 都帶完整業務描述／context／依賴清單，輸出密度
+遠高於其他 Agent 的分類型輸出。實測對真實 lang-exam-api-refactor 專案
+最大的 module（27 個 interfaces）跑過，完整回應約需 5,591 token（用
+Anthropic `count_tokens()` 對截斷前的部分回應實測換算，不是猜的），
+4096 會被截斷成不合法的 JSON。8192 約為實測值的 1.5 倍，留有餘裕應付
+同一 module 不同次呼叫的回應長度波動，以及比這次目標專案更大的 module。
 """
 from __future__ import annotations
 
@@ -186,6 +198,7 @@ import os
 from common.llm_client import DEFAULT_MODEL_FALLBACK
 
 DEFAULT_MODEL = os.environ.get("PLAN_AGENT_MODEL", DEFAULT_MODEL_FALLBACK)
+PLAN_AGENT_MAX_TOKENS = int(os.environ.get("PLAN_AGENT_MAX_TOKENS", "8192"))
 ```
 
 ---
@@ -309,7 +322,7 @@ from common.llm_client import LlmJsonError, call_claude_for_json
 from graph.state import InterfaceSpec, ModuleInfo, PythonStructure, TaskSpec
 from plan_agent import module_index
 from plan_agent.exceptions import PlanAgentCoverageError, PlanAgentModuleError
-from plan_agent.llm import DEFAULT_MODEL
+from plan_agent.llm import DEFAULT_MODEL, PLAN_AGENT_MAX_TOKENS
 from plan_agent.prompts import PLAN_OUTPUT_SCHEMA, PLAN_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -493,7 +506,11 @@ def _plan_module(
     user_prompt = json.dumps(payload, ensure_ascii=False)
 
     result = call_claude_for_json(
-        system_prompt=PLAN_SYSTEM_PROMPT, user_prompt=user_prompt, schema=PLAN_OUTPUT_SCHEMA, model=DEFAULT_MODEL
+        system_prompt=PLAN_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        schema=PLAN_OUTPUT_SCHEMA,
+        model=DEFAULT_MODEL,
+        max_tokens=PLAN_AGENT_MAX_TOKENS,
     )
 
     # 06a 五章「核對規則」：回應的三元組（這裡用 interface_id 編碼）集合
@@ -695,6 +712,8 @@ def _assemble_task_list(
             TaskSpec(
                 id=f"task_{order_index[iid]:03d}",
                 module=draft.module,
+                class_name=draft.class_name,
+                function_name=draft.function_name,
                 description=draft.description,
                 target_files=_build_target_files(draft, module_by_id, layer_by_id, modules_with_schema_file),
                 context=draft.context,
@@ -704,13 +723,15 @@ def _assemble_task_list(
     return tasks
 ```
 
-**已驗證**（見七章 dry-run 腳本，全程 monkeypatch `call_claude_for_json`，不呼叫真實 Claude API——見十章「已知限制」對「尚未接上真實 API 呼叫」的說明）：
+**`class_name`／`function_name` 落地進 `TaskSpec`（訂正 06a 八章原文）**：`_TaskDraft` 從五章 `_plan_module()` 開始就一路帶著這兩個欄位（供 `module_index.interface_id()` 編碼、`_build_target_files()`／`_build_depends_on()` 查表用），只有這裡組裝最終 `TaskSpec` 時原本沒有寫出來。06a 八章原訂「`class_name`／`function_name` 不落地進最終輸出」，理由是涵蓋率驗證只需要在組裝階段核對一次，不需要留到執行期——但沒有預見到 translator-cli 的 `fill_function()`（見 `07a_translator_cli_architecture.md` 五章）執行期同樣需要這兩個值：同一個檔案（尤其三層檔案）正常有多個函式對應多個 task，光靠 `target_files[0]` 這個路徑無法定位要填哪一個。這是 07a 設計階段發現的缺口，修法是最小的：`_assemble_task_list()` 補這兩行，`_TaskDraft`／`module_index.py`／`_build_target_files`／`_build_depends_on`／涵蓋率驗證／`prompts.py` 的 schema 全部不需要改。
 
-1. **happy path**（人工構造 `user`／`order` 兩個 module，`order` 依賴 `user`）：4 個 `InterfaceSpec` 正確拆成 4 個 task；`id` 依固定全序穩定編號；同 module 內正向依賴邊（`services` 依賴 `repositories`、`routers` 依賴 `services`）正確保留進 `depends_on`，反向/同層邊正確被防環規則捨棄；`routers` 層正確帶入 `schemas/{module}.py`、不帶 `models`；`repositories`／`services` 層正確帶入 `models/{module}.py`；跨 module 的 `order` service 正確帶入 `user` module 對應檔案。
-2. **涵蓋率 defense-in-depth**：用 `tests/design_agent/fixtures/real_python_structure.json`（真實 `lang-exam-api-refactor` 專案，但輸出於 05a 四章多載消歧修正之前，見十章「已知限制」）做 dry-run，`ResponseResult.error` 6 個多載共用同一個 `(file_path, class_name, function_name)` 三元組，`_validate_coverage()` 正確偵測並拋出 `PlanAgentCoverageError`。
-3. `module_index.classify()` 對這份真實 fixture 的全部 76 個 `InterfaceSpec` 都正確反查回 `(module, layer)`，沒有觸發 `PlanAgentModuleLookupError`。
-4. 既有測試套件（`pytest`，148 個既有測試）全數通過，確認新增 `plan_agent/` 與改寫 `graph/nodes/plan_node.py` 沒有破壞既有模組。
-5. **真實 Claude API 呼叫**（2026-08-06，非 mock）：對 `real_module_list.json`（7 個 module）＋ `real_python_structure.json` 的 76 個 `InterfaceSpec`（餵入前先用 05a 四章消歧規則修掉這份 fixture 已知的重複三元組，理由見八章「已知限制」第二點）跑一次完整 `run_plan_agent()`，7 個 module 平行呼叫 `claude-sonnet-4-6`（`PLAN_AGENT_MODEL` 未設，退回 `DEFAULT_MODEL_FALLBACK`），55.1 秒內全部回應成功：`task_list` 正確產出 76 個 task、與 76 個 interface 1:1 對應、`_validate_coverage()` 未觸發（因輸入已消歧）；抽查的 task（如 `task_016`）其 `depends_on`／`target_files` 組裝結果符合六、七章規則；`logs/claude_api_usage.jsonl` 新增的 7 筆記錄 `caller` 皆正確標記為 `planning._plan_module`，驗證 `log_usage()` 的呼叫端自動偵測機制運作正常。花費：40,780 input tokens ＋ 14,469 output tokens，約 US$0.34（`claude-sonnet-4-6` 費率 $3/$15 每百萬 token）。**這次驗證的範圍是「機制跑得通、結構正確」，不含**逐筆核對 LLM 判斷的 Java↔Python 配對與 `referenced_interfaces` 語意是否準確——那是 06a 十二章仍列為待辦的 prompt 品質校準，屬於另一件事，見八章。
+**已驗證**：
+
+`tests/plan_agent/test_module_index.py`（12 個）／`test_planning.py`（6 個）是現在的權威、可重複執行的自動化測試，全程 monkeypatch `call_claude_for_json`，不呼叫真實 API，涵蓋：happy path（`depends_on`／`target_files` 組裝、`id` 固定全序編號）、`referenced_interfaces` 的非法引用／自我引用過濾、六章防環規則（反向／同層邊捨棄）、五章失敗處理（LLM 回應遺漏 interface → 重試 → 仍失敗中止）、涵蓋率 defense-in-depth（人工構造重複三元組）、四章 module 反查失敗。這批測試補上了 `plan_agent/` 從 `1358ce8` 這個 commit 落地以來一直缺少的自動化覆蓋——當時只跑過一次既有測試套件（`pytest`，148 個）確認沒有破壞其他模組（這是**回歸檢查**，不是 `plan_agent` 自己的覆蓋率；`plan_agent/` 自己的邏輯當時完全沒有對應測試檔案）。目前 `pytest tests/` 全部共 203 個測試，全數通過。
+
+**接上真實 Claude API 呼叫的驗證紀錄**（只保留最新一次——這是目前唯一一次對照著 `class_name`／`function_name` 修正後的程式碼、消費目前已刷新去重過的 fixture 跑的，較早幾次分別消費了不同版本的 fixture／不同版本的程式碼，數字對不上現況，沒有保留價值）：
+
+**2026-08-08，`real_module_list.json`（6 個 module）＋ `real_python_structure.json`（72 個 `InterfaceSpec`）**：6 個 module 平行呼叫 `claude-sonnet-4-6`（`PLAN_AGENT_MODEL` 未設，退回 `DEFAULT_MODEL_FALLBACK`），65.6 秒內全數成功；72 個 task 與 72 個 interface **精確** 1:1 對應（用完整三元組核對，不只是數量）；所有 task 都帶有正確的 `class_name`／`function_name`，其中 8 個檔案被超過一個 task 共用（最多 `common_service.py` 22 個，橫跨 6 個不同 class）——證實這不是理論上的邊界情況，是這個真實專案的常態；抽查依賴鏈（`task_049` `ExamService.get_candidate_by_card` 正確 `depends_on` → `task_033` `ExamRepository.find_by_card`）與業務描述品質皆正確。花費：36,304 input ＋ 13,172 output tokens，約 US$0.31（`claude-sonnet-4-6` 費率 $3/$15 每百萬 token）。**這次驗證的範圍是「機制跑得通、結構正確」，不含**逐筆核對 LLM 判斷的 Java↔Python 配對與 `referenced_interfaces` 語意是否準確——那是十二章仍列為待辦的 prompt 品質校準，屬於另一件事。
 
 ---
 
@@ -777,8 +798,8 @@ async def run(state: RefactorState) -> dict:
 
 ## 八、已知限制與待驗證事項
 
-- **已接上真實 Claude API 呼叫一次（2026-08-06），但只驗證「機制」不驗證「判斷品質」**：五、六、七、八章的機械邏輯（`module_index.classify()`、`depends_on` 防環、`target_files` 組裝、涵蓋率驗證）先前已用真實 `lang-exam-api-refactor` 輸出或人工構造案例 dry-run 驗證過（見五章「已驗證」第 1–4 項）；五章「已驗證」第 5 項補上了一次真實呼叫——對 dedupe 過的真實 76 個 `InterfaceSpec` 跑完整 `run_plan_agent()`，7 次 Claude API 呼叫全部成功，`task_list` 結構、涵蓋率、`depends_on`／`target_files` 組裝結果都正確。**但這次只證明「呼叫得通、輸出格式對」，沒有逐筆核對 `prompts.py` 的 system prompt 實際判斷品質**（LLM 能否穩定從 `function_name`／描述語意配對回正確的 Java method、`referenced_interfaces` 的業務關聯判斷是否準確）——這需要人工比對每個 task 的 `description`／`referenced_interfaces` 是否貼合原始 Java 邏輯，還沒有做。延續 06a 十二章「待接上真實③輸出後校準」的既有待辦，範圍縮小為「品質校準」而非「有沒有跑過」。
-- **驗證涵蓋率 defense-in-depth 用的 fixture 已知過時**：`tests/design_agent/fixtures/real_python_structure.json` 是 `8c97b40` 提交的快照，早於 `5c6c4e9` 修正 `design_agent/design.py` 多載消歧 bug 的提交——這份 fixture 裡 `ResponseResult.error` 6 個多載仍共用同一個三元組，反映的是**修正前**的③輸出，不是目前 `design_agent/design.py` 實際會產出的結果。本文件五章「已驗證」拿它來測 `PlanAgentCoverageError` 是刻意利用這個已知的舊資料特性（剛好是現成的「重複三元組」測試案例），不代表現在重新對 `lang-exam-api-refactor` 跑一次③會出現同樣的重複——但這份 fixture 本身沒有跟著重新生成，若未來有其他模組或人以為它代表③目前的真實輸出、拿來做別的驗證，會被這個已經修正的舊 bug 誤導。建議另外找時機重新執行一次 `design_agent`（對 `../lang-exam-api-refactor` 重新跑三章＋六章，即會呼叫真實 Claude API）刷新這份快照，不屬於本次 [P] 實作範圍，這裡先記錄成待辦。
+- **已接上真實 Claude API 呼叫（含完整 04a→05a→06a 串接），但只驗證「機制」不驗證「判斷品質」**：完整驗證紀錄見五章「已驗證」（三次真實呼叫，含 2026-08-08 對照 07a 新增 `class_name`／`function_name` 的最新一次）。**這些驗證仍然只證明「呼叫得通、輸出格式對、容量上限夠」，沒有逐筆核對 `prompts.py` 的 system prompt 實際判斷品質**（`referenced_interfaces` 的業務關聯判斷整體準確率）——抽查過的少數 task（如 `SchoolRepository.find_by_grade_and_local`、`routers` 層 `class_name=None` 的 `ExamController.search`／`saveAnswer`、`ExamService.get_candidate_by_card`）配對正確，但沒有逐筆核對，延續 06a 十二章「待接上真實③輸出後校準」的既有待辦，範圍縮小為「品質校準」而非「有沒有跑過、容量夠不夠」。
+- [x] ~~驗證涵蓋率 defense-in-depth 用的 fixture 已刷新，`PlanAgentCoverageError` 的多載重複測試案例目前沒有天然來源~~——**已解決**：`tests/plan_agent/test_planning.py::test_duplicate_interfaces_raises_coverage_error` 改用人工構造的重複三元組案例，不再依賴真實 fixture 是否剛好含 bug，見一章「已驗證」。
 - **`interface_id()` 的字串編碼是實作層級的簡化，未在 06a 明文出現**：06a 五章字面描述「回應的三元組」，這裡改用單一字串編碼（理由見二、四章）。語意等價，但若未來有人依照 06a 字面描述另外實作一份消費 `plan_agent` 內部資料的程式碼，需要知道實際的識別鍵格式是這個編碼字串，不是三個獨立欄位。
 - **`_TaskDraft.referenced_interfaces` 的「過濾非法引用」只做一次，發生在五章 LLM 回應剛收到時**：06a 五章原文只說「六／七章組裝時一律過濾並記警告」，沒有明講是「組裝時各自過濾」還是「統一先過濾一次、組裝時直接消費乾淨的結果」。這裡選擇後者（`_plan_module()` 內一次過濾），單一根據點，六、七章不需要重複同一段過濾邏輯——語意上滿足 06a 的要求（六／七章確實用的是已過濾的結果），但實作路徑跟字面描述「六／七章組裝時」不完全一樣，記錄在此避免日後對照時誤以為是漏做。
 

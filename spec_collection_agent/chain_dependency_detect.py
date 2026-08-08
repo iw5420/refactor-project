@@ -181,8 +181,7 @@ def _map_analyze_group(
     `MAP_OUTPUT_SCHEMA`（output_config.format）已經保證回傳結構——
     `candidate_producers`／`candidate_consumers` 一定存在、一定是必要欄位
     齊全的物件陣列（`param_location` 也鎖死在三個合法值之一），不需要再
-    逐筆 isinstance 檢查、丟棄格式不合法的候選（那是舊版靠 prompt 拜託
-    模型照做時代的防禦，見 01 五章）。呼叫失敗（例如傳輸層錯誤）才拋
+    逐筆 isinstance 檢查、丟棄格式不合法的候選。呼叫失敗（例如傳輸層錯誤）才拋
     `ChainDependencyDetectionError`（整條偵測失敗，不做局部降級——漏偵測
     到的依賴沒有其他機制能發現），並補上呼叫端才知道的資訊——這次送了
     哪個 tag、幾個 endpoint——讓失敗訊息同時看得到「送了什麼」與「模型
@@ -286,8 +285,7 @@ def _reduce_phase(
     （單次呼叫 Claude API，輸入為 map 階段濃縮後的候選清單）」）。輸出
     是最終權威結果。`REDUCE_OUTPUT_SCHEMA`（output_config.format）已經
     保證頂層是陣列、每筆都是五個必要欄位齊全的物件，不需要再逐筆檢查
-    型別或補救缺欄位（那是舊版靠 prompt 拜託模型照做時代的防禦，見 01
-    五章）；呼叫失敗才拋 `ChainDependencyDetectionError`。
+    型別或補救缺欄位；呼叫失敗才拋 `ChainDependencyDetectionError`。
     """
     payload = {
         "candidate_producers": [asdict(p) for p in producers],

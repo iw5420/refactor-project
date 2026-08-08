@@ -3,8 +3,8 @@
 入口」）。[B] 分兩階段：`generate_manual_fill_templates()`（階段一，落地
 openapi.json、產生人工填值模板）與 `run_collection_agent()`（階段二，假設
 模板已經人工填完，跑完剩下的 pipeline）——見 03a 三章「人工填值機制」。
-graph 層怎麼在兩階段之間暫停，留待 01 對應章節更新，本檔案只提供這兩個
-函式本身。
+graph 層怎麼在兩階段之間暫停等人工填值，見 01_langgraph_architecture.md
+五章「人工填值關卡」，本檔案只提供這兩個函式本身。
 """
 from __future__ import annotations
 

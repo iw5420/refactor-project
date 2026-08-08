@@ -58,6 +58,14 @@ class TaskSpec(TypedDict):
     target_files: list[str]        # 必須是 python_structure.interfaces 中已存在的 file_path
     context: str
     depends_on: list[str]
+    # 對回 target_files[0] 這個 InterfaceSpec 的 (class_name, function_name)，
+    # 供 translator-cli 的 fill_function() 在同一個檔案有多個函式時精準定位
+    # 要填的是哪一個（見 07a_translator_cli_architecture.md 五章「為什麼
+    # fill_function 需要 class_name／function_name」）。NotRequired 讓既有
+    # 建構 TaskSpec 字面值的地方（如 01 文件 stub 範例）不需要跟著補這兩個
+    # 欄位，比照 InterfaceSpec.http_method／route_path 的既有慣例。
+    class_name: NotRequired[str | None]
+    function_name: NotRequired[str]
 
 
 # ── 整體 State ─────────────────────────────────────────

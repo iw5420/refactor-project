@@ -222,6 +222,8 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
                     MethodEntry(
                         name=m.name,
                         return_type=m.return_type.name if m.return_type is not None else None,
+                        has_body=m.body is not None,
+                        query_value=_first_query_value(m.annotations),
                     )
                     for m in class_decl.methods
                 ],
@@ -286,6 +288,8 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
                     MethodEntry(
                         name=m.name,
                         return_type=m.return_type.name if m.return_type is not None else None,
+                        has_body=m.body is not None,
+                        query_value=_first_query_value(m.annotations),
                     )
                     for m in decl.methods
                 ],
@@ -448,6 +452,17 @@ def _element_to_strings(element) -> list[str]:
         if raw.startswith('"') and raw.endswith('"'):
             return [raw[1:-1]]
     return []
+
+
+def _first_query_value(annotations: list) -> str | None:
+    """`@Query("...")`／`@Query(value="...")` 的字面字串值，供
+    `MethodEntry.query_value`（見該欄位 docstring）。重用
+    `_annotation_values()` 同一套 `None`／`[]` 語意——這裡不需要區分
+    「沒有 @Query」跟「有但解析不出字面值」，兩種情況呼叫端都是「沒有
+    可抄錄的查詢字串」，統一收斂成 `None`。
+    """
+    values = _annotation_values(annotations, "Query")
+    return values[0] if values else None
 
 
 # --------------------------------------------------------------------------

@@ -28,7 +28,7 @@
 | skip endpoint 清單 | `postman/unfilled_endpoints.json`，固定路徑，直接讀檔案 | 取 `category="skip"` 的項目，作為五章呼叫鏈排除的起點；**不進 State**（這份檔案是「給人看的產出，不影響 pipeline 後續走向」，只有 ① 這個 node 內部需要，不需要跨 Agent 共用） |
 | openapi_spec 的完整 endpoint 清單 | `RefactorState.openapi_spec`，[A] Spec Agent 產出，已在 State 裡，不需額外讀檔 | 只取 `paths` 底下所有 `(path, HTTP method)` 組合，列舉「全部 endpoint」，供五章判定「非-skip 全集」使用；不解析 schema 內容（見下方既有備註），不做其他語意判斷 |
 
-> 這份輸入依賴 [B] Collection Agent（含人工填值/skip 關卡）先執行完畢，`unfilled_endpoints.json` 才會存在，對應 00 一章流程圖「[A] → [B] → ① → ② → ③」的順序，`01_langgraph_architecture.md` 已同步這個順序（實際 `graph/builder.py`／`main.py` 尚未同步，見十章）。
+> 這份輸入依賴 [B] Collection Agent（含人工填值/skip 關卡）先執行完畢，`unfilled_endpoints.json` 才會存在，對應 00 一章流程圖「[A] → [B] → ① → ② → ③」的順序，`01_langgraph_architecture.md`、`graph/builder.py`／`main.py` 均已依這個順序實作（`extract_spec` 為 entry point）。
 
 > ① 不解析 request/response schema——這部分由 [A] Spec Agent 從 springdoc-openapi 自動取得，見 00 七。上面的 `openapi_spec` 輸入只用來**列舉 endpoint 字串**，完全不讀 `operation` 物件裡的 request/response schema 欄位，跟這條備註的精神一致，不是例外。
 
@@ -88,12 +88,15 @@
 
 > **Map 摘要必要性判斷（省 API 額度）**：import 依賴補完後，Controller 依賴閉包會涵蓋大量 entity／DTO／enum／工具類別——這些類別若每個都送一次 Claude API 摘要，多半是浪費，entity／DTO 通常只是欄位容器，沒有值得摘要的業務邏輯。**但不能用 package／命名慣例判斷「這是 entity 所以沒邏輯」**：DDD 風格的富領域模型常把業務規則直接寫在 entity 自己的方法裡（如 `isEligible()`），這種情況即使類別標了 `@Entity`，也確實有邏輯要摘要，用命名／package 篩選會直接誤判掉，這類篩選在通用性上站不住腳。
 >
-> 改用內容判斷，分三層（實作見 `04b_parse_agent_code.md` 四章 `needs_llm_summary()`）：
+> 改用內容判斷，分四層（實作見 `04b_parse_agent_code.md` 四章 `needs_llm_summary()`）：
 > 1. **用到已知的動態查詢型別（如 `org.springframework.data.jpa.domain.Specification`）一律判定有邏輯**——這類型別的實際邏輯常常寫在回傳的 lambda 裡，看 method body 有沒有控制流程這種通用判斷法會直接誤判成「沒邏輯」，只能靠型別本身當訊號，繞開 body 內容判斷。
-> 2. **有 Lombok／JPA 資料類別標記（`@Entity`／`@Data`／`@Getter`／`@Setter` 等），且方法清單裡只有存取器方法（`get*`／`set*`／`is*`／`equals`／`hashCode`／`toString`）→ 判定為純資料類別，不送 Map**——annotation 只是「要不要進一步檢查方法清單」的觸發點，真正決定「有沒有邏輯」的是方法清單本身：DDD entity 若有 `isEligible()` 這種非存取器命名的方法，即使標了 `@Entity`，也會落到規則 3，正常送 Map，不會被規則 2 誤判掉。
-> 3. **其餘情況（沒有標記，或有標記但還有非存取器方法）→ 預設有邏輯，送 Map**，呼應「多連、少排除」同一種保守精神：不確定就當作可能有邏輯，多花一次 API 呼叫的代價遠低於漏掉真實業務邏輯的代價。
+> 2. **介面、找不到任何具體實作類別、且方法清單裡沒有任何方法帶本體 → 判定不需要送 Map**——Spring Data JPA Repository 的典型形狀（`interface XxxRepository extends JpaRepository<...>`，Spring 在執行期動態生成 proxy，原始碼裡不存在任何實作）：這批方法沒有方法本體，LLM 讀到的資訊跟機械解析器完全一樣（都只有方法名稱／`@Query` annotation 可用），送 Map 花錢請 LLM 用比較不穩定的方式做一件機械解析能做得更準、更便宜、每次結果一致的事，違反 00 二章「能用程式判斷的，就不要交給 LLM」。**若這個介面有具體實作類別**（`@Service`/`@Component`/`@Repository` 標註），真正的業務邏輯寫在實作類別自己的方法裡（有本體，正常送 Map），介面本身的抽象宣告不適用這條規則，避免同一個業務方法產生兩筆不一致的記錄。
+> 3. **有 Lombok／JPA 資料類別標記（`@Entity`／`@Data`／`@Getter`／`@Setter` 等），且方法清單裡只有存取器方法（`get*`／`set*`／`is*`／`equals`／`hashCode`／`toString`）→ 判定為純資料類別，不送 Map**——annotation 只是「要不要進一步檢查方法清單」的觸發點，真正決定「有沒有邏輯」的是方法清單本身：DDD entity 若有 `isEligible()` 這種非存取器命名的方法，即使標了 `@Entity`，也會落到規則 4，正常送 Map，不會被規則 3 誤判掉。
+> 4. **其餘情況（沒有標記，或有標記但還有非存取器方法）→ 預設有邏輯，送 Map**，呼應「多連、少排除」同一種保守精神：不確定就當作可能有邏輯，多花一次 API 呼叫的代價遠低於漏掉真實業務邏輯的代價。
 >
-> 判定不需要送 Map 的類別，仍要出現在 `module_list.java_files`（③ 需要知道這個檔案存在），改用機械組出的佔位摘要取代（不呼叫 API），連同真的呼叫 Claude API 摘要出來的結果一起送進 Reduce——不這樣做的話，這批類別連 Reduce 都看不到，等於把 import 掃描想解決的完整性問題重新引入。細節見 `04b_parse_agent_code.md` 四章 `classify_trivial_classes()`、七章 `_mechanical_summary()`。
+> 判定不需要送 Map 的類別，仍要出現在 `module_list.java_files`（③ 需要知道這個檔案存在），改用機械組出的佔位摘要取代（不呼叫 API），連同真的呼叫 Claude API 摘要出來的結果一起送進 Reduce——不這樣做的話，這批類別連 Reduce 都看不到，等於把 import 掃描想解決的完整性問題重新引入。規則 3（Lombok 純資料類別）的存取器方法本來就不值得個別翻譯，佔位摘要的 `methods` 維持空清單；規則 2（無實作類別的介面）不一樣，這批方法是真實業務行為，只是不需要 LLM 描述，佔位摘要改用機械解析組出真正的方法描述，優先序：**有 `@Query` 字面字串 → 直接抄錄**（比任何摘要都精確）；**否則符合 Spring Data 衍生查詢命名慣例**（`findBy`／`existsBy`／`countBy` 等 + 欄位條件）**→ 拆解欄位名稱組出描述**，遇到 `Top`／`Distinct`／`OrderBy` 這類複雜關鍵字保守退回一句誠實說明，不強行拆解、以免把非欄位關鍵字誤當成欄位名稱；**都不符合 → 誠實占位**，明講「無法機械推斷語意，需人工核對」，`complexity` 標記 `"medium"` 提醒多留意。細節見 `04b_parse_agent_code.md` 四章 `classify_trivial_classes()`、七章 `_mechanical_summary()`／`_describe_derived_query()`／`_describe_bodyless_method()`。
+>
+> 規則 2 用到的「有無實作類別」判斷重用 `build_interface_implementors()`（三章步驟 3.2 消歧邏輯的既有產出，不重新計算）；規則 3 用到的 Lombok／JPA annotation 清單集中在 `common/java_annotations.py`（見 00 六章「Java class annotation 判斷（共用工具）」），跟 ③ 架構設計 Agent 判斷「孤兒類別／資料容器占位」共用同一份定義（見 `05a_design_agent_architecture.md` 三章）——這裡只引用，不重複定義。
 
 Map 階段（依組拆分，4a 先、4b 後、4b 組間可平行呼叫 Claude API），每組只做：
 
@@ -195,7 +198,7 @@ class ApiMapping(TypedDict):
 
 **① 不產出「Java → Python 技術對應表」**：00 七章只要求「模組清單與依賴關係、核心業務邏輯摘要、API 對應表」，不包含檔案／函式層級的 Java→Python 對應——這件事完全交給 ③ 架構設計 Agent 的 `python_structure.interfaces`（顆粒度要求：檔案相對路徑＋函式簽名層級，見 00 三章）。
 
-**① 不產出任何 Python 命名建議欄位**：`ModuleInfo.python_files`、`MethodInfo.python_method`、`ApiMapping.python_target` 已移除——全專案沒有任何下游讀取 `python_method`／`python_target`；`ModuleInfo.python_files` 曾被 `graph/scheduler.py` 的 regression 偵測（`module_owned_files`，判斷⑤這次寫入是否波及已驗證過的上游 module）讀取，但 ① 的檔名只是建議、③ 可能整個改寫，拿它當權威路徑比對會讓 regression 偵測悄悄失效。現已改成從 `task_list.target_files`（③ 的權威路徑，見 `TaskSpec` 定義）彙整，不再依賴 ① 的猜測。
+**① 不產出任何 Python 命名建議欄位**：不存在 `ModuleInfo.python_files`、`MethodInfo.python_method`、`ApiMapping.python_target` 這幾個欄位——全專案沒有任何下游讀取它們。`graph/scheduler.py` 的 regression 偵測（`module_owned_files`，判斷⑤這次寫入是否波及已驗證過的上游 module）改從 `task_list.target_files`（③ 的權威路徑，見 `TaskSpec` 定義）彙整，不依賴 ① 對 Python 檔名的猜測——① 的檔名只是建議、③ 可能整個改寫，拿它當權威路徑比對會讓 regression 偵測悄悄失效。
 
 [P]／④／⑤ 一律經由 ③ 的 `python_structure` 走。
 
@@ -229,7 +232,7 @@ refactor-project/
 
 `parse` 是線性 node，讀 `java_project_path`，寫回 `module_list`／`api_to_python_target`，比照 01 七 stub 慣例整包展開 state（`{**state, ...}`）。
 
-排在 `gen_collection`（[B] Collection Agent 階段二）之後、`record_tests`（② 測試 Agent）之前，不是入口 node（依賴原因見二章）——`01_langgraph_architecture.md` 已同步這個順序（`extract_spec` 為新的 entry point，實際 `graph/builder.py` 尚未同步，見十章）。
+排在 `gen_collection`（[B] Collection Agent 階段二）之後、`record_tests`（② 測試 Agent）之前，不是入口 node（依賴原因見二章）——`01_langgraph_architecture.md`、`graph/builder.py` 均已依這個順序實作（`extract_spec` 為 entry point）。
 
 ---
 
@@ -247,7 +250,8 @@ refactor-project/
 - `@Qualifier` 比對不到、但專案仍能正常啟動的情況（消歧發生在 XML config／`@Profile` 這類分析範圍外的機制）——04b 落地為「保守全連結」，見 `04b_parse_agent_code.md` 三章 3.2 `resolve_field_target_classes()`
 - 共用類別批次（四章子階段 4a）數量或原始碼體積過大時的拆分——04b 呼叫 `common.chunking.chunk_by_char_budget()`（跟 [B] Collection Agent 的 `_chunk_operations()` 共用同一份切批次演算法，見 00 六章「Map 階段切批次（共用工具）」），門檻值開放 `PARSE_AGENT_MAP_CHUNK_CHARS` 環境變數調整、不需要改程式碼，見 `04b_parse_agent_code.md` 四章
 - Map/Reduce 單一分組（4a 或 4b）重試一次仍失敗後的處理——04b 先採「中止整條 parse run」的保守預設（理由：留空繼續會讓 ③ 在不知情的狀況下對著不完整的模組清單做設計決策，風險更高），日後若要改成「缺摘要繼續跑」，只需要調整該函式內部、不影響其他模組介面，見 `04b_parse_agent_code.md` 七章 7.1 `run_map_phase_with_retry()`
+- Spring Data 衍生查詢命名慣例解析（規則 2 的機械描述）刻意只認「動詞緊接 `By`」這個嚴格形狀（`findByX`／`existsByXAndY`），`findAllBy`／`findFirstBy` 這類動詞與 `By` 之間夾了修飾詞的寫法會退回「認得出是衍生查詢方法、但不逐一拆解欄位」的寬鬆說明，不會誤判成複雜關鍵字（`Top`／`OrderBy`）——已對真實 `lang-exam-api-refactor` 專案驗證過，10 個真實 Repository 方法都正確產出可用描述，見 `04b_parse_agent_code.md` 七章 `_describe_derived_query()`
 
 尚待定案：
 
-- [ ] 實際的 `graph/builder.py` 需要照 01 新版程式碼同步：`set_entry_point("parse")` 改成 `set_entry_point("extract_spec")`，`parse` 的 `add_node`／edge 位置比照 01 五章新版搬動；`main.py` 的 entry state 不受影響，不需要改
+- [ ] `findAllBy`／`findFirstBy` 這類修飾詞退回寬鬆說明時，訊息文字寫死引用「`Top`／`Distinct`／`OrderBy` 等複雜關鍵字」，但實際觸發原因可能只是動詞與 `By` 之間有修飾詞、不一定真的含這些關鍵字——訊息本身沒有講錯事實（仍然是誠實的「無法逐一拆解」），只是引用的原因不夠精確，待評估是否要把這類修飾詞也收進嚴格解析規則

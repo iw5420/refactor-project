@@ -26,6 +26,7 @@ from common.llm_client import LlmJsonError, call_claude_for_json
 from graph.state import ApiMapping, MethodInfo, ModuleInfo
 from parse_agent.exceptions import ParseAgentMapReduceError
 from parse_agent.grouping import (
+    _ACCESSOR_METHOD_RE,
     MapUnit,
     build_controller_units,
     build_shared_class_units,
@@ -40,7 +41,7 @@ from parse_agent.prompts import (
     REDUCE_SYSTEM_PROMPT,
     build_reduce_output_schema,
 )
-from parse_agent.types import ClassInfo, MapClassResult, MapMethodResult, MethodId, ParsedProject, method_id
+from parse_agent.types import ClassInfo, MapClassResult, MapMethodResult, MethodEntry, MethodId, ParsedProject, method_id
 
 logger = logging.getLogger(__name__)
 
@@ -598,26 +599,117 @@ def finalize_module_list(drafts: list[_ModuleDraft]) -> list[ModuleInfo]:
 # --------------------------------------------------------------------------
 
 
-def _mechanical_summary(class_info: ClassInfo) -> MapClassResult:
-    """對 `grouping.classify_trivial_classes()` 判定不需要送 Map 的類別
-    （純資料類別，見該函式 docstring），機械組出一份佔位摘要，不呼叫
-    Claude API。目的單純是完整性：讓這個類別仍然能透過 Reduce 被分進
-    某個 module、出現在 `module_list.java_files`，不是真的做了語意摘要，
-    `summary` 內容本身要老實反映這件事，不偽裝成 LLM 產出的摘要。
+_DERIVED_QUERY_RE = re.compile(
+    r"^(?P<verb>find|read|get|query|stream|count|exists|delete|remove)By(?P<condition>[A-Z].*)$"
+)
+_LOOSE_DERIVED_QUERY_RE = re.compile(r"^(find|read|get|query|stream|count|exists|delete|remove)\w*By[A-Z]")
+_VERB_DESCRIPTIONS = {
+    "find": "查詢", "read": "查詢", "get": "查詢", "query": "查詢", "stream": "查詢",
+    "count": "計數", "exists": "判斷是否存在", "delete": "刪除", "remove": "刪除",
+}
+_AND_OR_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(And|Or)(?=[A-Z])")
+_CAMEL_WORD_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
-    `methods=[]`：這些方法多半是 getter/setter，個別拆成 [P] 的 task 去
-    翻譯沒有意義——Python 端通常用 dataclass／SQLAlchemy model 的屬性
-    表達，不需要逐一翻譯存取器方法；真的有非存取器方法而被判定需要
-    摘要的類別，本來就不會走到這裡（見 `needs_llm_summary()`）。
+
+def _describe_derived_query(method_name: str) -> str | None:
+    """Spring Data JPA 衍生查詢方法命名慣例的機械解析，供
+    `_describe_bodyless_method()` 使用。**刻意保守，不窮舉所有 Spring
+    Data 關鍵字**（`Top`／`Distinct`／`OrderBy`／`GreaterThan`／`Like`
+    等運算子一律不嘗試解析）：只處理「動詞 + By + 欄位條件（僅
+    And／Or 連接）」這個最常見、最沒有歧義的形狀，欄位名稱本身一定
+    正確（直接來自方法簽名，不是猜的），只是不逐一判讀運算子語意。
+    解析不出這個嚴格形狀、但外觀確實像衍生查詢方法（`_LOOSE_DERIVED_
+    QUERY_RE` 命中）時，回傳一句誠實的通用說明，不假裝完整解析出欄位
+    條件——寧可少講一點，也不要把 `Top3`／`OrderBy` 這類非欄位關鍵字誤
+    當成欄位名稱拆進描述裡，見 05a／04a 反覆強調的「不確定就不要假裝
+    知道」精神在方法層級的延伸。
+    """
+    strict = _DERIVED_QUERY_RE.match(method_name)
+    if strict is not None:
+        verb_desc = _VERB_DESCRIPTIONS[strict.group("verb")]
+        segments = [s for s in _AND_OR_SPLIT_RE.split(strict.group("condition")) if s not in ("And", "Or")]
+        fields = "、".join(_CAMEL_WORD_SPLIT_RE.sub(" ", s).strip() for s in segments)
+        return (
+            f"Spring Data 衍生查詢方法，依 {fields} 欄位條件{verb_desc}"
+            "（由方法名稱依 Spring Data JPA 命名慣例機械解析，未逐一判讀運算子如 GreaterThan／Like 等）"
+        )
+    if _LOOSE_DERIVED_QUERY_RE.match(method_name):
+        return (
+            f"Spring Data 衍生查詢方法（方法名稱 `{method_name}` 含 Top／Distinct／OrderBy 等複雜關鍵字，"
+            "機械解析僅辨識出這是衍生查詢方法，實際條件請參照方法簽名，未逐一拆解欄位）"
+        )
+    return None
+
+
+def _describe_bodyless_method(method: MethodEntry) -> tuple[str, str]:
+    """機械描述一個沒有方法本體的方法（見 `grouping.needs_llm_summary()`
+    「`has_implementor=False` 且方法清單全部沒有本體」分支）：LLM 讀到的
+    資訊跟這裡機械解析用的完全一樣（只有方法名稱／`@Query` annotation
+    可用），沒有理由讓 LLM 猜，猜的結果也不會比機械解析更可靠。依信心
+    高低分三層：
+
+    1. **有 `@Query` 字面字串** → 直接抄錄，比任何摘要都精確
+    2. **符合 Spring Data 衍生查詢命名慣例**（見 `_describe_derived_
+       query()`）→ 機械拆解欄位條件
+    3. **兩者都不是** → 誠實占位，明講「無法機械推斷語意，需人工核對」
+       ，不假裝知道，`complexity` 用 `"medium"` 標記需要多留意（而非
+       跟前兩層一樣的 `"low"`），呼應「不確定就不要假裝知道」精神。
+    """
+    if method.query_value:
+        return f"自訂查詢（`@Query`）：{method.query_value}", "low"
+    derived = _describe_derived_query(method.name)
+    if derived is not None:
+        return derived, "low"
+    return (
+        "抽象方法，無方法本體，且無法從命名慣例或 @Query 機械推斷語意，建議人工核對實際語意",
+        "medium",
+    )
+
+
+def _mechanical_summary(class_info: ClassInfo) -> MapClassResult:
+    """對 `grouping.classify_trivial_classes()` 判定不需要送 Map 的類別，
+    機械組出一份佔位摘要，不呼叫 Claude API。目的單純是完整性：讓這個
+    類別仍然能透過 Reduce 被分進某個 module、出現在
+    `module_list.java_files`，不是真的做了語意摘要，`summary` 內容本身
+    要老實反映這件事，不偽裝成 LLM 產出的摘要。
+
+    `needs_llm_summary()` 有兩種不同理由判定「不需要 LLM」，`methods`
+    的機械組裝方式因此不同：
+
+    - **存取器方法**（`get*`／`set*`／`is*`／`equals`／`hashCode`／
+      `toString`）：略過，不產生任何 `MapMethodResult`——這些方法多半是
+      Lombok／手寫 getter/setter，個別拆成 [P] 的 task 去翻譯沒有意義，
+      Python 端通常用 dataclass／SQLAlchemy model 的屬性表達。
+    - **無方法本體、非存取器的方法**（`needs_llm_summary()` 規則 2，如
+      Spring Data JPA 衍生查詢方法）：透過 `_describe_bodyless_method()`
+      機械組出真正有意義的描述，不是空清單——這批方法是真實業務行為，
+      只是不需要（也不該）讓 LLM 猜。
+    - **其餘情況**（理論上不該出現在這裡：有本體又不是存取器的方法，
+      代表會落在規則 3／4，本來就該送 Map，不會被判定為 trivial）：
+      防禦性地記一筆 warning 並略過，不中止——真的發生代表分類邏輯本身
+      有 bug，需要回頭檢查 `needs_llm_summary()`，不是這個函式能修正的。
     """
     annotation_note = "、".join(class_info.annotations) or "無 Lombok/JPA 標記"
+    methods: list[MapMethodResult] = []
+    for m in class_info.methods:
+        if _ACCESSOR_METHOD_RE.match(m.name):
+            continue
+        if not m.has_body:
+            description, complexity = _describe_bodyless_method(m)
+            methods.append(MapMethodResult(m.name, description, complexity))
+            continue
+        logger.warning(
+            "%s.%s 被 needs_llm_summary() 判定為不需要 LLM 摘要，但有方法本體且非存取器方法，"
+            "理論上不該發生（見 _mechanical_summary() docstring「其餘情況」），已略過此方法",
+            class_info.class_name, m.name,
+        )
     return MapClassResult(
         class_name=class_info.class_name,
         summary=(
-            f"純資料類別（{annotation_note}），僅有存取器方法，機械判定無自訂業務邏輯，"
-            "未呼叫 Claude API 摘要（見 grouping.needs_llm_summary()）。"
+            f"機械判定不需要 Claude API 摘要（{annotation_note}），未呼叫 LLM"
+            "（見 grouping.needs_llm_summary()）。"
         ),
-        methods=[],
+        methods=methods,
         cross_group_dependency_hints=[],
     )
 

@@ -38,6 +38,24 @@ class JavaMethodSignature:
 
 
 @dataclass(frozen=True)
+class JavaField:
+    """單一欄位宣告，供孤兒類別（無方法、可能是 Lombok 資料類別）的
+    dataclass 渲染用（見 `design.py` orphan class 決策樹、
+    `layout.render_dataclass_section()`）。`java_type` 是含泛型的完整
+    型別字面字串（同 `JavaParam.java_type` 慣例，由 `signature_scan.
+    _type_str()` 產生），不是 `parse_agent.types.FieldInfo.type_name`
+    那種為了 DI 依賴解析而展開集合取內層型別的簡化版——兩者目的不同，
+    這裡需要的是能直接餵給 `type_mapping.map_java_type()` 的精確型別。
+    `is_final` 供判斷這批欄位該渲染成 `@dataclass(frozen=True)` 還是
+    一般 `@dataclass`：全部欄位都 `final` 時視為不可變。
+    """
+
+    name: str
+    java_type: str
+    is_final: bool
+
+
+@dataclass(frozen=True)
 class JavaClassSignature:
     """單一 Java class 的機械掃描結果，對應 05a 四章。`stereotype` 供
     三章 layout.py 做層級判定；`None` 代表無 stereotype annotation，
@@ -52,6 +70,18 @@ class JavaClassSignature:
     要建立對應的 Python 定義（見 `design.py` 的 orphan class 處理）。
     只有 `ClassDeclaration` 才有建構子，`InterfaceDeclaration` 一律是
     空清單。
+
+    `annotations`／`fields`：同樣只有 `ClassDeclaration` 才擷取，
+    `InterfaceDeclaration` 一律是空清單。`annotations` 是這個 class 上
+    所有 annotation 名稱（不只 `stereotype` 認得的 5 種 Spring
+    stereotype），供 `design.py` 判斷是否為 Lombok／JPA 資料容器（見
+    `common/java_annotations.py`）；`fields` 是欄位宣告清單，供同一段
+    判斷邏輯在「沒有建構子、只有欄位」時渲染 dataclass 用（見
+    `JavaField` docstring）——這兩者是 `design_agent` 自己另外掃描出來
+    的，跟 `parse_agent.types.ClassInfo.annotations`／`.fields` 各自
+    獨立、不共用（05a 四章「這不是重跑 04a 三章的呼叫圖建構」同一個
+    既有理由：範圍與精度需求不同，`parse_agent` 那份掃完即丟，不會
+    留到這一步，見 05a 二章）。
     """
 
     file_path: str
@@ -59,6 +89,8 @@ class JavaClassSignature:
     stereotype: str | None  # "RestController"/"Controller"/"Service"/"Component"/"Repository"/None
     methods: list[JavaMethodSignature] = field(default_factory=list)
     constructors: list[JavaMethodSignature] = field(default_factory=list)
+    annotations: list[str] = field(default_factory=list)
+    fields: list[JavaField] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

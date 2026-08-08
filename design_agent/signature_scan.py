@@ -32,7 +32,7 @@ from pathlib import Path
 import javalang
 import javalang.tree
 
-from design_agent.types import JavaClassSignature, JavaMethodSignature, JavaParam
+from design_agent.types import JavaClassSignature, JavaField, JavaMethodSignature, JavaParam
 
 _STEREOTYPES = {"RestController", "Controller", "Service", "Component", "Repository"}
 
@@ -61,6 +61,7 @@ def scan_java_files(java_files: list[str], project_root: str) -> dict[str, JavaC
         for decl in tree.types:
             if not isinstance(decl, (javalang.tree.ClassDeclaration, javalang.tree.InterfaceDeclaration)):
                 continue
+            is_class_decl = isinstance(decl, javalang.tree.ClassDeclaration)
             result[decl.name] = JavaClassSignature(
                 file_path=rel_path,
                 class_name=decl.name,
@@ -71,7 +72,20 @@ def scan_java_files(java_files: list[str], project_root: str) -> dict[str, JavaC
                 # docstring）。
                 constructors=(
                     [_constructor_signature(decl.name, c) for c in decl.constructors]
-                    if isinstance(decl, javalang.tree.ClassDeclaration)
+                    if is_class_decl
+                    else []
+                ),
+                # annotations／fields 同理只在 ClassDeclaration 有意義（見
+                # JavaClassSignature docstring）：InterfaceDeclaration 沒有
+                # `.fields` 屬性，且孤兒類別／資料容器判斷本來就只處理
+                # class，不處理 interface（interface 無 stereotype 時走
+                # 05a 三章既有的「無 stereotype 類別交給六章 LLM」路徑）。
+                annotations=(_annotation_names(decl.annotations) if is_class_decl else []),
+                # _field_signature() 對單一 FieldDeclaration 可能回傳多筆
+                # （一次宣告多個變數），這裡攤平成單一清單。
+                fields=(
+                    [f for field_decl in decl.fields for f in _field_signature(field_decl)]
+                    if is_class_decl
                     else []
                 ),
             )
@@ -83,6 +97,32 @@ def _stereotype_of(annotations: list) -> str | None:
         if ann.name in _STEREOTYPES:
             return ann.name
     return None
+
+
+def _annotation_names(annotations: list) -> list[str]:
+    """回傳這個 class 上*全部* annotation 名稱（不像 `_stereotype_of()`
+    只挑 5 種 Spring stereotype 裡的第一個命中）——供 `design.py` 比對
+    `common/java_annotations.py` 的 Lombok／JPA 標記用，那組判斷需要看
+    到完整清單，不能只看 stereotype。
+    """
+    return [ann.name for ann in annotations]
+
+
+def _field_signature(field_decl: javalang.tree.FieldDeclaration) -> list[JavaField]:
+    """一個 `FieldDeclaration` 可能一次宣告多個變數（如
+    `private int a, b;`），逐一展開成獨立的 `JavaField`，共用同一個
+    型別與 modifiers。回傳 list 供呼叫端用 list comprehension 攤平
+    （見 `scan_java_files()`），對稱於 `_method_signature()`／
+    `_constructor_signature()` 都是「一筆宣告對一筆輸出」的慣例，這裡
+    因為 javalang 的 `FieldDeclaration` 天生可能包含多個宣告，才需要
+    回傳 list 而非單一 `JavaField`。
+    """
+    java_type = _type_str(field_decl.type)
+    is_final = "final" in field_decl.modifiers
+    return [
+        JavaField(name=decl.name, java_type=java_type, is_final=is_final)
+        for decl in field_decl.declarators
+    ]
 
 
 def _method_signature(class_name: str, method_decl: javalang.tree.MethodDeclaration) -> JavaMethodSignature:

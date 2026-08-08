@@ -3,13 +3,13 @@
     "endpoint": "/api/candidate/search",
     "http_method": "POST",
     "java_controller": "CandidateController.getCandidate",
-    "module": "candidate"
+    "module": "exam"
   },
   {
     "endpoint": "/api/candidate/generateRandomId",
     "http_method": "POST",
     "java_controller": "CandidateController.createRandom",
-    "module": "candidate"
+    "module": "exam"
   },
   {
     "endpoint": "/api/exam/answer/save",
@@ -69,31 +69,31 @@
     "endpoint": "/api/general/language",
     "http_method": "GET",
     "java_controller": "GeneralController.language",
-    "module": "general"
+    "module": "school"
   },
   {
     "endpoint": "/api/general/grades",
     "http_method": "GET",
     "java_controller": "GeneralController.grades",
-    "module": "general"
+    "module": "school"
   },
   {
     "endpoint": "/api/general/localtions",
     "http_method": "GET",
     "java_controller": "GeneralController.locals",
-    "module": "general"
+    "module": "school"
   },
   {
     "endpoint": "/api/general/schools",
     "http_method": "POST",
     "java_controller": "GeneralController.schools",
-    "module": "general"
+    "module": "school"
   },
   {
     "endpoint": "/api/general/version",
     "http_method": "GET",
     "java_controller": "GeneralController.getVersion",
-    "module": "general"
+    "module": "school"
   },
   {
     "endpoint": "/api/grading/test-exception",

@@ -61,7 +61,7 @@ refactor_harness/                  ← Python 套件（程式碼）
 
 > **匯入慣例**：套件內部模組互相引用一律用帶 `refactor_harness.` 前綴的絕對匯入（如 `from refactor_harness.core.masker import ResponseMasker`），與套件外部呼叫方（`graph/builder.py`、`graph/nodes/implement_node.py`、本套件自己的 `langgraph_nodes/test_nodes.py`）的匯入方式一致。
 
-> **額外 Python 依賴**：`01_langgraph_architecture.md` 的核心 `requirements.txt`（`langgraph`／`langchain-anthropic`／`pyyaml`／`python-dotenv`／`httpx`）不含 Harness 自己用到的套件，需另外加上 `psycopg2-binary`（`fixtures/db_env.py` 直接連 PostgreSQL 執行 seed）與 `deepdiff`（`core/diff_engine.py` 的比對核心，見八）。
+> **額外 Python 依賴**：`01_langgraph_architecture.md` 的核心 `requirements.txt`（`langgraph`／`pyyaml`／`python-dotenv`／`httpx`／`anthropic`，不含 `langchain-anthropic`，見 01 二章）不含 Harness 自己用到的套件，需另外加上 `psycopg2-binary`（`fixtures/db_env.py` 直接連 PostgreSQL 執行 seed）與 `deepdiff`（`core/diff_engine.py` 的比對核心，見八）。
 
 ---
 
@@ -617,16 +617,15 @@ DATABASE_URL=postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM_TEST uv
 >
 > **`TEST_DB_DSN` 的實際傳遞路徑**：`config/harness.yaml` 裡 `databases.test.dsn` 只是 fallback 用的靜態預設值。正常執行路徑上，`TEST_DB_DSN` 由 `01` 九章 `main.py` 讀進 `state["test_dsn"]`，Recorder（`GoldenRecorder`）與 Verifier（`DbEnvironment`、`MutationVerifier`）建構時都由呼叫端傳入這個值（見 `langgraph_nodes/test_nodes.py`），不會各自去讀 yaml 的靜態值——這樣才能保證錄製與驗證兩端、以及 readonly／mutation 兩條驗證路徑，全程連的是同一顆測試 DB。
 
-### Schema 來源（待確認，見 00 十）
+### Schema 來源（已確認，見 00 五章）
 
-`MOC_MATSUEXAM_TEST` 建立時是一顆空白 DB，`seed.sql` 只灌資料、不建表，schema 必須先準備好，依 Java 專案用的 migration 機制分兩種情況：
+`MOC_MATSUEXAM_TEST` 建立時是一顆空白 DB，`seed.sql` 只灌資料、不建表，schema 必須先準備好。目標專案的資料表是**手動 SQL 建的，不是 Hibernate/JPA `ddl-auto` 自動建表**（00 五章「環境建立」已確認），因此固定走「需要手動同步」這條路徑：
 
-| Java 專案用什麼建表 | Schema 怎麼來 |
-|---|---|
-| Hibernate / JPA `ddl-auto`（如 `update`／`create`） | 不需手動 dump——[A] Spec Agent 第一次啟動 Java 服務（連到 `MOC_MATSUEXAM_TEST`）時就會自動建好 schema |
-| Flyway / Liquibase 或手動 migration | 需要先手動同步一次：`pg_dump --schema-only MOC_MATSUEXAM \| psql MOC_MATSUEXAM_TEST` |
+```bash
+pg_dump --schema-only MOC_MATSUEXAM | psql MOC_MATSUEXAM_TEST
+```
 
-這項判斷 00 目前仍列為待確認事項，實際採用哪一種要先確認 Java 專案的 `application.properties`／`application.yml` 裡 `spring.jpa.hibernate.ddl-auto` 的設定值，再決定要不要執行上方的 `pg_dump` 步驟。
+（若日後接上其他用 `ddl-auto` 建表的 Java 專案，[A] Spec Agent 第一次啟動服務、連到空白的 `_TEST` DB 時會自動建好 schema，不需要上面這個步驟——但這不是目前目標專案的情況，這裡先記錄成通用備註，不代表這個專案還要判斷。）
 
 ### DbEnvironment 的職責
 
@@ -681,7 +680,7 @@ PostgreSQL Server
 > [A]/[B] 產生 Collection 的完整流程、LLM 填值與失敗處理、鏈式依賴偵測與注入，這些項目原本列在這裡，現在都在 `03a_spec_collection_agent_architecture.md`，不在本文件重複列。
 
 **測試 DB 建立**
-- [ ] 確認 Java 專案的 `ddl-auto` 設定（見十四章「Schema 來源」），決定是否需要手動 dump schema
+- [x] ~~確認 Java 專案的 `ddl-auto` 設定，決定是否需要手動 dump schema~~——已確認手動 SQL 建表、非 `ddl-auto`，固定走 `pg_dump --schema-only` 這條路徑，見十四章「Schema 來源」
 - [ ] 執行 `createdb MOC_MATSUEXAM_TEST` 建立測試用 DB
 - [ ] 若非 `ddl-auto`：執行 `pg_dump --schema-only MOC_MATSUEXAM | psql MOC_MATSUEXAM_TEST` 複製 schema
 - [ ] 確認 Java 服務可以用 `SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:5432/MOC_MATSUEXAM_TEST` 正常啟動
@@ -723,7 +722,7 @@ PostgreSQL Server
 - [ ] 確認 Python 服務的 Alembic migration 可以直接套用到 `MOC_MATSUEXAM_TEST`，或改用 `db.sync_schema()` 手動同步
 
 **流程整合**
-- [x] ~~MAX_RETRY 設定~~：已定案為 3（見 `01_langgraph_architecture.md` 三章 `RefactorState.retry_count`），需調整直接改 `test_nodes.py` 的 `MAX_RETRY` 常數
+- [x] ~~MAX_RETRY 設定~~：已定案為 3，常數定義在 `refactor_harness/langgraph_nodes/test_nodes.py` 的 `MAX_RETRY`（`01_langgraph_architecture.md` 三章只定義 `RefactorState.retry_count` 的型別，實際數值以這裡的常數為準），需調整直接改這個常數
 - [ ] give_up 通知機制：超過重試次數時，Slack / email 通知人工介入
 
 ---

@@ -153,7 +153,7 @@ LangGraph 呼叫本地模型完成程式碼填寫的橋接工具，取代通用�
 在開始執行整個流程前，需要在各機器上準備好以下工具：
 
 **你的電腦（Orchestrator 所在機器）**
-- Python 虛擬環境，安裝 `langgraph` 和 `langchain-anthropic`
+- Python 虛擬環境，安裝 `langgraph` 和 `anthropic`（Claude API 呼叫走 `anthropic` SDK 直接呼叫，不經 `langchain`，見 `01_langgraph_architecture.md` 二章）
 - Node.js 環境，安裝 `openapi-to-postmanv2` 和 `newman`（全域安裝）
 - Claude API 金鑰，設定在環境變數
 - PostgreSQL client 工具（`psql`），用於 Harness 的 DB seed 操作
@@ -248,9 +248,10 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 - `common/llm_client.call_claude_for_json(*, system_prompt, user_prompt, schema, model, max_tokens=4096)`：唯一對外函式，`model` 是必填參數——這個模組不知道任何 Agent 的環境變數命名慣例，「沒指定要用哪個模型時退回什麼」是每個 Agent 自己的決策，不由共用層代為決定。
 - 各 Agent 只需要自己的 `llm.py` 留幾行：讀自己的環境變數，沒設定時退回 `common.llm_client.DEFAULT_MODEL_FALLBACK`，算出 `DEFAULT_MODEL` 常數，呼叫端把這個值傳進 `call_claude_for_json(..., model=DEFAULT_MODEL)`。
+- `max_tokens` 比照同一個原則，是 Agent 自己的決策，不是共用層該猜的事——差別在於「多少 token 夠用」取決於這個 Agent 輸出內容的密度：`call_claude_for_json()` 的 `max_tokens` 有預設值（`DEFAULT_MAX_TOKENS=4096`），給輸出精簡的分類／抽取型 Agent（①③[B]）直接沿用即可，不需要每個 Agent 都覆寫；但輸出密度高的 Agent（如 [P] Plan Agent，每個 task 都帶完整業務描述／context／依賴清單）需要在自己的 `llm.py` 另外算一個 `PLAN_AGENT_MAX_TOKENS` 常數、呼叫時明確覆寫，同樣經環境變數可調，不寫死在程式碼裡——實測案例見 `06a_plan_agent_architecture.md` 五章。
 - `common/llm_client.py` 內部呼叫 `log_usage()` 時，屬於 `common/llm_usage_logger.py` module docstring「例外」段落講的「共用 API 封裝函式」情況——它自己先用 `inspect.stack()[1]` 抓出真正的業務呼叫端，明確傳給 `log_usage(response, model=model, caller=caller)`，不靠 `log_usage()` 內部的自動偵測（那會抓到 `call_claude_for_json` 自己）。
 
-`spec_collection_agent/llm.py` 是第一個接上這個共用 client 的 Agent（見 `03c_collection_agent_code.md` 一、1.2 節）；之後任何新 Agent（如 ①③⑦、[P] Plan Agent）需要呼叫 Claude API 時，一律直接呼叫 `common.llm_client.call_claude_for_json()`，不要各自重新實作 client 初始化、Structured Outputs 組裝這些邏輯——只需要在自己的 `llm.py` 決定「用哪個模型」。
+`spec_collection_agent/llm.py` 是第一個接上這個共用 client 的 Agent（見 `03c_collection_agent_code.md` 一、1.2 節）；之後任何新 Agent（如 ①③⑦、[P] Plan Agent）需要呼叫 Claude API 時，一律直接呼叫 `common.llm_client.call_claude_for_json()`，不要各自重新實作 client 初始化、Structured Outputs 組裝這些邏輯——只需要在自己的 `llm.py` 決定「用哪個模型」，輸出密度高時一併決定「`max_tokens` 要多少」。
 
 ### Map 階段併發數（共用工具）
 
@@ -273,6 +274,17 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 - `common/openapi_ref_resolver.resolve_refs(fragment: dict, full_spec: dict) -> dict`：唯一對外函式，`fragment` 是呼叫端已取出的 operation/schema 片段，`full_spec` 是完整 `openapi_spec`（供 JSON Pointer 解析用）
 - **現況**：`③` 是第一個直接對齊這個共用介面的 Agent；`[B]`（03a/03c）目前仍是 `spec_collection_agent` 內部各自的展開實作，尚未遷移過去共用，屬於已知的技術債，見 `05a_design_agent_architecture.md` 十三章待決定事項
+
+### Java class annotation 判斷（共用工具）
+
+① 解析 Agent（04a 四章 `needs_llm_summary()`，判斷 class 值不值得花一次 Claude API 摘要）與 ③ 架構設計 Agent（05a 三章「孤兒類別／資料容器占位」，判斷沒有一般方法的 class 該渲染成什麼）都需要判斷「這個 class 是不是 Lombok／JPA 標記的資料容器」，是同一份機械 annotation 清單，不是恰好想法一致，因此集中到 `common/java_annotations.py`：
+
+- `common/java_annotations.DATA_CLASS_ANNOTATIONS`：`@Entity`／`@Embeddable`／`@MappedSuperclass`／`@Data`／`@Value`／`@Getter`／`@Setter`／`@Builder`／`@NoArgsConstructor`／`@AllArgsConstructor`／`@RequiredArgsConstructor` 的聯集，只是「大概率是資料容器」的觸發訊號，不是最終判斷依據——各自呼叫端仍需要自己的方法清單／欄位／`InterfaceSpec` 覆蓋範圍等資訊才能下最終判斷
+- `common/java_annotations.JPA_ENTITY_ANNOTATIONS`：`DATA_CLASS_ANNOTATIONS` 的子集（`@Entity`／`@Embeddable`／`@MappedSuperclass`），只有 ③ 需要單獨判斷——DB schema 欄位層級規格不是③的職責（見 05a 九章），偵測到這個子集時③直接跳過、不渲染，交由④直接從 DB 取得；① 不需要這個區分（04a 只需要「大概率是資料容器」這個粗粒度判斷）
+
+### 檔案讀寫編碼慣例
+
+全專案的 config／JSON／原始碼檔案都含中文內容，任何 `open()`／`Path.read_text()`／`Path.write_text()` 呼叫都必須明確帶 `encoding="utf-8"`，不依賴平台預設編碼——Windows 預設用 cp950，讀寫這些檔案會直接 mangle 或丟出 `UnicodeDecodeError`。這是寫死的程式撰寫慣例，不是每個環境可能想覆寫的值，因此不經環境變數／`.env` 配置。
 
 ---
 
@@ -436,7 +448,7 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 | `02a_harness_architecture.md` | Harness 詳細設計：Recorder / Verifier、Masker、DiffEngine、Report 格式、DB 環境、Route Mapping 演算法 |
 | `02b_harness_code.md` | Harness 各模組的實際程式碼實作 |
 | `03a_spec_collection_agent_architecture.md` | [A] Spec Agent / [B] Collection Agent 詳細設計：Java 服務啟動與 `/v3/api-docs` 擷取步驟、OpenAPI → Postman Collection 轉換流程、LLM 填值邏輯、鏈式依賴處理 |
-| `03b_spec_collection_agent_code.md` | [A] Spec Agent / [B] Collection Agent 的實際程式碼實作 |
+| `03b_spec_agent_code.md` | [A] Spec Agent / [B] Collection Agent 的實際程式碼實作 |
 | `04a_parse_agent_architecture.md` | ① 解析 Agent 詳細設計：模組拆分邏輯、業務邏輯摘要產出方式、依賴關係判定 |
 | `04b_parse_agent_code.md` | ① 解析 Agent 的實際程式碼實作 |
 | `05a_design_agent_architecture.md` | ③ 架構設計 Agent 詳細設計：Python 專案結構、interface 定義規格（檔案相對路徑＋函式簽名層級）、route_to_file_mapping 產出邏輯 |

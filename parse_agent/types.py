@@ -47,6 +47,11 @@ class FieldInfo:
 class MethodEntry:
     name: str
     return_type: str | None = None  # 回傳型別的外層名稱（void 或無法取得時為 None），供三章 3.3 鏈式呼叫接續解析用
+    has_body: bool = True  # 是否有方法本體（javalang MethodDeclaration.body is not None）。interface 的抽象宣告／
+    # Spring Data JPA 衍生查詢方法一律是 False——供 grouping.needs_llm_summary() 判斷「這個方法 LLM 讀到的
+    # 資訊是否跟機械解析器完全一樣（都只有名稱可用）」，見該函式 docstring 規則 2。
+    query_value: str | None = None  # @Query("...")／@Query(value="...") 的字面字串值；沒有這個 annotation 或
+    # 引用非字面字串常量解析不出來時為 None，供 summarize._describe_bodyless_method() 優先抄錄用。
 
 
 @dataclass

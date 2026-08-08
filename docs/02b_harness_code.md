@@ -195,7 +195,7 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
             f"stderr: {result.stderr[:500]}"
         )
 
-    with open(output_path) as f:
+    with open(output_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -208,7 +208,7 @@ def list_top_level_folders(collection_path: str) -> list[str]:
     （見 02a 六章）。Agent B 產生 collection_mutation.json 時，必須把有鏈式依賴的
     request 群組成同一個頂層 folder，而不是拆成各自獨立的 folder。
     """
-    with open(collection_path) as f:
+    with open(collection_path, encoding="utf-8") as f:
         collection = json.load(f)
     return [
         entry["name"]
@@ -276,7 +276,7 @@ import yaml
 
 class ResponseMasker:
     def __init__(self, rules_path: str = "config/mask_rules.yaml"):
-        with open(rules_path) as f:
+        with open(rules_path, encoding="utf-8") as f:
             rules = yaml.safe_load(f)
         self.masked_fields = set(rules.get("masked_fields", []))
         self.masked_fields_mutation_only = set(rules.get("masked_fields_mutation_only", []))
@@ -322,7 +322,7 @@ from deepdiff import DeepDiff
 
 class DiffEngine:
     def __init__(self, config_path: str = "config/harness.yaml"):
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         # 允許忽略順序的 JSONPath 列表，格式必須與 DeepDiff level.path() 一致
         # 例如：["root['data']['items']", "root['orders']"]
@@ -453,7 +453,7 @@ class RouteMapper:
     )
 
     def __init__(self, config_path: str = "config/harness.yaml"):
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         self.route_mapping = config.get("route_to_file_mapping", {})
         self.module_mapping = config.get("route_to_module_mapping", {})
@@ -765,7 +765,7 @@ class GoldenRecorder:
         # URL 推斷 fallback，見 core/route_mapper.py、02a 十三章）。
         self.route_mapper = RouteMapper(config_path)
 
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         self.test_dsn = test_dsn or config["databases"]["test"]["dsn"]
         self.tables = config["databases"]["test"]["tables_to_truncate"]
@@ -872,7 +872,7 @@ class GoldenRecorder:
             "skipped": skipped,
             "tainted_folders": tainted_folders
         }
-        with open(self.golden_dir / "_metadata.json", "w") as f:
+        with open(self.golden_dir / "_metadata.json", "w", encoding="utf-8") as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
     def _build_executions(
@@ -983,7 +983,7 @@ class GoldenRecorder:
         dir_path = self.golden_dir / module
         dir_path.mkdir(parents=True, exist_ok=True)
 
-        with open(dir_path / f"{case_id}.json", "w") as f:
+        with open(dir_path / f"{case_id}.json", "w", encoding="utf-8") as f:
             json.dump(golden, f, ensure_ascii=False, indent=2)
 ```
 
@@ -1107,7 +1107,7 @@ class GoldenVerifier:
         golden_path = self.golden_dir / module / f"{case_id}.json"
         if not golden_path.exists():
             return None
-        with open(golden_path) as f:
+        with open(golden_path, encoding="utf-8") as f:
             return json.load(f)
 ```
 
@@ -1161,7 +1161,7 @@ class MutationVerifier:
         # 與 GoldenVerifier 共用同一套 route → related_files 解析
         self.route_mapper = RouteMapper(config_path)
 
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         self.test_dsn = test_dsn or config["databases"]["test"]["dsn"]
@@ -1176,7 +1176,7 @@ class MutationVerifier:
         metadata_path = self.golden_dir / "_metadata.json"
         if not metadata_path.exists():
             return set()
-        with open(metadata_path) as f:
+        with open(metadata_path, encoding="utf-8") as f:
             metadata = json.load(f)
         return {t["folder"] for t in metadata.get("tainted_folders", [])}
 
@@ -1311,7 +1311,7 @@ class MutationVerifier:
         golden_path = self.golden_dir / module / f"{case_id}.json"
         if not golden_path.exists():
             return None
-        with open(golden_path) as f:
+        with open(golden_path, encoding="utf-8") as f:
             return json.load(f)
 ```
 
@@ -1331,27 +1331,29 @@ from refactor_harness.verifier.mutation_verifier import MutationVerifier
 from refactor_harness.core.reporter import HarnessReporter
 from refactor_harness.fixtures.db_env import DbEnvironment
 
-with open("config/harness.yaml") as f:
+with open("config/harness.yaml", encoding="utf-8") as f:
     HARNESS_CONFIG = yaml.safe_load(f)
 
 TABLES = HARNESS_CONFIG["databases"]["test"]["tables_to_truncate"]
-MAX_RETRY = 3  # 已定案（見 00 九、State 表格 retry_count），如需調整直接改這個常數
+MAX_RETRY = 3  # 已定案（見 00 九、State 表格 retry_count）
 
-# Java 服務位置不放進 RefactorState（性質同 DATABASE_URL，是服務/外部工具自己讀的環境變數，
-# 不是 Orchestrator 決策要用的資料），直接讀 .env，做法與 01 九章 main.py 讀 OLLAMA_BASE_URL 一致。
+# Java 服務位置不放進 RefactorState，直接讀 .env
 JAVA_BASE_URL = os.environ["JAVA_BASE_URL"]
 
 
 # ── Agent ②：錄製 golden output（readonly + mutation）──
-def record_golden_output(state: RefactorState) -> RefactorState:
+def record_golden_output(state: RefactorState) -> dict:
     """
     分別呼叫 record()（readonly）與 record_mutation()（mutation），兩者的 DB
-    reset 策略不同（見 00 六章 Seed 策略），已封裝在 GoldenRecorder 內部，
-    這裡不重複 apply_seed；跑完後用 write_metadata() 合併寫一份 _metadata.json
-    （分開呼叫各自的 record 不會互相覆蓋，見 GoldenRecorder 定義）。
+    reset 策略不同，已封裝在 GoldenRecorder 內部。
 
     test_dsn 傳入 state["test_dsn"]，確保 Recorder 與 run_postman_tests 的
     Verifier 連到同一顆測試 DB（見 02a 十四章）。
+
+    平行分支 node：parse 完成後與 design（③）同時觸發（見 00 一章流程圖、
+    01 五章、05a 十一章——③ 不依賴 golden_output），因此只回傳自己實際更動
+    的 key，不能用 `{**state, ...}` 整包展開，避免跟 design 同一個
+    superstep 對同一個 key 各自寫入。
     """
     recorder = GoldenRecorder(
         java_base_url=JAVA_BASE_URL,
@@ -1363,7 +1365,6 @@ def record_golden_output(state: RefactorState) -> RefactorState:
     recorder.write_metadata(readonly_result, mutation_result)
 
     return {
-        **state,
         "golden_output": {
             "readonly": readonly_result,
             "mutation": mutation_result,
@@ -1374,15 +1375,7 @@ def record_golden_output(state: RefactorState) -> RefactorState:
 # ── Agent ⑥：驗證 Python 服務（全量，跨模組 regression 的最終防線）──
 def run_postman_tests(state: RefactorState) -> RefactorState:
     """
-    readonly 與 mutation 的原始結果（尚未分類）合併後只呼叫一次 build_report()
-    ——不能各自 build_report() 後再合併，欄位名稱不同、二次分類會靜默誤判
-    （見 comparator.py／mutation_verifier.py 的說明）。只要其中一份有
-    failure，整體 status 就是 fail，避免「readonly 全過但 mutation 其實在
-    噴 500」被誤判為整體通過。
-
-    MutationVerifier 內部逐 folder 自行 apply_seed（見 02a 六章），這裡不
-    需要在呼叫前再 apply_seed 一次。test_dsn 統一傳入 state["test_dsn"]，
-    確保 readonly／mutation 兩條路徑與 Recorder 連到同一顆測試 DB。
+    readonly 與 mutation 的原始結果合併後只呼叫一次 build_report()。
 
     mutation_verifier.verify_all_raw() 內部已自動排除 tainted folder（見
     MutationVerifier、02a 四章「排除已知異常的 folder」）；跑完後透過
@@ -1417,19 +1410,7 @@ def run_postman_tests(state: RefactorState) -> RefactorState:
 def should_debug_or_done(state: RefactorState) -> str:
     """
     retry_count 只在 failed_modules（確實跑過、驗證過但沒過）非空時才計入
-    重試判斷；blocked_modules（因上游未驗證通過而從未被排到）不影響這裡的
-    判斷，那是排程還沒排到，不是「這次寫錯了」，等對應的 failed_modules
-    修好、上游重驗通過後，排程器（ModuleScheduler）會在下一輪 implement
-    自然釋放，不需要額外的條件邊分支。
-
-    state["test_results"]["status"] 故意不用 .get() 給預設值：能執行到這個
-    條件邊，代表 run_postman_tests 已正常 return——若它中途拋例外（如
-    Python 服務沒起來、newman 失敗），LangGraph 會直接讓例外傳播、整個
-    graph 中斷，條件邊根本不會被呼叫；而只要它正常 return，test_results
-    必然來自 build_report()，一定含有 status。若真的出現結構異常（例如
-    未來有人改壞 build_report），KeyError 當場炸開才是正確行為——用
-    .get(..., "fail") 之類的預設值反而會把結構性 bug 偽裝成普通測試失敗，
-    白白消耗 retry_count 並誤導 Debug Agent。
+    重試判斷；blocked_modules 不影響這裡的判斷。
     """
     report = state["test_results"]
 
@@ -1438,19 +1419,12 @@ def should_debug_or_done(state: RefactorState) -> str:
 
     failed_modules = state.get("failed_modules", [])
     if not failed_modules:
-        # 只有 blocked_modules、沒有 failed_modules：不是程式碼寫錯，不消耗 retry_count，
-        # 但全量測試仍是 fail，代表還有模組沒完工，回 debug 讓 ⑦ 判斷後續（通常會再進一次 implement）
+        # 只有 blocked_modules、沒有 failed_modules
         return "debug"
 
     if state["retry_count"] >= MAX_RETRY:
-        return "give_up"  # 超過重試次數，交給 give_up node 通知人工（見 01 五章，不是直接 END）
+        return "give_up"
     return "debug"
-
-
-# ── module 級局部驗證：見 01_langgraph_architecture.md 六章 implement_node.py 的 _partial_verify ──
-# 本檔不重複實作。record_golden_output／run_postman_tests 是全量驗證專用的獨立 node，
-# implement_node 內部另外用同一組 GoldenVerifier／DbEnvironment 做 module 級局部驗證與 regression 重驗，
-# 兩者共用底層 refactor_harness 套件，但呼叫時機與封裝位置不同，不應在本檔案重複維護第二份邏輯。
 ```
 
 ---

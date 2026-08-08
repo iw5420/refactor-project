@@ -96,41 +96,86 @@ def _resolve_json_pointer(full_spec: dict, ref: str) -> Any | None:
 
 ## 一、`exceptions.py`——例外階層
 
-對應 05a 十二章「錯誤處理範圍」：四章重新掃描失敗直接往上拋、中止整條 run；六章 LLM 呼叫失敗先走重試佇列緩衝，重試仍失敗才拋出硬性失敗（見七章 `design.py`）；`depends_on` 循環依賴、`depends_on` 引用不存在的 module 名稱，各是另外兩個獨立的硬性失敗（刻意分開成不同例外型別，見下方 `DesignAgentUnknownDependencyError`）。
+對應 05a 十二章「錯誤處理範圍」：四章重新掃描失敗直接往上拋、中止整條 run；六章 LLM 呼叫失敗先走重試佇列緩衝，重試仍失敗才拋出硬性失敗（見七章 `design.py`）；`depends_on` 循環依賴、`depends_on` 引用不存在的 module 名稱，各是另外兩個獨立的硬性失敗（刻意分開成不同例外型別，見下方 `DesignAgentUnknownDependencyError`）；`module_list.methods` 對不到任何真實 Java 方法是第四種硬性失敗（`DesignAgentCoverageError`，見下方類別 docstring）。
 
 ```python
 # design_agent/exceptions.py
 """③ 架構設計 Agent 例外階層，對應 05a 十二章「錯誤處理範圍」。Java
 原始碼再掃描（四章）失敗一律視為輸入端問題，直接往上拋、中止整條
 LangGraph run，不在這裡額外包裝——javalang 拋出的 `JavaSyntaxError`／
-檔案 I/O 例外原樣往上傳即可。這裡只定義六章 LLM 設計階段專屬的三種
-硬性失敗：單一 module 呼叫重試仍失敗、depends_on 出現循環依賴、
-depends_on 引用不存在的 module 名稱。
+檔案 I/O 例外原樣往上傳即可。這裡定義六章 LLM 設計階段專屬的四種硬性
+失敗：單一 module 呼叫重試仍失敗、depends_on 出現循環依賴、depends_on
+引用不存在的 module 名稱、`module_list.methods` 對不到任何真實 Java
+方法（`DesignAgentCoverageError`，見該類別 docstring「與 05b 原始設計
+的差異」）。
 """
 from __future__ import annotations
 
 
 class DesignAgentModuleError(Exception):
-    """單一 module 的六章 Claude API 呼叫，重試佇列（見 design.py）跑完
-    仍失敗時拋出，中止整條 design run（見 05a 六章「單一 module 呼叫
-    失敗時」）。
+    """單一 module 的六章 Claude API 呼叫，在 design.py 的重試佇列機制
+    （待重試清單、5 分鐘後統一重試一次，比照 04a 四章）跑完仍失敗時
+    拋出，中止整條 design run（見 05a 十二章：`python_structure` 是
+    [P]／④ 唯一的權威規格，任何一個 module 的介面缺失都會讓兩者在不
+    知情狀況下對著不完整規格工作，風險遠高於重新執行一次——比 04a
+    允許缺摘要繼續跑更嚴格，見 05a 六章「單一 module 呼叫失敗時」）。
     """
 
 
 class DesignAgentCycleError(Exception):
-    """`module_list.depends_on` 拓樸排序偵測到循環依賴時拋出，中止整條
-    design run，交由人工排查，不自動打斷環（見 05a 六章「循環依賴」）。
-    只在 `layout.build_waves()` 先確認 `depends_on` 引用的 module 名稱
-    都存在之後才會拋出——名稱不存在是另一種錯誤，見
-    `DesignAgentUnknownDependencyError`。
+    """`module_list.depends_on` 拓樸排序時偵測到循環依賴時拋出，中止
+    整條 design run，交由人工排查（見 05a 六章「循環依賴」）——不嘗試
+    自動打斷環或猜測合理順序：`depends_on` 理論上應為 DAG（04a Reduce
+    階段、⑤ 排程器都依賴同一假設），真的出現循環代表上游輸入資料本身
+    有錯誤，不是這裡能安全修復的情況。
+
+    只在`depends_on` 引用的 module 名稱**都確實存在**於 `module_list`
+    的前提下才會拋出——引用不存在的 module 名稱是另一種輸入錯誤（見
+    `DesignAgentUnknownDependencyError`），不會走到這裡：`layout.
+    build_waves()` 會先做過一輪存在性檢查，避免「依賴引用了拼錯或不
+    存在的 module 名稱」被誤判成循環依賴，讓除錯方向對不上真正的
+    根因（缺依賴 vs. 真的循環）。
     """
 
 
 class DesignAgentUnknownDependencyError(Exception):
-    """`module_list.depends_on` 引用了不存在於 `module_list` 的 module
-    名稱時拋出（見 `layout.build_waves()`）。跟循環依賴刻意分開成兩種
-    例外，避免共用同一種錯誤訊息誤導除錯方向（見 05a 六章「依賴完整性
-    檢查與循環依賴分開判定」）。
+    """`module_list.depends_on` 引用了不存在於 `module_list` 裡任何一個
+    `module` 名稱時拋出（見 `layout.build_waves()`）——常見成因是①的
+    Reduce 階段拼錯依賴的 module 名稱（04a 四章「missing_classes 只檢查
+    一個方向」的姊妹情況，這裡換成 module 名稱層級）。跟循環依賴
+    （`DesignAgentCycleError`）刻意分開成兩種例外：兩者的根因（缺依賴
+    vs. 依賴形成環）不同，共用同一個例外訊息會讓人工排查時先入為主
+    地往「循環」方向找，實際上問題出在①的輸出資料本身。
+    """
+
+
+class DesignAgentCoverageError(Exception):
+    """`_build_method_contexts()` 在 `module_list.methods` 裡的一筆方法
+    找不到對應的真實 Java class／method 時拋出（`class_signatures.
+    get(method_info["class_name"])` 是 `None`，或該 class 底下找不到
+    同名方法），中止整條 design run，不進 LLM 呼叫重試佇列。
+
+    **不是 LLM 呼叫失敗，不該走 `LlmJsonError` 那條重試路線**：這個
+    情況發生在呼叫 Claude API 之前（`_build_method_contexts()` 是純
+    機械比對），根因是①的輸出（`module_list.methods`）跟③這次重新
+    掃描 Java 原始碼的結果對不上——同一份 `java_project_path`，理論上
+    應該永遠對得上，對不上代表某處有結構性錯誤（例如 `signature_scan.
+    scan_java_files()` 漏掃了某種 Java 語法結構，見之前修過的 interface
+    掃描缺漏案例）。重跑同一次 Claude API 呼叫解決不了「程式碼掃描邏輯
+    有 bug」這種問題，5 分鐘後重試只是白等，因此刻意用獨立的例外型別，
+    確保不會被 `_run_wave_batch()` 的 `except LlmJsonError` 攔截、送進
+    重試佇列。
+
+    **與 05b 原始設計的差異**：05b 原本的決定是「記警告並跳過，不中止
+    整條 design run」（理由：「理論上不該發生」）。實測對真實
+    `lang-exam-api-refactor` 專案跑出這個情況真的會發生，且發生時
+    影響幅度不小（一次涵蓋 26% 的方法）——根本原因後來確認是
+    `signature_scan.py` 沒有掃描 Java `interface` 宣告，已經修好；但
+    「找不到對應」這個分支本身沒有變，若之後又出現另一種目前沒遇過的
+    Java 語法造成同樣的落空，還是會被原本的「跳過＋警告」悄悄吃掉，
+    只留在容易被忽略的 log 裡。因此改成立即中止＋在錯誤訊息裡列出
+    精確的 module／class／method 清單，讓這類問題無法再悄悄流入不完整
+    的 `python_structure`。
     """
 ```
 
@@ -181,16 +226,59 @@ class JavaMethodSignature:
 
 
 @dataclass(frozen=True)
+class JavaField:
+    """單一欄位宣告，供孤兒類別（無方法、可能是 Lombok 資料類別）的
+    dataclass 渲染用（見 `design.py` orphan class 決策樹、
+    `layout.render_dataclass_section()`）。`java_type` 是含泛型的完整
+    型別字面字串（同 `JavaParam.java_type` 慣例，由 `signature_scan.
+    _type_str()` 產生），不是 `parse_agent.types.FieldInfo.type_name`
+    那種為了 DI 依賴解析而展開集合取內層型別的簡化版——兩者目的不同，
+    這裡需要的是能直接餵給 `type_mapping.map_java_type()` 的精確型別。
+    `is_final` 供判斷這批欄位該渲染成 `@dataclass(frozen=True)` 還是
+    一般 `@dataclass`：全部欄位都 `final` 時視為不可變。
+    """
+
+    name: str
+    java_type: str
+    is_final: bool
+
+
+@dataclass(frozen=True)
 class JavaClassSignature:
     """單一 Java class 的機械掃描結果，對應 05a 四章。`stereotype` 供
     三章 layout.py 做層級判定；`None` 代表無 stereotype annotation，
     層級歸屬留給六章 LLM 判斷（見 05a 三章「無 stereotype 的類別」）。
+
+    `constructors`：javalang 的 `class_decl.methods` 不含建構子（見
+    05a 四章「多載方法的處理」同一個既有事實），只有一般方法會進
+    `methods`。有些 class（常見情況：自訂例外類別）只有建構子、沒有
+    一般方法，`methods` 因此永遠是空清單，`_build_method_contexts()`
+    也永遠不會追蹤到這種 class——若沒有另外記下建構子簽名，這批 class
+    在 `python_structure` 裡會完全沒有任何痕跡，④／⑤下游不會被告知
+    要建立對應的 Python 定義（見 `design.py` 的 orphan class 處理）。
+    只有 `ClassDeclaration` 才有建構子，`InterfaceDeclaration` 一律是
+    空清單。
+
+    `annotations`／`fields`：同樣只有 `ClassDeclaration` 才擷取，
+    `InterfaceDeclaration` 一律是空清單。`annotations` 是這個 class 上
+    所有 annotation 名稱（不只 `stereotype` 認得的 5 種 Spring
+    stereotype），供 `design.py` 判斷是否為 Lombok／JPA 資料容器（見
+    `common/java_annotations.py`）；`fields` 是欄位宣告清單，供同一段
+    判斷邏輯在「沒有建構子、只有欄位」時渲染 dataclass 用（見
+    `JavaField` docstring）——這兩者是 `design_agent` 自己另外掃描出來
+    的，跟 `parse_agent.types.ClassInfo.annotations`／`.fields` 各自
+    獨立、不共用（05a 四章「這不是重跑 04a 三章的呼叫圖建構」同一個
+    既有理由：範圍與精度需求不同，`parse_agent` 那份掃完即丟，不會
+    留到這一步，見 05a 二章）。
     """
 
     file_path: str
     class_name: str
     stereotype: str | None  # "RestController"/"Controller"/"Service"/"Component"/"Repository"/None
     methods: list[JavaMethodSignature] = field(default_factory=list)
+    constructors: list[JavaMethodSignature] = field(default_factory=list)
+    annotations: list[str] = field(default_factory=list)
+    fields: list[JavaField] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -224,12 +312,14 @@ class ModuleDesignResult:
 
 ## 三、`signature_scan.py`——javalang 輕量再掃描（四章）
 
-`scan_java_files()` 是這個檔案唯一的對外函式，逐 module 呼叫（見 05a 四章「決策」）。只取方法完整簽名（參數清單＋回傳型別）與 class stereotype，不建呼叫圖——跟 `parse_agent/call_graph.py` 各自獨立、不共用。
+`scan_java_files()` 是這個檔案唯一的對外函式，逐 module 呼叫（見 05a 四章「決策」）。取方法完整簽名（參數清單＋回傳型別）、建構子簽名、class stereotype、annotation 清單與欄位宣告，不建呼叫圖——跟 `parse_agent/call_graph.py` 各自獨立、不共用。`ClassDeclaration` 與 `InterfaceDeclaration` 都會建立 `JavaClassSignature`（Spring Data Repository 慣例上寫成 interface，見下方模組 docstring），但只有 `ClassDeclaration` 才有建構子／annotations／fields 可讀。
 
 ```python
 # design_agent/signature_scan.py
 """③ 架構設計 Agent：javalang 輕量再掃描，對應 05a 四章。只取方法完整
-簽名（參數清單＋回傳型別）與 class stereotype，不建呼叫圖——跟
+簽名（參數清單＋回傳型別）、建構子簽名（供 orphan class 處理，見
+`JavaClassSignature.constructors` docstring／`design.py`）與 class
+stereotype，不建呼叫圖——跟
 `parse_agent/call_graph.py` 各自獨立、不共用（見 05a 四章「這不是重跑
 04a 三章的呼叫圖建構」：呼叫圖需要欄位依賴、method invocation 解析、
 `@Qualifier`/`@Primary` 消歧，這裡的範圍窄得多，不需要建立呼叫關係）。
@@ -237,6 +327,20 @@ class ModuleDesignResult:
 沿用 04a 三章已驗證過的同一顆 `javalang`（同一個 `lang-exam-api-refactor`
 專案已證實 100% 解析成功），不需要重新驗證解析器可行性，只是抽取的
 欄位不同。
+
+**Interface 宣告也要建 `JavaClassSignature`**（比照 `parse_agent/
+call_graph.py` 的 `_extract_interfaces()`，理由相同）：Spring Data JPA
+Repository 慣例上寫成 `interface XxxRepository extends JpaRepository<...>`，
+沒有手寫實作類別。若只掃 `ClassDeclaration`，這類 interface 完全不會
+建立 `JavaClassSignature`，`design.py` 的 `_build_method_contexts()` 對
+`module_list.methods` 裡屬於這個 class 的每一筆都會落入「找不到所屬
+類別」分支而整批略過——不是「這個方法簽名解析不出來」，是這個 class
+在 `class_signatures` 裡根本不存在，實測對真實 `lang-exam-api-refactor`
+專案這一個缺口就佔了 05a 七章強制規則違反案例的多數（Repository 衍生
+查詢方法＋ interface 形式的常數存取類別，如 `ErrorCode`）。無 stereotype
+的 interface（Spring Data Repository 慣例上不標註 `@Repository`，靠
+`extends JpaRepository` 讓 Spring 結構性識別）比照既有規則交給六章 LLM
+判斷歸屬層級（見 05a 三章「無 stereotype 的類別」），這裡不額外猜測。
 """
 from __future__ import annotations
 
@@ -245,14 +349,16 @@ from pathlib import Path
 import javalang
 import javalang.tree
 
-from design_agent.types import JavaClassSignature, JavaMethodSignature, JavaParam
+from design_agent.types import JavaClassSignature, JavaField, JavaMethodSignature, JavaParam
 
 _STEREOTYPES = {"RestController", "Controller", "Service", "Component", "Repository"}
 
 
 def scan_java_files(java_files: list[str], project_root: str) -> dict[str, JavaClassSignature]:
     """對 `java_files`（相對路徑，通常直接來自 `ModuleInfo.java_files`）
-    做輕量 javalang 掃描，回傳 `class_name -> JavaClassSignature`。
+    做輕量 javalang 掃描，回傳 `class_name -> JavaClassSignature`。同一份
+    掃描結果涵蓋 `ClassDeclaration` 與 `InterfaceDeclaration`（見本檔
+    module docstring）。
 
     **決策：③ 對每個 module 的 `java_files` 各自呼叫一次這個函式**（不是
     像 parse_agent 一樣對整個 Java 專案掃一次），對應 05a 四章「③ 對每個
@@ -269,14 +375,36 @@ def scan_java_files(java_files: list[str], project_root: str) -> dict[str, JavaC
     for rel_path in java_files:
         source = Path(project_root, rel_path).read_text(encoding="utf-8")
         tree = javalang.parse.parse(source)  # JavaSyntaxError 原樣往上拋
-        for class_decl in tree.types:
-            if not isinstance(class_decl, javalang.tree.ClassDeclaration):
+        for decl in tree.types:
+            if not isinstance(decl, (javalang.tree.ClassDeclaration, javalang.tree.InterfaceDeclaration)):
                 continue
-            result[class_decl.name] = JavaClassSignature(
+            is_class_decl = isinstance(decl, javalang.tree.ClassDeclaration)
+            result[decl.name] = JavaClassSignature(
                 file_path=rel_path,
-                class_name=class_decl.name,
-                stereotype=_stereotype_of(class_decl.annotations),
-                methods=[_method_signature(class_decl.name, m) for m in class_decl.methods],
+                class_name=decl.name,
+                stereotype=_stereotype_of(decl.annotations),
+                methods=[_method_signature(decl.name, m) for m in decl.methods],
+                # 只有 ClassDeclaration 有建構子，InterfaceDeclaration 沒有
+                # `.constructors` 屬性可讀（見 JavaClassSignature.constructors
+                # docstring）。
+                constructors=(
+                    [_constructor_signature(decl.name, c) for c in decl.constructors]
+                    if is_class_decl
+                    else []
+                ),
+                # annotations／fields 同理只在 ClassDeclaration 有意義（見
+                # JavaClassSignature docstring）：InterfaceDeclaration 沒有
+                # `.fields` 屬性，且孤兒類別／資料容器判斷本來就只處理
+                # class，不處理 interface（interface 無 stereotype 時走
+                # 05a 三章既有的「無 stereotype 類別交給六章 LLM」路徑）。
+                annotations=(_annotation_names(decl.annotations) if is_class_decl else []),
+                # _field_signature() 對單一 FieldDeclaration 可能回傳多筆
+                # （一次宣告多個變數），這裡攤平成單一清單。
+                fields=(
+                    [f for field_decl in decl.fields for f in _field_signature(field_decl)]
+                    if is_class_decl
+                    else []
+                ),
             )
     return result
 
@@ -286,6 +414,32 @@ def _stereotype_of(annotations: list) -> str | None:
         if ann.name in _STEREOTYPES:
             return ann.name
     return None
+
+
+def _annotation_names(annotations: list) -> list[str]:
+    """回傳這個 class 上*全部* annotation 名稱（不像 `_stereotype_of()`
+    只挑 5 種 Spring stereotype 裡的第一個命中）——供 `design.py` 比對
+    `common/java_annotations.py` 的 Lombok／JPA 標記用，那組判斷需要看
+    到完整清單，不能只看 stereotype。
+    """
+    return [ann.name for ann in annotations]
+
+
+def _field_signature(field_decl: javalang.tree.FieldDeclaration) -> list[JavaField]:
+    """一個 `FieldDeclaration` 可能一次宣告多個變數（如
+    `private int a, b;`），逐一展開成獨立的 `JavaField`，共用同一個
+    型別與 modifiers。回傳 list 供呼叫端用 list comprehension 攤平
+    （見 `scan_java_files()`），對稱於 `_method_signature()`／
+    `_constructor_signature()` 都是「一筆宣告對一筆輸出」的慣例，這裡
+    因為 javalang 的 `FieldDeclaration` 天生可能包含多個宣告，才需要
+    回傳 list 而非單一 `JavaField`。
+    """
+    java_type = _type_str(field_decl.type)
+    is_final = "final" in field_decl.modifiers
+    return [
+        JavaField(name=decl.name, java_type=java_type, is_final=is_final)
+        for decl in field_decl.declarators
+    ]
 
 
 def _method_signature(class_name: str, method_decl: javalang.tree.MethodDeclaration) -> JavaMethodSignature:
@@ -300,6 +454,24 @@ def _method_signature(class_name: str, method_decl: javalang.tree.MethodDeclarat
         params=[JavaParam(name=p.name, java_type=_type_str(p.type)) for p in method_decl.parameters],
         return_type=_type_str(method_decl.return_type) if method_decl.return_type is not None else None,
         is_private="private" in method_decl.modifiers,
+    )
+
+
+def _constructor_signature(class_name: str, ctor_decl: javalang.tree.ConstructorDeclaration) -> JavaMethodSignature:
+    """建構子沒有回傳型別（`return_type=None`，跟 `void` 方法用同一個
+    字面表示，但呼叫端不會混淆——建構子只會出現在 `JavaClassSignature.
+    constructors`，不會混進 `methods`）。多載建構子（如 `AuthException`
+    的兩個建構子）各自對應輸入 `class_decl.constructors` 裡獨立的一筆，
+    比照 `_method_signature()` 逐筆轉換、不去重合併，理由同「多載方法
+    的處理」。`method_name` 沿用 class 名稱（Java 建構子語法本來就跟
+    class 同名），供 `design.py` 渲染建構子簽名時識別用。
+    """
+    return JavaMethodSignature(
+        class_name=class_name,
+        method_name=ctor_decl.name,
+        params=[JavaParam(name=p.name, java_type=_type_str(p.type)) for p in ctor_decl.parameters],
+        return_type=None,
+        is_private="private" in ctor_decl.modifiers,
     )
 
 
@@ -321,7 +493,7 @@ def _type_str(java_type) -> str:
     return f"{name}<{', '.join(inner_types)}>"
 ```
 
-**已驗證**：對照一段合成的 `UserController.java`（`@RestController`，一個帶 `@PathVariable`／框架物件參數的 GET、一個帶 `@RequestBody` 的 POST、一個 `private` 方法）跑過 `scan_java_files()`，正確取出 stereotype、參數清單（含型別）、回傳型別、`is_private` 旗標，多載場景（若有）也會各自成一筆。
+**已驗證**：對照一段合成的 `UserController.java`（`@RestController`，一個帶 `@PathVariable`／框架物件參數的 GET、一個帶 `@RequestBody` 的 POST、一個 `private` 方法）跑過 `scan_java_files()`，正確取出 stereotype、參數清單（含型別）、回傳型別、`is_private` 旗標，多載場景（若有）也會各自成一筆。`annotations`／`fields` 擷取另外對照合成的 Lombok `@Data`／`@Value` 類別、無標記純欄位類別、`InterfaceDeclaration` 三種情境驗證過（`tests/design_agent/test_signature_scan.py`），確認 `InterfaceDeclaration` 的 `annotations`／`fields` 一律是空清單、一次宣告多個變數的欄位（`private int a, b;`）會正確展開成獨立的 `JavaField`。
 
 ---
 
@@ -942,6 +1114,115 @@ def render_schema_section(file_path: str, class_fields: list[tuple[str, list[tup
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+def render_class_placeholder_section(
+    file_path: str, classes: list[tuple[str, str, list[list[tuple[str, str]]]]]
+) -> str:
+    """`### {file_path}` + python code block 段落，延伸自 05a 三章
+    「Schema 定義段」同一種機制——`InterfaceSpec` 只能表達函式簽名，
+    遇到「這個 class 在 `module_list.methods` 裡完全沒有被追蹤到任何
+    一般方法」的情況，同樣沒有結構化欄位可以表達，比照既有 Schema
+    定義段的作法用文字渲染進 directory_tree，不是新機制。
+
+    **常見成因**：自訂例外類別（如 `AuthException`）在 Java 端只有
+    建構子、沒有一般方法，javalang 的 `class_decl.methods` 不含建構子
+    （見 `JavaClassSignature.constructors` docstring），這批 class
+    因此永遠不會被 `_build_method_contexts()` 追蹤到、不會產生任何
+    `InterfaceSpec`——若不另外處理，這批 class 在 `python_structure`
+    裡會完全沒有任何痕跡，④／⑤下游不會被告知要建立對應的 Python 定義
+    （見 `design.py` orphan class 偵測邏輯）。
+
+    **刻意不假設 Python 基底類別**（不像 `render_schema_section()`
+    固定套用 `(BaseModel)`）：這批 class 可能是例外類別，也可能是其他
+    用途，實際該對應 `Exception` 子類別、`dataclass`、或其他寫法，這裡
+    只列出建構子簽名這個機械事實＋原始 Java 檔案路徑，交由④／⑤依
+    Java 原始碼自行判斷，不在③這裡越界猜測——呼應 05a 三章「機械規則
+    判斷不了的部分才問 LLM」，這裡連「要問 LLM 什麼」都不成立（沒有
+    一般方法可供 LLM 判斷業務語意），只能誠實列出機械事實。
+
+    `classes`：`(class_name, java_file_path, constructor_param_lists)`
+    清單，`constructor_param_lists` 是「每個多載建構子各自的參數清單」
+    的清單（一個 class 可能有多個多載建構子，見 05a 四章「多載方法的
+    處理」同一種精神），元素是 `(param_name, python_type)`——型別已經
+    由呼叫端（`design.py`）透過 `type_mapping.map_java_type()` 轉換過，
+    這裡純粹是字串組裝。
+    """
+    lines = [
+        f"### {file_path}",
+        "```python",
+        "# 以下類別在 Java 端只有建構子、沒有被 module_list 追蹤到任何一般方法",
+        "# （常見情況：自訂例外類別）。InterfaceSpec 無法表達這類定義，只能列出",
+        "# 建構子簽名；實際 Python 對應寫法（Exception 子類別／dataclass／其他）",
+        "# 請依下方標註的 Java 原始碼路徑自行判斷，這裡不假設任何基底類別。",
+        "",
+    ]
+    for class_name, java_file_path, ctor_param_lists in classes:
+        lines.append(f"# {class_name}（Java 原始碼：{java_file_path}）")
+        if not ctor_param_lists:
+            lines.append("# （無建構子參數）")
+        for i, params in enumerate(ctor_param_lists, start=1):
+            param_str = ", ".join(f"{name}: {ptype}" for name, ptype in params)
+            lines.append(f"# 建構子 {i}: {class_name}({param_str})")
+        lines.append("")
+    lines.append("```")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def render_dataclass_section(
+    file_path: str,
+    classes: list[tuple[str, str, bool, list[tuple[str, str]], str]],
+) -> str:
+    """`### {file_path}` + python code block 段落，跟
+    `render_class_placeholder_section()` 是同一種「`InterfaceSpec` 表達
+    不了、只能用文字渲染進 directory_tree」機制的另一個分支——差別在於
+    這裡的 class 有欄位可以列（不是只有建構子簽名），對應到的是純粹
+    當籃子傳接值用的 Python `dataclass`，不是 `render_schema_section()`
+    的 `(BaseModel)`（那是留給 API 邊界契約用的，見 05a 五章）。
+
+    **觸發情境**（見 `design.py` orphan class 決策樹）：這批 class 沒有
+    被任何 `InterfaceSpec` 覆蓋、也不是 `@Entity`（`@Entity` 直接跳過，
+    DB schema 欄位規格是④的職責，見 05a 九章），可能因為原始碼裡有
+    Lombok annotation（`@Data`／`@Value` 等，javalang 看不到 annotation
+    processor 生成的 getter/setter，`methods` 因此是空清單）、也可能
+    完全沒有 Lombok 標記、單純是沒寫存取方法的欄位容器（信心較低的
+    機械推斷，見 `confidence_note`）。兩種情況的 Python 對應寫法相同，
+    差別只在渲染出來的註解要不要提一句「這是怎麼判斷出來的」，供人工
+    核對時追溯。
+
+    `classes`：`(class_name, java_file_path, frozen, field_list,
+    confidence_note)` 清單。`frozen`：這個 class 的欄位是否全部
+    `final`（見 `JavaField.is_final`），決定渲染成
+    `@dataclass(frozen=True)` 還是一般 `@dataclass`。`field_list`：
+    `(field_name, python_type)`，型別已經由呼叫端透過
+    `type_mapping.map_java_type()` 轉換過，這裡純粹是字串組裝，跟
+    `render_class_placeholder_section()` 的既有慣例一致。
+    `confidence_note`：一句話說明判斷來源（有無 Lombok 標記），寫進
+    渲染出來的註解裡。
+    """
+    lines = [
+        f"### {file_path}",
+        "```python",
+        "from dataclasses import dataclass",
+        "",
+        "# 以下類別在 Java 端沒有被 module_list 追蹤到任何一般方法、也不是",
+        "# @Entity（DB schema 欄位規格是④的職責，這裡不重複）。依欄位宣告",
+        "# 機械推斷為單純傳接值用的資料容器，對應 Python dataclass，不是",
+        "# API 邊界的 BaseModel（那類契約走 openapi_spec 展開，見 05a 五章）。",
+        "",
+    ]
+    for class_name, java_file_path, frozen, fields, confidence_note in classes:
+        lines.append(f"# {class_name}（Java 原始碼：{java_file_path}；{confidence_note}）")
+        decorator = "@dataclass(frozen=True)" if frozen else "@dataclass"
+        lines.append(decorator)
+        lines.append(f"class {class_name}:")
+        if not fields:
+            lines.append("    pass")
+        for field_name, python_type in fields:
+            lines.append(f"    {field_name}: {python_type}")
+        lines.append("")
+    lines.append("```")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def render_code_section(file_path: str, code: str) -> str:
     """`### {file_path}` + python code block，內容是完整程式碼（給
     `render_database_py()`／`render_main_py()` 這類全域基礎設施檔案用，
@@ -964,7 +1245,7 @@ def render_directory_tree(
     return "\n".join(parts)
 ```
 
-**已驗證**：`build_waves()` 對「order 依賴 user」的兩模組清單正確分成 `[[user], [order]]` 兩波；對 `a→b→a` 的循環輸入正確拋出 `DesignAgentCycleError`；對 `depends_on` 引用不存在 module 名稱（拼字錯誤）的輸入正確拋出 `DesignAgentUnknownDependencyError`，不會被誤判成循環依賴。`render_schema_section()` 對含 `Field(...)` 的欄位正確在 import 行加上 `Field`，不含限制的欄位維持只 import `BaseModel`；`render_database_py()` 產出的 `get_db()` 正確含 `except Exception: db.rollback()` 區塊。
+**已驗證**：`build_waves()` 對「order 依賴 user」的兩模組清單正確分成 `[[user], [order]]` 兩波；對 `a→b→a` 的循環輸入正確拋出 `DesignAgentCycleError`；對 `depends_on` 引用不存在 module 名稱（拼字錯誤）的輸入正確拋出 `DesignAgentUnknownDependencyError`，不會被誤判成循環依賴。`render_schema_section()` 對含 `Field(...)` 的欄位正確在 import 行加上 `Field`，不含限制的欄位維持只 import `BaseModel`；`render_database_py()` 產出的 `get_db()` 正確含 `except Exception: db.rollback()` 區塊。`render_dataclass_section()` 對全欄位 `final` 的案例正確渲染 `@dataclass(frozen=True)`，非全 `final` 維持一般 `@dataclass`，無欄位時渲染 `pass`，`confidence_note` 正確出現在註解裡（`tests/design_agent/test_layout.py`）。
 
 ---
 
@@ -1119,12 +1400,13 @@ import time
 from dataclasses import dataclass, field
 
 from common.concurrency import default_concurrency
+from common.java_annotations import DATA_CLASS_ANNOTATIONS, JPA_ENTITY_ANNOTATIONS
 from common.llm_client import LlmJsonError, call_claude_for_json
 from design_agent import layout, signature_scan, type_mapping
-from design_agent.exceptions import DesignAgentModuleError
+from design_agent.exceptions import DesignAgentCoverageError, DesignAgentModuleError
 from design_agent.llm import DEFAULT_MODEL
 from design_agent.prompts import DESIGN_OUTPUT_SCHEMA, DESIGN_SYSTEM_PROMPT
-from design_agent.types import JavaClassSignature, ModuleDesignResult, UncoveredParam
+from design_agent.types import JavaClassSignature, JavaMethodSignature, ModuleDesignResult, UncoveredParam
 from graph.state import ApiMapping, InterfaceSpec, ModuleInfo, ParamSpec
 
 logger = logging.getLogger(__name__)
@@ -1362,13 +1644,15 @@ def _build_method_contexts(
     一個 `MethodInfo` 若在 Java 簽名裡對到多個多載，各自展開成獨立的
     `_MethodContext`（見 05a 四章「多載方法的處理」）。
 
-    **已知限制**：`MethodInfo.class_name` 若在這個 module 重新掃描的
-    `class_signatures` 裡找不到、或該 class 裡找不到同名方法，代表①
-    的 Map 階段摘要跟③這次重新掃描的結果對不上（理論上不該發生，兩者
-    都是對同一份 `java_project_path` 的解析結果）——記警告並跳過，不
-    讓這種不一致中止整條 design run，畢竟④／⑤下游本來就只能依賴這裡
-    產出的 interfaces，跳過的方法不會產生 InterfaceSpec，但也不會讓
-    其餘方法的設計連帶失敗。
+    **`MethodInfo.class_name` 對不到真實 Java class／method 時立即中止**
+    （`DesignAgentCoverageError`，見該類別 docstring「與 05b 原始設計的
+    差異」）：這代表①的 Map 階段摘要跟③這次重新掃描 Java 原始碼的結果
+    對不上——理論上不該發生（兩者都是對同一份 `java_project_path` 的
+    解析結果），實測發生時代表某處有結構性 bug（如過去 `signature_scan.
+    scan_java_files()` 漏掃 interface 宣告的案例），不是可以放著跳過的
+    暫時性不一致。中止在呼叫任何 Claude API 之前發生，不浪費任何 LLM
+    呼叫額度，錯誤訊息帶出精確的 module／class／method，方便直接定位
+    是①的輸出問題還是③的掃描邏輯問題。
 
     **`(class_name, java_method)` 先去重，才逐一展開 overloads**：①對
     同一組多載方法會各自產生一筆獨立的 `MethodInfo`（例如
@@ -1396,21 +1680,19 @@ def _build_method_contexts(
 
         class_sig = class_signatures.get(method_info["class_name"])
         if class_sig is None:
-            logger.warning(
-                "module %s 的方法 %s.%s 在四章重新掃描結果中找不到所屬類別，略過"
-                "（見 _build_method_contexts() docstring「已知限制」）",
-                module["module"], method_info["class_name"], method_info["java_method"],
+            raise DesignAgentCoverageError(
+                f"module {module['module']} 的方法 {method_info['class_name']}."
+                f"{method_info['java_method']} 在四章重新掃描結果中找不到所屬類別"
+                f"（見 DesignAgentCoverageError docstring）"
             )
-            continue
 
         overloads = [m for m in class_sig.methods if m.method_name == method_info["java_method"]]
         if not overloads:
-            logger.warning(
-                "module %s 的方法 %s.%s 在四章重新掃描結果中找不到同名方法，略過"
-                "（見 _build_method_contexts() docstring「已知限制」）",
-                module["module"], method_info["class_name"], method_info["java_method"],
+            raise DesignAgentCoverageError(
+                f"module {module['module']} 的方法 {method_info['class_name']}."
+                f"{method_info['java_method']} 在四章重新掃描結果中找不到同名方法"
+                f"（見 DesignAgentCoverageError docstring）"
             )
-            continue
 
         layer = layout.layer_for_stereotype(class_sig.stereotype)
         boundary = boundary_index.get((module["module"], class_sig.class_name, method_info["java_method"]))
@@ -1501,7 +1783,13 @@ def _design_module(
     class_signatures = signature_scan.scan_java_files(module["java_files"], java_project_path)
     contexts = _build_method_contexts(module, class_signatures, boundary_index, openapi_spec)
 
-    classes_needing_layer = [c for c in class_signatures.values() if c.stereotype is None]
+    # 只問「有一般方法」的無 stereotype 類別要歸哪一層：一個 class 若
+    # `methods` 是空清單（常見情況：只有建構子的自訂例外類別，見
+    # JavaClassSignature.constructors docstring），永遠不會有任何
+    # _MethodContext 引用到它（overloads 永遠篩不到東西），LLM 回答的
+    # 層級因此永遠用不到——這批 class 改走下方 orphan class 處理，不需要
+    # 也不該浪費一次 LLM 問答在一個沒有答案會被使用的問題上。
+    classes_needing_layer = [c for c in class_signatures.values() if c.stereotype is None and c.methods]
     methods_needing_decision = [c for c in contexts if c.uncovered_params or c.needs_db_session_decision]
 
     if classes_needing_layer or methods_needing_decision:
@@ -1557,11 +1845,79 @@ def _design_module(
             seen_schema_names.add(schema_name)
             schema_class_fields.append((schema_name, type_mapping.extract_schema_fields(resolved_schema)))
 
-    directory_tree_fragment = (
-        layout.render_schema_section(layout.schema_file_path(module["module"]), schema_class_fields)
-        if schema_class_fields
-        else None
-    )
+    # orphan class：class_signatures 裡沒有任何 InterfaceSpec 的 class_name
+    # 指向它——這批 class 完全不會被 contexts 迴圈碰到（見上面
+    # classes_needing_layer 的說明），若不另外處理，在 python_structure
+    # 裡會完全沒有任何痕跡。依機械事實分五種情況處理（見 05a 三章「孤兒
+    # 類別／資料容器占位」判斷優先序，理由見 common/java_annotations.py
+    # docstring）：
+    #   1. @Entity（含 @Embeddable/@MappedSuperclass）→ 跳過，DB schema
+    #      欄位規格是④的職責（05a 九章），不是③要處理的範圍
+    #   2. 有 Lombok/JPA 資料標記 → 渲染 dataclass（欄位為主，高信心）
+    #   3. 有建構子（現有 AuthException 案例，順序與行為不變）→ 渲染
+    #      建構子占位
+    #   4. 有欄位、無標記（低信心推斷）→ 渲染 dataclass
+    #   5. 什麼都沒有 → 只記警告，不渲染空段落
+    # 已經出現在 seen_schema_names（API 邊界 openapi 展開產出的 schema
+    # 名稱）的 class 一併排除，避免同一個型別被兩種機制各渲染一次。
+    known_classes = frozenset(class_signatures)
+    covered_class_names = {iface["class_name"] for iface in interfaces if iface["class_name"]}
+    orphan_classes: list[tuple[str, str, list[list[tuple[str, str]]]]] = []
+    data_carrier_classes: list[tuple[str, str, bool, list[tuple[str, str]], str]] = []
+
+    def _data_carrier_entry(
+        sig: JavaClassSignature, confidence_note: str
+    ) -> tuple[str, str, bool, list[tuple[str, str]], str]:
+        frozen = bool(sig.fields) and all(f.is_final for f in sig.fields)
+        fields = [(f.name, type_mapping.map_java_type(f.java_type, known_classes)) for f in sig.fields]
+        return (sig.class_name, sig.file_path, frozen, fields, confidence_note)
+
+    for name, sig in class_signatures.items():
+        # 這整棵決策樹的前提是「methods 為空清單」（見本函式上方註解、
+        # 05a 三章「孤兒類別與資料容器占位」開頭）。單靠 covered_class_
+        # names 判斷「已處理過」不夠：routers 層的 InterfaceSpec.
+        # class_name 一律是 None（05a 七章既有規則），covered_class_names
+        # 因此永遠不會包含 router 類別的真實 class name，若不額外檢查
+        # sig.methods，一個正常、方法齊全的 @RestController（如只是剛好
+        # 沒有 constructor／field 的無狀態 Controller）會被誤判成孤兒
+        # 類別，嚴重時甚至把它渲染成錯誤的 dataclass 段落。
+        if sig.methods or name in covered_class_names or name in seen_schema_names:
+            continue
+        annotation_set = set(sig.annotations)
+        if annotation_set & JPA_ENTITY_ANNOTATIONS:
+            continue
+        if annotation_set & DATA_CLASS_ANNOTATIONS:
+            data_carrier_classes.append(_data_carrier_entry(sig, "偵測到 Lombok/JPA 資料標記"))
+        elif sig.constructors:
+            orphan_classes.append((
+                name,
+                sig.file_path,
+                [
+                    [(p.name, type_mapping.map_java_type(p.java_type, known_classes)) for p in ctor.params]
+                    for ctor in sig.constructors
+                ],
+            ))
+        elif sig.fields:
+            data_carrier_classes.append(_data_carrier_entry(sig, "無 Lombok 標記，依欄位宣告推斷"))
+        else:
+            logger.warning(
+                "module %s 的類別 %s 沒有方法、建構子、欄位，也沒有被任何 InterfaceSpec 覆蓋，"
+                "略過（05a 三章孤兒類別判斷：沒有任何機械事實可渲染）",
+                module["module"], name,
+            )
+
+    fragments: list[str] = []
+    if schema_class_fields:
+        fragments.append(layout.render_schema_section(layout.schema_file_path(module["module"]), schema_class_fields))
+    if orphan_classes:
+        fragments.append(
+            layout.render_class_placeholder_section(layout.schema_file_path(module["module"]), orphan_classes)
+        )
+    if data_carrier_classes:
+        fragments.append(
+            layout.render_dataclass_section(layout.schema_file_path(module["module"]), data_carrier_classes)
+        )
+    directory_tree_fragment = "\n".join(fragments) if fragments else None
 
     return ModuleDesignResult(module=module["module"], interfaces=interfaces, directory_tree_fragment=directory_tree_fragment)
 
@@ -1649,6 +2005,7 @@ def _call_design_llm(
 - **目錄結構段（`_render_directory_lines()`）涵蓋 `schemas`／`models`**：驗證過同一組多 module 輸入，目錄結構段正確列出所有 `all_module_names` 的 `app/models/{module}.py`，以及僅 `modules_with_schema_file` 裡 module 的 `app/schemas/{module}.py`（沒有具名 schema 的 module 不會出現）——跟上一條 `related_files` 的判斷邏輯共用同一個集合，兩處不會對不上。
 - **多載方法不會共用同一份 openapi operation，且挑選依參數個數而非宣告順序**：一個 class 內兩個同名多載方法（`save(String)`／`save(String, Integer)`），只有一個掛了實際 endpoint 時，驗證過 `_select_boundary_overload()` 正確挑中參數個數跟 operation 更接近的那一個拿到 openapi 覆寫的參數/回傳型別，另一個正確退回機械型別對應（`String`→`str`／`Integer`→`int`），不會兩個都套用同一份 operation；刻意把兩個多載在 `overloads` 清單裡的宣告順序對調後重跑，選中的仍是參數個數較接近的那一個，確認不是「永遠選第一個」。
 - **多載方法的 `function_name` 消歧**（見 05a 四章）：直接呼叫 `_build_method_contexts()`（不 mock LLM，這段不涉及 Claude API）餵入一個 class 內三個同名多載方法（`voice(String)`／`voice(String, int)`／`voice(String, int, int)`），確認產出 `function_name` 依宣告順序分別是 `voice`／`voice_2`／`voice_3`，三者互不相同。
+- **孤兒類別／資料容器占位五分支判斷**（見 05a 三章「孤兒類別與資料容器占位」）：直接呼叫 `_design_module()`（`module["methods"]` 留空避免觸發 `_call_design_llm()`，不涉及真實 Claude API）餵入六種合成 Java 檔案，逐一驗證五個分支——`@Entity` 標記的類別完全不出現在 `directory_tree_fragment`、也不記警告（分支 1）；`@Data` 且欄位部分非 `final` 的類別正確渲染成一般 `@dataclass`、註解帶「偵測到 Lombok/JPA 資料標記」（分支 2）；`@Value` 且全部欄位 `final` 的類別正確渲染成 `@dataclass(frozen=True)`（分支 2）；既有的自訂例外類別（有建構子、無 Lombok 標記）確認優先序調整後仍正確走建構子占位段落、沒有被誤判進 dataclass 分支（分支 3，迴歸測試）；無 Lombok 標記但有欄位的類別正確渲染成 `@dataclass`、註解帶「無 Lombok 標記，依欄位宣告推斷」（分支 4）；無方法、無建構子、無欄位的類別只記一筆警告、不渲染任何段落（分支 5）；另外驗證 `methods` 非空的前置判斷本身——一個方法齊全、但剛好沒有欄位也沒有建構子的 `@RestController`（`unittest.mock.patch` 掉 `_call_design_llm()`，因為 router 方法一律 `needs_db_session_decision=True`，光留空 `module["methods"]` 無法避開 LLM 呼叫），確認其方法正確產出 `InterfaceSpec`、且不會被誤判進孤兒類別任何一個分支。詳見 `tests/design_agent/test_design.py`。
 
 ---
 
@@ -1659,9 +2016,10 @@ def _call_design_llm(
 ```python
 # design_agent/route_mapping.py
 """③ 架構設計 Agent：route_to_file_mapping／route_to_module_mapping 機械
-合併，對應 05a 八章全節（設計理由詳見該章）。完全是程式邏輯，不需要
-LLM——所有需要的資訊（`api_to_python_target` 的 endpoint↔module 對應、
-每個 module 的 `interfaces` 檔案集合）在六章都已經產出完畢。
+合併，對應 05a 八章全節（設計理由詳見該章，這裡不重複）。完全是程式
+邏輯，不需要 LLM——所有需要的資訊（`api_to_python_target` 的
+endpoint↔module 對應、每個 module 的 `interfaces` 檔案集合）在六章都
+已經產出完畢。
 """
 from __future__ import annotations
 
@@ -1680,21 +2038,36 @@ def normalize_path_key(http_method: str, endpoint: str) -> str:
     """對應 05a 八章「Key 格式」：**必須跟 02a `RouteMapper.
     normalize_path_key()` 的正規化結果完全一致**，否則 Harness 的比對
     會全部 miss。`endpoint` 是 openapi 的 path 樣板（如
-    `/api/v1/users/{userId}`）：
+    `/api/v1/users/{userId}`），逐字元處理，不是「切段、丟掉空字串、
+    再重組」：
 
     1. 去除開頭 `/`（只去開頭這一個，不動其他任何 `/`）
     2. 所有（剩下的）`/` 換成 `_`
-    3. 所有 `{paramName}` 樣板一律換成字面 `{id}`
+    3. 所有 `{paramName}` 樣板，不論原始參數名稱是什麼，一律換成字面
+       `{id}`——因為 `RouteMapper.normalize_path_key()` 是在**實際 URL**
+       上把「純數字/UUID」換成 `{id}`，並不知道原始參數名稱叫什麼，
+       兩邊要能精確匹配，這裡也必須捨棄參數名稱、統一用 `{id}`
 
     ```
     /api/v1/users/{userId} + GET  → GET_api_v1_users_{id}
     /api/v1/users/{userId}/profiles + GET → GET_api_v1_users_{id}_profiles
     ```
 
-    **刻意不用「切段、過濾空字串、重新 join」**：結尾多帶 `/` 的
-    endpoint 兩種寫法結果不同，必須跟 `refactor_harness/core/
-    route_mapper.py` 的 `RouteMapper.normalize_path_key()` 逐位元對齊
-    ——理由見 05a 八章「實作提醒」，這裡不重複。
+    **刻意不「切段、過濾空字串、重新 join」**：那種寫法會把結尾多帶
+    一個 `/` 的路徑（如 `/api/v1/users/`）跟不帶結尾 `/` 的版本
+    （`/api/v1/users`）normalize 成同一個 key（都是 `..._users`）。
+    但 `RouteMapper.normalize_path_key()`（`refactor_harness/core/
+    route_mapper.py`）拿到的 `url_parts` 是 Postman `request.url.path`
+    這個**已經切好的陣列**，它的邏輯只是逐段判斷數字/UUID、原樣
+    `"_".join(...)`，不會主動丟掉空字串——若 Postman 對一個結尾帶 `/`
+    的 URL 產出帶結尾空字串的 `path` 陣列，`RouteMapper` 那邊 join 出來
+    的 key 會帶著結尾底線（如 `GET_api_v1_users_`），若這裡先把它
+    filter 掉會兩邊對不上。因此這裡改成「只動開頭那一個 `/`、其餘
+    `/` 逐一換成 `_`」的字面規則，結尾/中間是否有多餘 `/` 兩邊都會
+    留下同樣的痕跡，才能保證跟 `RouteMapper` 的正規化結果位元對位元
+    一致——不是靠事後幫兩邊的 key 都做 trim 去湊出一致（trim 只在兩邊
+    都真的一致地被 trim 過才安全，這裡沒有把握 `RouteMapper` 那側也
+    會 trim，貿然單邊 trim 反而製造新的不一致）。
     """
     path = endpoint.removeprefix("/")
     path = path.replace("/", "_")
@@ -1707,9 +2080,9 @@ def build_route_mappings(
     interfaces: list[InterfaceSpec],
     modules_with_schema_file: set[str],
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """對應 05a 八章全節（`related_files` 的組成、`route_to_module_
-    mapping` 的存在理由，詳見該章，這裡不重複）。回傳
-    `(route_to_file_mapping, route_to_module_mapping)`——兩者共用同一個
+    """對應 05a 八章全節（`related_files` 的組成、route_to_module_mapping
+    的存在理由，詳見該章，這裡不重複）。回傳
+    `(route_to_file_mapping, route_to_module_mapping)`——共用同一個
     `normalize_path_key()` 迴圈一次產出，`route_to_module_mapping` 的值
     就是這筆 `ApiMapping.module` 本尊，不是新的判斷。
 
@@ -1753,17 +2126,14 @@ def write_route_mappings(
     LangGraph State，見 02a 十一章）。跟 `spec_node.py`／
     `collection_node.py` 呼叫的 `run_spec_agent()`／
     `run_collection_agent()` 一樣，檔案 I/O 副作用放在 Agent 自己的執行
-    過程裡完成，不留到流程末端另外用一個 Orchestrator 步驟去沖刷，這是
-    這個專案既有的一貫做法。
+    過程裡完成，不留到流程末端另外用一個 Orchestrator 步驟去沖刷。
 
     **兩個 key 必須在同一次讀寫回合裡一起覆寫**：`safe_load`／
-    `safe_dump` 是整檔 round-trip，若分兩次呼叫各自「讀取＋覆寫單一 key
-    ＋寫回」，後一次呼叫寫回的整份 config 不會包含前一次剛寫入的那個
-    key（除非前一次已經先落地到磁碟，但那樣仍多一次不必要的 I/O 且無法
-    原子化）。其餘段落（`databases`／`services`／`collections`／
-    `diff_rules`，這些是人工在 00 五章、02a 設定好的環境設定，不是③的
-    產出）讀進來後原樣保留、寫回去——`config/harness.yaml` 不是③獨佔的
-    檔案，是跟 Harness 共用的設定檔。
+    `safe_dump` 是整檔 round-trip，分兩次呼叫各自「讀取＋覆寫單一 key
+    ＋寫回」會讓後一次寫回的整份 config 蓋掉前一次剛寫入的那個 key。
+    其餘段落（`databases`／`services`／`collections`／`diff_rules`，這些
+    是人工在 00 五章、02a 設定好的環境設定，不是③的產出）讀進來後原樣
+    保留、寫回去。
 
     **已知限制**：用 PyYAML 的 `safe_load`／`safe_dump` 做「讀取＋覆寫＋
     寫回」，不是保留註解的 round-trip parser（如 `ruamel.yaml`）——
@@ -1902,7 +2272,6 @@ async def run(state: RefactorState) -> dict:
 - **`BigDecimal` → `Decimal` 只在非 API 邊界方法生效**：API 邊界方法改用 openapi_spec 決定型別，springdoc 對 `BigDecimal` 欄位通常序列化成通用 `number` type，沒有訊號能標示「這原本是 BigDecimal」，這個欄位的 API 邊界型別仍是 `float`，是既有設計原則（openapi_spec 為邊界方法唯一權威來源）下的既知落差（見 `type_mapping.map_java_type()` docstring）。
 - **`from __future__ import annotations` 只解決同檔案內的循環參照**：跨 `schemas/{module}.py` 檔案的循環 import（`user.py` 直接 `import` `order.py`、反之亦然）不會被這一行解決，需要 `TYPE_CHECKING` guard＋`model_rebuild()`，屬於④如何實際生成、串接檔案間 import 的問題，留給 07a／08a（皆待建立）處理（見 `layout.render_schema_section()` docstring）。
 - **巢狀具名 schema 只保證型別字串正確，不保證一定有對應的 class 定義**：`extract_schema_fields()` 對巢狀 `$ref`（如 `User` 的某個欄位是 `List[Order]`）能正確產出 `Order` 這個型別名稱（見 `type_mapping.openapi_type_to_python()` docstring「`$ref` 一律優先於其他判斷」），但 `collect_named_schemas()` 只收集 requestBody／2xx response 這兩個**頂層**具名 schema，不遞迴收集巢狀關聯到的 schema——若 `Order` 從未自己是任何 operation 的頂層 requestBody/response，`directory_tree` 的 Schema 定義段就不會有 `class Order(BaseModel):`，④只能看著一個沒有定義的型別名稱。刻意不做遞迴收集的原因：巢狀關聯到的 schema 可能屬於**另一個 module**（如 `Order` 屬於 order module、被 user module 的 `User` 引用），遞迴收集會把 `class Order` 錯誤地渲染進 user module 的 `schemas/user.py`，造成跨 module 定義重複或位置錯誤——這需要先決定「巢狀具名 schema 該歸哪個 module」（05a 沒有規範這件事），不是單純的機械收集問題，留待接上真實專案輸出、確認是否真的出現跨 module 巢狀引用後再設計。
-- **router 層方法目前沒有管道把 HTTP method／路徑帶給④**：`InterfaceSpec` 沒有欄位表達路由綁定，`api_to_python_target` 也沒有進到 `translator_cli.generate_scaffold(python_structure)` 這個既有介面（見 05a 九章「與④的邊界」）。這代表④骨架生成階段目前無法知道 router 函式該綁哪個 HTTP method／路徑，連帶「router 要不要設 `APIRouter(prefix=...)`」這類慣例也要等這個管道確定後才有意義討論。這不是③這次設計範圍內能解決的（`generate_scaffold()` 本身還是待補的 stub），已列入 `05a_design_agent_architecture.md` 十三章待決定事項，留給 07a／08a 設計時一併處理。
 - **三處 LLM 判斷點的 prompt 品質未經真實專案校準**：無 stereotype 類別的層級歸屬、框架注入物件轉換、`db: Session` 慣例注入，這三個 `prompts.py` 裡的判斷點目前只用合成範例驗證過契約可以正確跑通（見七章「已驗證」），實際判斷品質待接上真實 `lang-exam-api-refactor` 輸出後校準（延續 05a 十三章）。
 
 ---

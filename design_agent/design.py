@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 
 from common.concurrency import default_concurrency
+from common.java_annotations import DATA_CLASS_ANNOTATIONS, JPA_ENTITY_ANNOTATIONS
 from common.llm_client import LlmJsonError, call_claude_for_json
 from design_agent import layout, signature_scan, type_mapping
 from design_agent.exceptions import DesignAgentCoverageError, DesignAgentModuleError
@@ -456,26 +457,66 @@ def _design_module(
             seen_schema_names.add(schema_name)
             schema_class_fields.append((schema_name, type_mapping.extract_schema_fields(resolved_schema)))
 
-    # orphan class：class_signatures 裡有建構子、但沒有任何 InterfaceSpec
-    # 的 class_name 指向它——這批 class 完全不會被 contexts 迴圈碰到（見
-    # 上面 classes_needing_layer 的說明），若不另外處理，在 python_
-    # structure 裡會完全沒有任何痕跡。只處理「有建構子」的，沒有建構子
-    # 也沒有一般方法的 class 沒有任何機械事實可以講，不強行渲染一段
-    # 空內容（見 layout.render_class_placeholder_section() docstring）。
+    # orphan class：class_signatures 裡沒有任何 InterfaceSpec 的 class_name
+    # 指向它——這批 class 完全不會被 contexts 迴圈碰到（見上面
+    # classes_needing_layer 的說明），若不另外處理，在 python_structure
+    # 裡會完全沒有任何痕跡。依機械事實分五種情況處理（見 05a 三章「孤兒
+    # 類別／資料容器占位」判斷優先序，理由見 common/java_annotations.py
+    # docstring）：
+    #   1. @Entity（含 @Embeddable/@MappedSuperclass）→ 跳過，DB schema
+    #      欄位規格是④的職責（05a 九章），不是③要處理的範圍
+    #   2. 有 Lombok/JPA 資料標記 → 渲染 dataclass（欄位為主，高信心）
+    #   3. 有建構子（現有 AuthException 案例，順序與行為不變）→ 渲染
+    #      建構子占位
+    #   4. 有欄位、無標記（低信心推斷）→ 渲染 dataclass
+    #   5. 什麼都沒有 → 只記警告，不渲染空段落
+    # 已經出現在 seen_schema_names（API 邊界 openapi 展開產出的 schema
+    # 名稱）的 class 一併排除，避免同一個型別被兩種機制各渲染一次。
     known_classes = frozenset(class_signatures)
     covered_class_names = {iface["class_name"] for iface in interfaces if iface["class_name"]}
-    orphan_classes = [
-        (
-            name,
-            sig.file_path,
-            [
-                [(p.name, type_mapping.map_java_type(p.java_type, known_classes)) for p in ctor.params]
-                for ctor in sig.constructors
-            ],
-        )
-        for name, sig in class_signatures.items()
-        if name not in covered_class_names and sig.constructors
-    ]
+    orphan_classes: list[tuple[str, str, list[list[tuple[str, str]]]]] = []
+    data_carrier_classes: list[tuple[str, str, bool, list[tuple[str, str]], str]] = []
+
+    def _data_carrier_entry(
+        sig: JavaClassSignature, confidence_note: str
+    ) -> tuple[str, str, bool, list[tuple[str, str]], str]:
+        frozen = bool(sig.fields) and all(f.is_final for f in sig.fields)
+        fields = [(f.name, type_mapping.map_java_type(f.java_type, known_classes)) for f in sig.fields]
+        return (sig.class_name, sig.file_path, frozen, fields, confidence_note)
+
+    for name, sig in class_signatures.items():
+        # 這整棵決策樹的前提是「methods 為空清單」（見本函式上方註解、
+        # 05a 三章「孤兒類別與資料容器占位」開頭）。單靠 covered_class_
+        # names 判斷「已處理過」不夠：routers 層的 InterfaceSpec.
+        # class_name 一律是 None（05a 七章既有規則），covered_class_names
+        # 因此永遠不會包含 router 類別的真實 class name，若不額外檢查
+        # sig.methods，一個正常、方法齊全的 @RestController（如只是剛好
+        # 沒有 constructor／field 的無狀態 Controller）會被誤判成孤兒
+        # 類別，嚴重時甚至把它渲染成錯誤的 dataclass 段落。
+        if sig.methods or name in covered_class_names or name in seen_schema_names:
+            continue
+        annotation_set = set(sig.annotations)
+        if annotation_set & JPA_ENTITY_ANNOTATIONS:
+            continue
+        if annotation_set & DATA_CLASS_ANNOTATIONS:
+            data_carrier_classes.append(_data_carrier_entry(sig, "偵測到 Lombok/JPA 資料標記"))
+        elif sig.constructors:
+            orphan_classes.append((
+                name,
+                sig.file_path,
+                [
+                    [(p.name, type_mapping.map_java_type(p.java_type, known_classes)) for p in ctor.params]
+                    for ctor in sig.constructors
+                ],
+            ))
+        elif sig.fields:
+            data_carrier_classes.append(_data_carrier_entry(sig, "無 Lombok 標記，依欄位宣告推斷"))
+        else:
+            logger.warning(
+                "module %s 的類別 %s 沒有方法、建構子、欄位，也沒有被任何 InterfaceSpec 覆蓋，"
+                "略過（05a 三章孤兒類別判斷：沒有任何機械事實可渲染）",
+                module["module"], name,
+            )
 
     fragments: list[str] = []
     if schema_class_fields:
@@ -483,6 +524,10 @@ def _design_module(
     if orphan_classes:
         fragments.append(
             layout.render_class_placeholder_section(layout.schema_file_path(module["module"]), orphan_classes)
+        )
+    if data_carrier_classes:
+        fragments.append(
+            layout.render_dataclass_section(layout.schema_file_path(module["module"]), data_carrier_classes)
         )
     directory_tree_fragment = "\n".join(fragments) if fragments else None
 

@@ -33,7 +33,7 @@
 | `openapi_spec` | State，[A] 產出 | 完整 OpenAPI 3.0 JSON；③ 是第一個真正讀取 `paths.*.parameters`／`requestBody`／`responses`／`components.schemas` 的 Agent——00 七章備註「① 不解析 request/response schema」，這份工作由③承接 |
 | Java 原始碼（`module_list[*].java_files` 指向的檔案） | `java_project_path` | 見四章：③ 需要精確的方法簽名，① 沒有提供，③ 對每個 module 的 `java_files` 做輕量再掃描取得 |
 
-> **為什麼 `module_list.methods` 不夠、③ 要重新碰 Java 原始碼**：04a 的 `MethodInfo` 有 `java_method`／`class_name`／`description`／`complexity`，但沒有 `params`／`return_type` 這種精確到型別的簽名資訊，這是刻意的邊界（① 的職責是「這個方法在做什麼、多複雜、屬於哪個 class」，不是「精確簽名」）。`class_name` 是後來補上的欄位——同一個 module 內常見跨層同名方法（如 `UserService.getById()` 與 `UserRepository.getById()`），沒有這個欄位，③ 重新掃描 Java 簽名時無法把 `MethodInfo` 比對回正確的類別（見四章）。但③要產出的 `InterfaceSpec` 還是需要 `params`／`return_type`，若交給 Claude 憑 `description` 這段文字自由心證去猜參數型別，等於让 LLM 在完全不必要的地方憑空生成、增加幻覺風險——這正是可以「用程式判斷」的情況（00 二章），不該交給 LLM。
+> **為什麼 `module_list.methods` 不夠、③ 要重新碰 Java 原始碼**：04a 的 `MethodInfo` 有 `java_method`／`class_name`／`description`／`complexity`，但沒有 `params`／`return_type` 這種精確到型別的簽名資訊，這是刻意的邊界（① 的職責是「這個方法在做什麼、多複雜、屬於哪個 class」，不是「精確簽名」）。`class_name` 這個欄位的必要性：同一個 module 內常見跨層同名方法（如 `UserService.getById()` 與 `UserRepository.getById()`），沒有這個欄位，③ 重新掃描 Java 簽名時無法把 `MethodInfo` 比對回正確的類別（見四章）。但③要產出的 `InterfaceSpec` 還是需要 `params`／`return_type`，若交給 Claude 憑 `description` 這段文字自由心證去猜參數型別，等於讓 LLM 在完全不必要的地方憑空生成、增加幻覺風險——這正是可以「用程式判斷」的情況（00 二章），不該交給 LLM。
 
 **方法對應到 API 邊界的判定**：一個方法是否為「API 邊界方法」（router 層、直接對應某個 endpoint），由 `api_to_python_target` 反查：`java_controller` 相同、且方法名與三章步驟 5（04a）建立的 `endpoint_key → method_id` 精神一致的方法即為邊界方法。實際比對交由③自己對 Java 原始碼再掃描時一併判斷（見四章），不重新依賴 04a 內部、未落地到 State 的 `ParsedProject`——04a 的呼叫圖／route index 是 `parse_agent` 內部的暫存資料，執行完就丟棄，不會留到③這一步。
 
@@ -67,7 +67,7 @@ app/
 **格式慣例（機械產生，固定格式，不是自由文字）**：`directory_tree` 字串固定分三段——
 
 1. **目錄結構段**：純文字樹狀圖（如本章開頭範例），列出所有檔案路徑
-2. **Schema 定義段**：每個 `schemas/{module}.py` 各自一段（見上方「models/{module}.py 不在這裡產出」），用固定的 `### {file_path}` 標題起頭，緊接著一個 `python` fenced code block，內容是機械渲染出的 pseudocode（欄位名＋型別，一行一個欄位）——一律標成 `(BaseModel)` 並帶 `from pydantic import BaseModel`，讓④能直接辨識這是 Pydantic model、不用自己猜測要不要補繼承。`Field` 的 import 視內容需要才加：只有這個檔案裡任一欄位真的用到下方「有驗證限制的欄位改用 `Field(...)`」渲染出 `Field(...)` 時，才在 import 行加上 `Field`（`from pydantic import BaseModel, Field`），沒有任何欄位帶驗證限制時維持只 import `BaseModel`，不無條件多帶一個用不到的名稱。例如 `app/schemas/user.py` 會渲染成：
+2. **Schema 定義段**：每個 `schemas/{module}.py` 各自一段（見上方「models/{module}.py 不在這裡產出」）。同一個檔案路徑底下實際上可能疊加三種不同來源的內容——API 邊界 schema（本節）、建構子占位、資料容器占位（後兩者見下方「孤兒類別與資料容器占位」小節）——彼此各自是獨立的 `### {file_path}` + `python` code block，依「這個 module 有沒有對應內容」各自決定要不要出現，不是三選一。API 邊界 schema 部分：用固定的 `### {file_path}` 標題起頭，緊接著一個 `python` fenced code block，內容是機械渲染出的 pseudocode（欄位名＋型別，一行一個欄位）——一律標成 `(BaseModel)` 並帶 `from pydantic import BaseModel`，讓④能直接辨識這是 Pydantic model、不用自己猜測要不要補繼承。`Field` 的 import 視內容需要才加：只有這個檔案裡任一欄位真的用到下方「有驗證限制的欄位改用 `Field(...)`」渲染出 `Field(...)` 時，才在 import 行加上 `Field`（`from pydantic import BaseModel, Field`），沒有任何欄位帶驗證限制時維持只 import `BaseModel`，不無條件多帶一個用不到的名稱。例如 `app/schemas/user.py` 會渲染成：
 
    > `### app/schemas/user.py`
    > ```python
@@ -83,6 +83,22 @@ app/
 
    每個 `schemas/{module}.py` 段落固定以 `from __future__ import annotations` 起頭：Java entity／DTO 常見雙向關聯（如 `User` 含 `List[Order]`、`Order` 又含 `User`），轉成 Pydantic model 若兩個類別分屬不同 `schemas/{module}.py`，逐字面型別註記在模組載入當下就需要對方已經定義完成，容易撞上循環問題。這一行讓型別註記延遲求值（PEP 563），可以化解**同一個檔案內**的循環參照；跨檔案的循環 import（`schemas/user.py` 直接 `import` `schemas/order.py`、反之亦然）不會被這一行解決——那需要 `TYPE_CHECKING` guard 的匯入寫法＋明確呼叫 `model_rebuild()`，屬於④如何實際生成、串接檔案間 import 的問題，不是③這裡的 pseudocode 渲染能單獨解決的，留給 `07a_translator_cli_architecture.md`／`08a_scaffold_agent_architecture.md`（兩者皆待建立）處理。
 3. **基礎設施段**：`app/main.py`／`app/core/database.py` 各自一段，格式與 Schema 定義段相同（`### {file_path}` + `python` code block），內容見下方「全域基礎設施檔案」。
+
+### 孤兒類別與資料容器占位（機械產生，僅類別歸屬層級判斷需要 LLM）
+
+**觸發情境**：六章 `classes_needing_layer` 只問「有一般方法」的無 stereotype 類別要歸哪一層（見六章「單一 module 呼叫內容」）——一個 class 若 `methods` 是空清單，永遠不會有任何方法被追蹤、也永遠不會產生 `InterfaceSpec`，若不另外處理，這批 class 在 `python_structure` 裡會完全沒有任何痕跡，④／⑤下游不會被告知要建立對應的 Python 定義。`methods` 為空清單常見於兩種情況：**自訂例外類別**（Java 端只有建構子、沒有一般方法）、以及 **Lombok 標記的資料類別**（`@Data`／`@Value`／`@Getter`／`@Setter` 等由 annotation processor 在編譯期生成 getter/setter，javalang 是純原始碼解析器，結構上看不到這些生成的方法，即使類別欄位齊全，`methods` 一樣是空清單）。
+
+**判斷優先序**（對每個 `methods` 為空清單、沒被任何 `InterfaceSpec` 覆蓋、且 class 名稱沒有出現在這個 module 已收錄的 API 邊界 schema 名稱裡的 class，依序判斷，命中即停止）：
+
+`methods` 是否為空清單是唯一的前置條件，不是 `stereotype`——`routers` 層（`@RestController`）的 `InterfaceSpec.class_name` 依七章規則一律是 `None`，光憑「有沒有被 `InterfaceSpec` 覆蓋」判斷不出一個方法齊全的 Controller 是否已經處理過；`methods` 非空直接代表這個 class 已經（或即將）透過 `InterfaceSpec` 產出，不該再進這個分支——一個正常、方法齊全的 `@RestController`（尤其是剛好沒有欄位、沒有建構子的無狀態 Controller）若略過這個檢查，會被誤判成孤兒類別，嚴重時甚至被誤渲染成錯誤的 `dataclass` 段落。
+
+1. **標註 `@Entity`／`@Embeddable`／`@MappedSuperclass`（見 `common/java_annotations.JPA_ENTITY_ANNOTATIONS`，00 六章「Java class annotation 判斷（共用工具）」）→ 跳過，不渲染任何段落**。DB schema 欄位層級規格不是③的職責（見九章、`app/models/{module}.py` 說明），這批類別的欄位定義由④直接從既有 Postgres 測試 DB 或 Java entity 原始碼取得，③在這裡渲染反而會跟九章的既有分工衝突。
+2. **標註任一 Lombok／JPA 資料類別 annotation（見 `common/java_annotations.DATA_CLASS_ANNOTATIONS`）→ 渲染成 Python `dataclass`**：不用 Pydantic `BaseModel`（那個保留給 API 邊界契約，來源是 `openapi_spec` 展開，見五章），也不用 SQLAlchemy model（那是④的職責，理由同上一點）——`dataclass` 沒有隱含驗證行為、也不綁定 ORM 語意，是「純粹當籃子傳接值」在 Python 端最直接的對應。欄位是否全部標註 `final`（javalang 看得到的欄位修飾字，不需要另外偵測 Lombok 是不是用了 `@Value` 這類特定的不可變 annotation）決定渲染成 `@dataclass(frozen=True)` 還是一般 `@dataclass`。
+3. **有建構子（不論有沒有 Lombok 標記）→ 渲染建構子占位段落**：格式沿用既有的「只列建構子簽名，不假設任何 Python 基底類別」慣例（常見案例：自訂例外類別，如 `AuthException` 只有 `AuthException(String message)` 這種建構子，實際該對應 `Exception` 子類別或其他寫法，交由④／⑤依 Java 原始碼自行判斷）。
+4. **無 Lombok 標記、但有欄位宣告 → 渲染成 `dataclass`**，跟第 2 點格式相同，只是這是機械推斷（沒有 annotation 這種明確信號，純粹因為原始碼裡有 public/private 欄位、沒有方法也沒有建構子），渲染出的註解會標明「無 Lombok 標記，依欄位宣告推斷」，供人工核對時追溯這是高信心（Lombok 標記）還是低信心（純欄位推斷）判斷。
+5. **什麼都沒有（無 annotation、無建構子、無欄位）→ 只記一筆警告，不渲染任何段落**——沒有任何機械事實可以講，不強行渲染空內容。
+
+第 2／4 點渲染出的 `dataclass` 段落跟 Schema 定義段共用同一個 `schemas/{module}.py` 檔案路徑與既有的 `### {file_path}` + `python` code block 格式慣例，不是新的檔案分類——這代表七章 `interfaces` 涵蓋率規則、`06a_plan_agent_architecture.md` 七章 `target_files` 組裝規則裡「本 module 的 `schemas/{module}.py`（若存在）」這條既有規則自動涵蓋這批新內容，不需要 [P] Plan Agent 或任何下游文件跟著改。
 
 ### 全域基礎設施檔案（機械產生，不需 LLM，不產生 InterfaceSpec）
 
@@ -391,7 +407,8 @@ refactor-project/
 
 - [ ] **03a/03c 遷移至 `common/openapi_ref_resolver.py`**：五章已定案③新增的 `$ref` 展開邏輯直接對齊 `common/openapi_ref_resolver.py` 這個共用介面，但 03a/03c 既有實作尚未搬過去共用，目前是兩份行為相同、程式碼各自獨立的實作——後續應把 03a/03c 改成呼叫同一個 `common` 函式，避免長期維護兩份，不在③本次設計範圍內執行
 - [ ] 無 stereotype 類別的層級歸屬（三章）、框架注入物件轉換（五章）、框架慣例參數注入（七章）這三處「LLM 判斷」的實際 prompt 設計與品質，待接上真實專案輸出後校準
-- [ ] `directory_tree` 的 Schema 定義段／基礎設施段（三章）固定格式在 08a 設計 `generate_scaffold()` 實際解析方式時，需要反向確認本地模型（qwen2.5-coder:32b）對這個格式的辨識穩定度是否足夠，必要時調整 fenced code block 的標記慣例
+- [ ] `directory_tree` 的 Schema 定義段／基礎設施段／孤兒類別與資料容器占位段（三章）固定格式在 08a 設計 `generate_scaffold()` 實際解析方式時，需要反向確認本地模型（qwen2.5-coder:32b）對這個格式的辨識穩定度是否足夠，必要時調整 fenced code block 的標記慣例
+- [x] ~~孤兒類別／資料容器占位判斷優先序（三章）的第 2 分支（Lombok 標記）尚未接上真實 `lang-exam-api-refactor` 專案驗證~~——已對真實專案跑過，`LanguageRq`／`GetRandomQuestionsRq`／`TypePartRq` 等多個真實 DTO 正確渲染成 `dataclass`、標註「偵測到 Lombok/JPA 資料標記」，`common/java_annotations.DATA_CLASS_ANNOTATIONS` 這份清單涵蓋了這個專案實際用到的 Lombok annotation，沒有出現漏判。**第 4 分支（無 Lombok 標記、純欄位低信心推斷）這次沒有真實案例觸發**，這個專案的資料容器類別都有標註 Lombok annotation，仍待遇到真的沒標註的專案才能驗證這條路徑
 - [x] ~~router 層方法目前沒有任何管道把 HTTP method／路徑帶給④~~——已解決，見五章「router 層 API 邊界方法額外帶 http_method／route_path」與九章型別定義
 
 ---

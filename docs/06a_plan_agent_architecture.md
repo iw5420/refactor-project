@@ -95,6 +95,8 @@ Harness 端 `get_module()` 與 `ModuleInfo.module` 之間過去確實存在既�
 
 **用量記錄**：一律經由 `common/llm_client.py` 的 `call_claude_for_json()`，不自行重新實作（見 00 六章）。
 
+**`max_tokens`**：不沿用 `common/llm_client.DEFAULT_MAX_TOKENS`（4096），[P] 自己在 `llm.py` 算一個 `PLAN_AGENT_MAX_TOKENS` 常數（環境變數可調，預設 `8192`）——04a／05a 的輸出是精簡的分類／抽取型結果，[P] 每個 task 都帶完整業務描述／context／依賴清單，輸出密度不是同一個量級。已對真實 `lang-exam-api-refactor` 專案最大的 module（`exam`，27 個 interfaces）驗證過：4096 會讓回應在 JSON 字串中間被截斷（`Unterminated string`），觸發上面「失敗處理」的中止流程；改成 8192 後同一個 module 實際只用了 4,796 output token，順利完成，見 00 六章「Claude API 呼叫封裝」。
+
 ---
 
 ## 六、`task.depends_on` 組裝（同 module 內排序）
@@ -144,11 +146,15 @@ class TaskSpec(TypedDict):
     target_files: list[str]
     context: str
     depends_on: list[str]
+    class_name: NotRequired[str | None]
+    function_name: NotRequired[str]
 ```
 
 **`id` 產生規則**：全部 task 依「module（依 `module_list` 原始順序）→ 層級（`repositories`／`services`／`routers`）→ `function_name` 字母序」的固定全序（即六章防環規則用的同一套全序）依序編號 `task_{:03d}`——沿用同一套排序，除了編號穩定、可重現（同一份輸入重跑會產生同樣的 id 分配，方便除錯與比對），也不需要為編號另外設計第二套排序邏輯。
 
-**涵蓋率驗證（機械，收尾步驟）**：`task_list` 產出後，驗證每個 `InterfaceSpec` 都被恰好一個 task 認領——組裝階段的內部草稿仍保有五章原樣抄回的 `file_path`／`class_name`／`function_name` 三元組，據此核對是否恰好覆蓋 `python_structure.interfaces` 全集且無重複認領；最終序列化進 `TaskSpec.target_files[0]` 的只是其中的 `file_path`，`class_name`／`function_name` 不落地進最終輸出。任何缺漏或重複視為 [P] 自己組裝邏輯的 bug，直接拋出中止——不是需要人工判斷的模糊情況，是程式該保證但沒保證到的不變量。
+**涵蓋率驗證（機械，收尾步驟）**：`task_list` 產出後，驗證每個 `InterfaceSpec` 都被恰好一個 task 認領——組裝階段的內部草稿仍保有五章原樣抄回的 `file_path`／`class_name`／`function_name` 三元組，據此核對是否恰好覆蓋 `python_structure.interfaces` 全集且無重複認領。任何缺漏或重複視為 [P] 自己組裝邏輯的 bug，直接拋出中止——不是需要人工判斷的模糊情況，是程式該保證但沒保證到的不變量。
+
+**`class_name`／`function_name` 落地進最終輸出**（修正：原訂「不落地」，見 `07a_translator_cli_architecture.md` 五章「為什麼 `fill_function` 需要 `class_name`／`function_name`」）：`target_files[0]` 只是路徑字串，但同一個檔案（尤其 `routers`／`services`／`repositories` 三層檔案）正常會有多個函式、對應多個不同的 task——translator-cli 的 `fill_function()`（⑤ 的填空模式）執行期需要靠 `(class_name, function_name)` 才能在同一個檔案裡精準定位這次要填的是哪一個函式，只有 `target_files[0]` 這個檔案路徑不夠。這兩個欄位在組裝階段本來就已經算好（就是上一段涵蓋率驗證用的同一個三元組），直接一併寫進 `TaskSpec` 即可，不影響 `depends_on`／`target_files` 組裝或涵蓋率驗證本身的任何演算法。
 
 ---
 
@@ -194,7 +200,7 @@ refactor-project/
 
 ## 十二、待決定事項
 
-- [ ] 五章 LLM 判斷「函式呼叫關係」的 prompt 設計與品質，待接上真實③輸出後校準——尤其 `routers` 層 `class_name=None` 時，LLM 能否穩定從 `function_name`／描述語意配對回正確的 Java method，需要真實案例驗證
+- [ ] 五章 LLM 判斷「函式呼叫關係」的 prompt 設計與品質：已對真實 `lang-exam-api-refactor` 專案完整跑過（2026-08-08、6 個 module／72 個 interface，完整紀錄見 `06b_plan_agent_code.md` 五章「已驗證」），涵蓋率驗證通過，`routers` 層 `class_name=None` 的案例（如 `ExamController.search`／`saveAnswer`）也正確配對回對應的 Java method；但只抽查過部分 task，`referenced_interfaces` 語意判斷的整體準確率沒有逐筆核對，這部分仍待累積更多真實案例評估
 - [ ] 七章「`routers` 層一律納入 `schemas/{module}.py`」是否過度保守（每個 router task 都多帶一個檔案）：若目標專案 schema 檔案體積偏大，可能需要改成依 `referenced_interfaces` 精算實際用到的 schema class，屬於效能／成本 vs. 保守精準度的取捨，待接上真實專案規模評估
 - [x] ~~③輸出若違反「同 class／檔案內函式名稱唯一」的隱含假設，三章的 1:1 映射與四章反查會失效~~——**已在 05a／05b 上游修正，不是 [P] 該擋的事**：Python 不支援多載，若③對兩個 Java 多載方法各自產出同一檔案／同一 class 下同名的 `InterfaceSpec`，本質是③輸出的正確性缺陷（連④要建立骨架都會撞名，不只是 [P] 的識別鍵歧義），不該留給下游每個消費者各自防禦。05a 四章現已明訂：③對同一組多載依宣告順序消歧，第一個保留原名，第二個起加 `_2`／`_3`……（比照 04a 三章 springdoc `voice`／`voice_1` 前例），`05b` `_build_method_contexts()` 已實作並驗證（見 05b 七章「已驗證」）。[P] 因此可以放心信任 `python_structure.interfaces` 內 `(file_path, class_name, function_name)` 三元組唯一——`06b` 仍值得保留一道機械檢查當 defense-in-depth（理論上不該觸發，觸發代表 05a 的消歧邏輯本身出了 bug，而不是正常會發生的輸入情況），但不再是「用來擋一個已知會發生的上游缺陷」，純粹是最後一道防線
 - [x] ~~05a 十三章「router 層方法目前沒有任何管道把 HTTP method／路徑帶給④」的缺口，是否該由 [P] 把 `api_to_python_target` 的 HTTP method／路徑塞進 `task.context` 來補~~——**評估後確認不該由 [P] 補，這不是 06a 的範圍，也解不了問題**：`@router.get(...)` 裝飾器屬於函式**骨架**的一部分，由④（`generate_scaffold()`）產生；`task_list` 只餵給⑤的 `fill_function()`，只填函式本體、用 AST 插入，不碰裝飾器或簽名。更根本的是 00 一章的流程圖：`[P]` 與 `④` 是**平行分支**，兩者都只依賴③的輸出、互不依賴，[P] 執行當下不知道④在做什麼，[P] 的輸出也從不流向④。即使把 HTTP method／路徑寫進 `task.context`，這筆資料要到⑤才會被讀到，但④早已把骨架（含裝飾器有無）定案，時間點上也救不了；⑤更沒有管道去改裝飾器。缺口本身已在 05a 五章／九章解決。結論不變：不需要 06a 二章讀 `api_to_python_target`
