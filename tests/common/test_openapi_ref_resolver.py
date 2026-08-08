@@ -1,5 +1,9 @@
-"""openapi_refs.py 的假資料單元測試（見 docs/03c_collection_agent_code.md）。"""
-from spec_collection_agent.openapi_refs import resolve_refs
+"""openapi_ref_resolver.py 的假資料單元測試。原為 spec_collection_agent
+內部各自實作的測試（見 docs/03c_collection_agent_code.md），[B] Collection
+Agent 遷移至共用實作後一併搬到這裡，見 00 六章「OpenAPI `$ref` 展開
+（共用工具）」、05a 十三章已解決事項。
+"""
+from common.openapi_ref_resolver import resolve_refs
 
 
 class TestResolveRefs:

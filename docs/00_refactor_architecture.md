@@ -99,9 +99,9 @@ Orchestrator 是**純 Python 程式邏輯，不是 Agent**。
 | 任務 | 模型 | 位置 | 理由 |
 |---|---|---|---|
 | 解析、規劃、設計、Debug | Claude API | 雲端 | 擅長理解需求、設計拆分、複雜推理 |
-| 程式碼實作 | qwen2.5-coder:32b | 另一台 Mac（本地） | 省費用，程式碼任務重複性高 |
+| 程式碼填空實作（⑤，見七/⑤） | qwen2.5-coder:32b | 另一台 Mac（本地） | 省費用，程式碼任務重複性高。④ 的骨架生成純機械產生、不呼叫本地模型（見七/④、`07a_translator_cli_architecture.md` 四章），這一列只涵蓋⑤的「填空模式」 |
 
-> **硬體限制**：該機器跑單一 qwen2.5-coder:32b 已達飽和，無法水平擴展成多實例。因此 Agent ④/⑤ 對本地模型的**實際生成請求需序列化（併發數=1）**，LangGraph 排程層仍可讓多個 task 同時處於就緒佇列以保留彈性，但不代表平行會讓總耗時變短——詳見七/⑤。
+> **硬體限制**：該機器跑單一 qwen2.5-coder:32b 已達飽和，無法水平擴展成多實例。因此 Agent ⑤ 對本地模型的**實際生成請求需序列化（併發數=1）**，LangGraph 排程層仍可讓多個 task 同時處於就緒佇列以保留彈性，但不代表平行會讓總耗時變短——詳見七/⑤。
 >
 > **排程順序**：module 間的依賴關係直接沿用 Agent ① `module_list` 的「依賴的其他模組」欄位，排程時優先讓同一 module 的 task 連續完成並通過局部驗證後，才釋放依賴它的下游 module——避免上游局部驗證 fail 時，下游已完成的產物一併作廢，回滾成本過高。
 
@@ -273,7 +273,7 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 `[B] Collection Agent`（見 03a）與 `③ 架構設計 Agent`（見 05a 五章）都需要對 `openapi_spec` 的 operation/schema 片段做同一件事：遞迴展開 `$ref`，只展開這次任務相關的片段（不整包攤平 `components.schemas`），遞迴展開到底，不處理 `allOf`／`oneOf`／`anyOf` 組合語法。跟前兩節同一種情況——兩個 Agent 需要的是同一份機械邏輯，不是恰好想法一致，因此集中到 `common/openapi_ref_resolver.py`：
 
 - `common/openapi_ref_resolver.resolve_refs(fragment: dict, full_spec: dict) -> dict`：唯一對外函式，`fragment` 是呼叫端已取出的 operation/schema 片段，`full_spec` 是完整 `openapi_spec`（供 JSON Pointer 解析用）
-- **現況**：`③` 是第一個直接對齊這個共用介面的 Agent；`[B]`（03a/03c）目前仍是 `spec_collection_agent` 內部各自的展開實作，尚未遷移過去共用，屬於已知的技術債，見 `05a_design_agent_architecture.md` 十三章待決定事項
+- **現況**：`③`／`[B]`（03a/03c）皆已直接呼叫 `common/openapi_ref_resolver.py`；`spec_collection_agent` 原本各自獨立的展開實作（`openapi_refs.py`）已刪除，見 `05a_design_agent_architecture.md` 十三章已解決事項
 
 ### Java class annotation 判斷（共用工具）
 
@@ -359,10 +359,12 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 ---
 
-### ④ 骨架實作 Agent（translator-cli + qwen2.5-coder:32b）
+### ④ 骨架實作 Agent（translator-cli）
 
 依 Agent ③ 的目錄結構與 interface 定義，建立目錄、base class、router 骨架、config、DB schema，不含業務邏輯。骨架階段產出的函式簽名，是 Agent ⑤ 呼叫 translator-cli 時「填空」的目標。
 
+> **不呼叫本地模型**：`generate_scaffold()`（骨架生成模式）是同步、確定性的機械組裝，`PythonStructure` 送到這一步時已經是結構化、無歧義的資料，不需要模型判斷或創造——這點原本的假設（骨架生成也呼叫 qwen2.5-coder:32b）已在 `07a_translator_cli_architecture.md` 四章修正，只有⑤的「填空模式」`fill_function()` 才真的呼叫本地模型（見七/⑤）。DB schema 內容由④自行從既有 DB 或 Java entity 取得、封裝成 `db_models` 傳給 `generate_scaffold()`（見 07a 四章），這一步同樣是機械讀取，不需要模型。
+>
 > 與 [P] Plan Agent 平行執行，兩者都完成後才進入 Agent ⑤。
 
 ---
@@ -436,6 +438,7 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 ## 十、待決定事項
 
 - [ ] translator-cli 的 git commit 顆粒度與平行寫入的鎖機制，細節待 `07a_translator_cli_architecture.md` 定案
+- [ ] **`skipped_interfaces`（④ 骨架生成，見 07a 四章）與 [P] Plan Agent 涵蓋率保證（06a 三章「強制 1:1 涵蓋率」）之間的結構性缺口**：[P] 與④是平行分支（見一章流程圖，兩者都只依賴③的輸出、互不依賴），[P] 拆 task 時**結構上看不到**④實際跳過了哪些 `InterfaceSpec`——若④因型別字串殘留問題（07a 四章「已知殘留限制」）跳過某個介面，[P] 仍會照常為它產生 task，這個缺口要到⑤呼叫 `fill_function()` 時才會在「AST 定位失敗：scaffold/task 不一致」這一步爆出來，訊息看起來像⑤的實作問題，根因其實在④。真實觸發機率極低（05a Layer 1/2 型別修正後，唯一已知殘留案例是這個專案沒出現過的萬用字元泛型，見 07a 四章），不建議為此打破 [P]/④ 平行執行縮短關鍵路徑的既有設計（那需要改一章流程圖與 01 的圖結構，代價遠高於效益）。**建議落點**：08a 決定 `skipped_interfaces` 是否要進 `RefactorState`（07a 十二章已把這題留給 08a）；06a 補一條「已知例外」，說明「AST 定位失敗：scaffold/task 不一致」這個特定錯誤代表的是④的 scaffold 缺口、不是⑤的實作錯誤；09a／⑦ Debug Agent（皆待建立）據此把這種失敗歸類成「回頭找④」而非「回頭找⑤」的訊號
 
 ---
 

@@ -273,7 +273,7 @@ class RefactorState(TypedDict):
 | `debug` | ⑦ Debug Agent | Claude API | `graph/nodes/debug_node.py` |
 | `give_up` | — | 程式邏輯 | `graph/nodes/give_up_node.py` |
 
-> **`scaffold` 與 `implement` 呼叫 translator-cli 的兩種不同模式，不是同一支 API**：`implement`（⑤）用「填空模式」`fill_function()`——目標檔案與空函式簽名已存在，模型只回傳單一函式本體，用 AST 插入。`scaffold`（④）從無到有建立目錄、檔案、class、空函式簽名，沒有既有結構可插入，因此呼叫另一個「骨架生成模式」介面（如 `translator_cli.generate_scaffold(python_structure)`，整檔輸出）。精確介面定義見 `07a_translator_cli_architecture.md`，這裡先釘死「不是同一個契約」，避免誤用 `fill_function()` 處理不存在的檔案。
+> **`scaffold` 與 `implement` 呼叫 translator-cli 的兩種不同模式，不是同一支 API**：`implement`（⑤）用「填空模式」`fill_function()`——目標檔案與空函式簽名已存在，模型只回傳單一函式本體，用 AST 插入。`scaffold`（④）從無到有建立目錄、檔案、class、空函式簽名，沒有既有結構可插入，因此呼叫另一個「骨架生成模式」介面（如 `translator_cli.generate_scaffold(python_project_path, python_structure, db_models=None)`，整檔輸出）。精確介面定義見 `07a_translator_cli_architecture.md`，這裡先釘死「不是同一個契約」，避免誤用 `fill_function()` 處理不存在的檔案。
 
 ---
 

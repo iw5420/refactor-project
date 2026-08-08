@@ -156,7 +156,7 @@ npx openapi-to-postmanv2 -s <openapi.json 路徑> -o <輸出路徑> -p
 
 **對既有機制的影響**：展開後的 payload 通常比展開前大（尤其被多個 operation 共用的 schema），鏈式依賴偵測既有的 `_chunk_operations()` 字元數分批機制本來就是在最終 payload 內容上算大小，不需要改動計算邏輯本身，但 `_MAX_CHARS_PER_MAP_CHUNK` 這個門檻值因此更需要拿真實資料重新評估（見七章待決定事項）。
 
-→ 實作見：`spec_collection_agent/openapi_refs.py`（`03c_collection_agent_code.md`），人工填值模板產生與鏈式依賴偵測 map 階段共用。
+→ 實作見：`common/openapi_ref_resolver.py`（`03c_collection_agent_code.md` 零章、`05b_design_agent_code.md` 零章），人工填值模板產生與鏈式依賴偵測 map 階段共用；與 ③ 架構設計 Agent 共用同一份實作，不再各自維護（見 05a 十三章已解決事項）。
 
 ### 人工填值機制（不經 LLM，一次性前置作業）
 

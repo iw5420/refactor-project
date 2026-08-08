@@ -380,6 +380,35 @@ def _build_method_contexts(
     return contexts
 
 
+def _reorder_params_defaults_last(params: list[ParamSpec]) -> list[ParamSpec]:
+    """Python 函式簽名要求「帶預設值的參數必須排在不帶預設值的參數之後」
+    （否則 `SyntaxError: parameter without a default follows parameter
+    with a default`，已用真實案例驗證：`def f(a: str = 1, b: int): ...`）。
+    下方 `_design_module()` 組 `params` 的順序是業務參數（`ctx.params`，
+    Java 原始簽名順序，一律不帶預設值）→ `extra_params`（六章 LLM 決定
+    的框架注入參數，型別字串可能像 `User = Depends(get_current_user)`
+    這樣自帶預設值，順序由 LLM 回應決定，沒有保證）→ `db`（機械附加，
+    只有 routers 層帶 `= Depends(get_db)` 預設值，其餘層級不帶）。任何
+    一個 `extra_params` 項目若帶預設值、且後面接著沒有預設值的其他項目
+    （另一個 `extra_params`，或機械附加的 `db`），組裝出的簽名就會違反
+    這條規則——這不是理論邊角案例，只要 LLM 判斷某個框架注入參數該用
+    FastAPI 的 `Depends(...)` 慣例（05a 五章「框架注入物件」原文舉的
+    例子就是這個），就有機會踩到。
+
+    穩定分割（stable partition）：不帶預設值的參數維持原有相對順序排在
+    前面，帶預設值的參數維持原有相對順序排在後面——不改變同一類別內部
+    的順序，只調整「有沒有預設值」這一個維度，保證輸出永遠是合法 Python
+    函式簽名，不需要要求 LLM 或後續哪個環節自己保證順序正確。用字面
+    `"="` 子字串比對判斷「帶不帶預設值」：這個專案目前所有帶預設值的
+    型別字串都來自這裡（`db` 的機械附加）或六章 LLM 的 `extra_params`
+    （如 `Depends(...)` 慣例），`map_java_type()`／openapi 覆寫產出的
+    型別字串從不含 `=`，比對不會誤判。
+    """
+    no_default = [p for p in params if "=" not in p["type"]]
+    with_default = [p for p in params if "=" in p["type"]]
+    return no_default + with_default
+
+
 def _design_module(
     module: ModuleInfo,
     boundary_index: dict[tuple[str, str, str], ApiMapping],
@@ -438,6 +467,7 @@ def _design_module(
             # 判斷，不是 ctx.layer（那個在無 stereotype 類別時還沒定案）。
             db_type = "Session = Depends(get_db)" if layer == "routers" else "Session"
             params.append(ParamSpec(name="db", type=db_type))
+        params = _reorder_params_defaults_last(params)
 
         interfaces.append(
             InterfaceSpec(

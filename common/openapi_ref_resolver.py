@@ -5,11 +5,10 @@ Agent（05a 五章）都需要對 openapi_spec 的 operation/schema 片段做同
 `components.schemas`），遞迴展開到底，不處理 `allOf`／`oneOf`／`anyOf`
 組合語法（等真的遇到再處理）。
 
-**現況**：③ 是第一個直接對齊這個共用介面的 Agent（見 05a 五章「決策：
-抽為共用工具 common/openapi_ref_resolver.py」）；`spec_collection_agent/
-openapi_refs.py` 目前仍是內部各自的展開實作，尚未遷移過來共用，是已知
-技術債（見 05a 十三章待決定事項），不在③本次設計範圍內處理——這裡的
-演算法沿用同一套邏輯，但物件上是獨立檔案，不是把舊檔案搬過來改名。
+**現況**：③（見 05a 五章「決策：抽為共用工具 common/openapi_ref_resolver.py」）
+與 [B] Collection Agent（`spec_collection_agent/chain_dependency_detect.py`／
+`value_filler.py`）都已直接呼叫這裡的 `resolve_refs()`；`spec_collection_agent/
+openapi_refs.py`（原本各自獨立的重複實作）已刪除，見 05a 十三章已解決事項。
 """
 from __future__ import annotations
 

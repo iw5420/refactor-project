@@ -18,8 +18,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from common.openapi_ref_resolver import resolve_refs
 from spec_collection_agent import manual_fill
-from spec_collection_agent.openapi_refs import resolve_refs
 from spec_collection_agent.postman_tree import (
     iter_leaf_items,
     normalized_path_from_item,

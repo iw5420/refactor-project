@@ -7,7 +7,7 @@
 ## 一、本文件範圍與定位
 
 **本文件涵蓋**：
-- 骨架生成模式 `generate_scaffold(python_structure)`（④ 呼叫，見四章）與填空模式 `fill_function(...)`（⑤ 呼叫，見五章）的完整輸入輸出契約
+- 骨架生成模式 `generate_scaffold(python_project_path, python_structure, db_models=None)`（④ 呼叫，見四章）與填空模式 `fill_function(python_project_path, ...)`（⑤ 呼叫，見五章）的完整輸入輸出契約
 - AST 插入機制：如何在既有檔案裡精準定位、替換單一函式本體（六章）
 - 與 ollama（經 nginx）的連線方式、request/response 格式、delimiter 契約（七章）
 - git snapshot 流程、commit 顆粒度（回應 00 十章待決定事項，見八章）
@@ -31,7 +31,7 @@
 |---|---|---|
 | 呼叫方 | ④ `scaffold_node.py` | ⑤ `implement_node.py`（`MODEL_SEMAPHORE(1)` 內） |
 | 呼叫次數 | 整條 pipeline 一次 | 逐 task 呼叫 |
-| 輸入 | `PythonStructure`（整包） | 單一 task 的 `target_file`／`class_name`／`function_name`／`description`／`context`／`context_files` |
+| 輸入 | `python_project_path`（見下方）＋ `PythonStructure`（整包）＋ `db_models`（④ 自行取得的 DB schema 內容，見四章） | `python_project_path`（見下方）＋單一 task 的 `target_file`／`class_name`／`function_name`／`description`／`context`／`context_files` |
 | 是否呼叫本地模型 | **否**——見四章，這是本文件對既有 stub docstring 的修正 | 是（qwen2.5-coder:32b via ollama，見七章） |
 | 寫入方式 | 從無到有建立檔案（整檔輸出） | 對既有檔案做 AST 精準插入（單一函式本體） |
 | git 動作 | 一次性 commit（見八章） | 逐 task commit（見八章） |
@@ -50,14 +50,40 @@ test/2026/
 - **環境變數**：`.env` 新增 `PYTHON_PROJECT_PATH`（相對或絕對路徑皆可，慣例同 `JAVA_PROJECT_PATH`）
 - **一次性前置準備**（比照 00 五章「Java 專案端」的手動步驟，不是 translator-cli 自動做的事）：目錄存在、`git init` 過、**沒有任何 commit**（乾淨的空 repo）。`generate_scaffold()` 執行前檢查目標目錄是不是一個 git repo，不是則直接中止並回報明確錯誤——這是輸入端環境沒準備好，不是可以自動補救的情況，比照 04a／05a 對輸入端問題「直接往上拋，中止」的既有原則。
 
+**修正：`python_project_path` 是 `generate_scaffold()`／`fill_function()` 的顯式必要引數，不是隱含依賴**（回應本節底下十四章記錄的問題）。translator-cli 讀寫的每一個相對路徑（`InterfaceSpec.file_path`、`task.target_files`、`db_models` 的 key）都要解析成磁碟上的絕對路徑才能真正 `open()`／`git` 操作，卻沒有任何管道知道要以哪個目錄為底——這不是可以留給實作階段才補的細節，兩個函式的呼叫契約本身就不完整。修正方式：
+
+```python
+async def generate_scaffold(
+    python_project_path: str,
+    python_structure: PythonStructure,
+    db_models: dict[str, str] | None = None,
+) -> dict: ...
+
+async def fill_function(
+    python_project_path: str,
+    task_id: str,
+    target_file: str,
+    class_name: str | None,
+    function_name: str,
+    description: str,
+    context: str,
+    context_files: list[str],
+) -> FillResult: ...
+```
+
+**`task_id` 是必要引數，不是可省略的裝飾性資訊**：八章 commit 訊息格式原文是 `"implement: {task_id 或 class_name.function_name} fill {target_file}"`——這句話字面上假設 `task_id` 是這次呼叫已知的資訊，但 `fill_function()` 的簽名裡從未出現過這個參數，`git_ops.py`（十一章）組這則訊息時根本拿不到它，「`task_id` 或...」這個 fallback 寫法因此是死路。`task_id` 對應 06a 八章 `TaskSpec.id`（`task_{:03d}` 格式，穩定、可重現），讓 `git log` 能精確對回 [P] Plan Agent 產出的具體 task，不需要每次靠 `class_name.function_name` 反推——尤其同一個 `(class_name, function_name)` 若因為某種原因被呼叫超過一次（見五章「冪等」），只有 `task_id` 才能唯一區分是哪一次呼叫留下的 commit。
+
+`python_project_path` 是**呼叫端顯式傳入**的引數，不是 translator-cli 自己讀 `os.environ["PYTHON_PROJECT_PATH"]`，也不是靠 import `graph.state` 去拿——這跟 `python_structure`／`task.*` 這些既有引數是同一種模式：`.env` 的值先進 `main.py` 組的 `initial_state`（見「與既有程式碼的介面異動」第 4 項），流進 `RefactorState.python_project_path`，`scaffold_node.py`／`implement_node.py` 從 state 取出後再顯式傳給 translator-cli，translator-cli 本身仍然不 import `graph.state`（見十二章），維持既有的獨立性原則，只是這一個欄位之前漏了沒有被列進函式簽名。下方四／五／六／八／九章所有描述「目標目錄」「target_file 現有內容」「git repo」的地方，一律以呼叫端傳入的這個 `python_project_path` 為準（`Path(python_project_path) / target_file` 這類相對路徑解析）。
+
 ### 與既有程式碼的介面異動
 
 本文件設計出的契約，需要對已實作的部分做以下**小幅**異動，列在這裡供使用者確認是否要一併套用（見十四章「待決定事項」第一項的完整說明）：
 
 1. ~~`graph/state.py`：`RefactorState` 新增 `python_project_path: str` 欄位；`TaskSpec` 新增 `class_name`／`function_name` 兩個欄位~~——**`TaskSpec` 這部分已套用**（`class_name: NotRequired[str | None]`／`function_name: NotRequired[str]`，`plan_agent/planning.py` 對應補上，見 `06a_plan_agent_architecture.md` 八章、`tests/plan_agent/` 新增測試，並已用真實 Claude API 呼叫驗證過）；`RefactorState.python_project_path` 仍待套用
 2. ~~`06a_plan_agent_architecture.md` 八章：訂正「不落地進最終輸出」~~——已套用
-3. `graph/nodes/implement_node.py`（01 六章「接上真實 translator-cli／Harness 後的目標實作」那段程式碼）：`_run_one_task()` 呼叫 `translator_cli.fill_function()` 時補上 `class_name=task["class_name"]`／`function_name=task["function_name"]`／`context=task["context"]` 三個引數（目前只傳了 `target_file`／`description`／`context_files`）——尚待套用，`implement_node.py` 目前仍是 stub 階段，等 translator-cli 本身（07b）落地時一併處理即可，不急著現在改
+3. `graph/nodes/implement_node.py`（01 六章「接上真實 translator-cli／Harness 後的目標實作」那段程式碼）：`_run_one_task()` 呼叫 `translator_cli.fill_function()` 時補上 `python_project_path=state["python_project_path"]`／`task_id=task["id"]`／`class_name=task["class_name"]`／`function_name=task["function_name"]`／`context=task["context"]` 五個引數（目前只傳了 `target_file`／`description`／`context_files`）——尚待套用，`implement_node.py` 目前仍是 stub 階段，等 translator-cli 本身（07b）落地時一併處理即可，不急著現在改
 4. `main.py`：`initial_state` 新增 `"python_project_path": os.environ["PYTHON_PROJECT_PATH"]`——尚待套用
+5. `graph/nodes/scaffold_node.py`：呼叫 `translator_cli.generate_scaffold()` 時補上 `python_project_path=state["python_project_path"]`（目前的 stub／既有實作只傳了 `python_structure`）——尚待套用，理由與第 3 項同，等 07b 落地時一併處理
 
 ---
 
@@ -67,7 +93,7 @@ translator-cli 不重新決定 Python 專案怎麼分層——03 三章的分層
 
 ---
 
-## 四、骨架生成模式：`generate_scaffold(python_structure)`
+## 四、骨架生成模式：`generate_scaffold(python_project_path, python_structure, db_models=None)`
 
 ### 決策：不呼叫本地模型，純機械產生
 
@@ -91,48 +117,75 @@ translator-cli 不重新決定 Python 專案怎麼分層——03 三章的分層
   4. import 段落之後，依原本三個 block 各自的順序依序接上各自的 class／註解內容
   5. 合併後的完整文字丟一次 `ast.parse()` 驗證語法（見六章），失敗代表 05a 這端渲染的 pseudocode 本身有問題，直接中止並回報，不嘗試自動修正
 
+### `db_models`：④ 自行取得的 DB schema 內容如何併入
+
+**背景**：00 七章、05a 三章／九章都明訂 DB schema 的欄位層級規格不是③的職責，由④直接從既有 Postgres 測試 DB 或 Java entity 原始碼取得。但 `python_structure.interfaces` 完全不含 `models/{module}.py` 的欄位內容（`InterfaceSpec` 只能表達函式簽名），05a 三章的 `directory_tree` 也只涵蓋 `schemas/{module}.py`／基礎設施檔案兩類文字內容——`models/{module}.py` 從未出現在 `PythonStructure` 能表達的任何一個欄位裡。若④在 `generate_scaffold()` 之外自己另開一次寫入＋commit 來放這批檔案，時序上必須嚴格排在 `generate_scaffold()` 前後其中一邊、且自己先 commit 乾淨，否則會撞上九章的 working tree 衝突偵測；即使排對順序，也會讓「一次性 commit」的骨架基礎（八章）被拆成兩次，徒增復雜度。
+
+**決策：`generate_scaffold()` 新增第三個輸入 `db_models: dict[str, str] | None = None`**（key 為檔案相對路徑，如 `app/models/user.py`；value 是④已經生成好的完整 SQLAlchemy model 檔案內容字串）。④仍舊負責「怎麼從 DB／Java entity 取得欄位、生成程式碼」這件事本身（00／05a 既有分工不變），只是**不直接寫入磁碟**，改把產出封裝成這個字典、當作呼叫 `generate_scaffold()` 的引數之一。translator-cli 內部把 `db_models` 的每一項併入跟 `interfaces`／`directory_tree` 渲染結果**同一個記憶體中的寫入佇列**，一起走過驗證與寫入流程，不是額外的寫入／commit 動作：
+
+1. 每一項 `db_models[file_path]` 的內容各自 `ast.parse()` 一次（跟下方「語法驗證與寫入」對 `InterfaceSpec` 的隔離失敗處理同一種精神）：失敗 → 這個檔案不寫入，記進回傳值新增的 `skipped_db_models` 欄位（`{file_path, error}`），不影響其他 `db_models` 檔案，也不影響 `interfaces`／`directory_tree` 渲染出的檔案——一個模組的 DB 內省失敗不該拖垮其餘模組的骨架產出，理由跟「語法驗證與寫入」全域 all-or-nothing 的既有論證一致
+2. `db_models` 的檔案路徑天然落在 `app/models/` 底下，由第一段（目錄結構段）的 `mkdir -p` 保證目錄已存在，不需要額外建目錄邏輯
+3. 沒有出現在 `db_models` 裡的模組（純外部 API 串接、沒有對應 DB 表的模組），`models/{module}.py` 就不會被建立——這是合法情況，不是錯誤，下游讀取端的容錯機制見五章「`context_files` 讀取容錯」
+4. 所有檔案（`interfaces`／`directory_tree`／`db_models` 三個來源合起來）都通過各自驗證後，才進入「語法驗證與寫入」步驟 4 的全域最終檢查與一次性寫入＋commit——`db_models` 不獨立 commit，天然併入八章「`generate_scaffold()` 一次性 commit」的既有顆粒度，這也是選擇「傳字典給 `generate_scaffold()` 合併寫入」而不是「④自己寫、自己 commit」的核心理由：從根本上消除排序風險，不需要協調兩個各自獨立的 git 操作
+
 ### 型別字串正規化（Java 泛型符號 → Python subscript 語法）
 
-**這一步在渲染任何函式簽名之前先做，套用到每一個 `params[].type`／`return_type` 字串**：對真實 `lang-exam-api-refactor` 專案的 `real_python_structure.json`（72 個 `InterfaceSpec`）逐一用 `ast.parse()` 驗證過，**25 個（35%）的型別字串直接讓 `ast.parse()` 拋 `SyntaxError`**——例如 `ResponseResult<T>`、`ResponseResult<Map<String, Object>>`、`Specification<ExamEntity>`、`Function<T, String>`，橫跨 6 個不同檔案。根因是 05a 五章的型別對應表只硬編了 JDK 集合型別（`List`／`Set`／`Map`／`Optional`／`Collection`）的轉換規則，任何其他泛型包裝類別（專案自訂的 `ResponseResult<T>`、JDK 的 `Function<T,R>`、Spring Data 的 `Specification<T>`）落入「無法辨識的型別 → 原樣保留字串」這條 fallback——**保留的是 Java 語法本身**（角括號 `<...>`），`<` 在 Python 是比較運算子，直接讓函式簽名整個炸出語法錯誤。這不是理論上的邊界案例，是這個真實專案三分之一的介面都會踩到的常態，`generate_scaffold()` 不能假設 `InterfaceSpec` 送來的型別字串已經是合法 Python。
+**根因已在 05a 修正，這裡改為 defense-in-depth**：對真實 `lang-exam-api-refactor` 專案的 `real_python_structure.json`（72 個 `InterfaceSpec`）逐一用 `ast.parse()` 驗證，原本發現 **25 個（35%）的型別字串直接讓 `ast.parse()` 拋 `SyntaxError`**——例如 `ResponseResult<T>`、`ResponseResult<Map<String, Object>>`、`Specification<ExamEntity>`、`Function<T, String>`，橫跨 6 個不同檔案；根因是 05a 五章的型別對應表當時只硬編了 JDK 集合型別（`List`／`Set`／`Map`／`Optional`／`Collection`），其他泛型包裝類別落入「無法辨識的型別 → 原樣保留字串」fallback，保留的是未轉換的 Java 語法。**這個根因現已在 `design_agent/type_mapping.map_java_type()` 解決**（見 `05a_design_agent_architecture.md` 五章「未知泛型包裝類別的處理」）：已知的 JDK functional interface 查表轉成 `Callable[...]`，其餘未知泛型遞迴正規化內層型別參數＋符號轉換 `Foo<Bar>` → `Foo[Bar]`，`python_structure.interfaces` 送到這一步時型別字串已保證語法合法。
 
-**修正：機械字元替換，不判斷語意**：
+**這裡仍保留同一套符號轉換邏輯**，但定位改變——不再是唯一承接轉換工作的那一層，而是對 ③ 輸出而言恆為 no-op 的最後防線（防禦其他呼叫路徑萬一繞過 ③，或未來 `InterfaceSpec` 出現這裡沒預期到的殘餘寫法）：
 
 ```
 normalized = raw_type.replace("<", "[").replace(">", "]")
 ```
 
-單純逐字元替換 `<`→`[`、`>`→`]`，天然保留巢狀結構（`ResponseResult<Map<String, Object>>` → `ResponseResult[Map[String, Object]]`，巢狀泛型的括號配對關係在字元替換下不會亂掉）。這個轉換對上述 25 個真實案例**全部驗證通過、無一失敗**。定位上這仍然是「機械規則做得到，不需要問 LLM」的範疇（00 二章）——跟 05a 型別對應表的性質不同：05a 決定「這個 Java 型別該對應到哪個 Python 型別」是語意層級的決策，這裡只是把殘留在字串裡、還沒被特殊規則處理掉的 Java 泛型記法**符號**轉成 Python 的合法記法，不重新判斷任何型別語意，因此不算越界進 ③ 的職責。
-
 **已知殘留限制（正規化後仍可能不完美，但不阻擋語法驗證）**：
-- 轉換只保證**語法合法**，不保證**語意正確**——`ResponseResult[T]` 語法上合法，但 `T`（Java 泛型型別變數）在 Python 端沒有對應的 `TypeVar` 定義，`ResponseResult` 本身也不一定支援 subscript（除非它是 `Generic[T]` 子類別）；這類問題屬於 `NameError`／執行期錯誤，不會被 `ast.parse()` 攔下，留給 Harness 的 module 驗證與 ⑦ Debug Agent 處理，不在骨架生成這一步解決
+- 轉換只保證**語法合法**，不保證**語意正確**——`ResponseResult[T]` 語法上合法，但 `T`（Java 泛型型別變數）在 Python 端沒有對應的 `TypeVar` 定義，`ResponseResult` 本身也不一定支援 subscript（除非它是 `Generic[T]` 子類別）。**已解決**：下方「`interfaces`：函式簽名渲染」一節的渲染樣板頂端強制加入 `from __future__ import annotations`，機制細節見該節，這裡不重複。**這解決的是「會不會直接炸」，不是完整語意正確**：若 ⑤ 之後在函式本體真的寫出 `ResponseResult[X]()` 這種在執行期對該型別做 subscript／實例化的程式碼，仍會出錯——但那是函式本體實作品質的問題，屬於 ⑤／⑦ 既有工作範圍，不是簽名渲染樣板能單獨解決的
 - Java 萬用字元泛型（如 `List<? extends Foo>`）轉換後仍含非法字元 `?`，這批資料裡沒有出現這種寫法，暫不特別處理，屬於下方「語法驗證與寫入」失敗隔離機制要接住的殘餘情況
 
 ### `interfaces`：函式簽名渲染
 
 `interfaces` 依 `file_path` 分組（`app/routers/`／`app/services/`／`app/repositories/` 三層的實際程式碼都只能來自這裡，`directory_tree` 不含這三層的檔案內容）。同一 `file_path` 群組內，再依 `class_name` 分組。**以下渲染一律使用正規化後的型別字串，不是 `InterfaceSpec` 原始值**：
 
+**檔案開頭一律固定加 `from __future__ import annotations`**（routers／services／repositories 三層無差別套用，比照 05a 三章 Schema 定義段已有的同一行）：這是回應「型別字串正規化」一節「已知殘留限制」的修正——`map_java_type()` 遞迴正規化＋符號轉換（見上方一節）只保證型別字串**語法合法**，不保證其中殘留的裸型別變數（如 `Function<T, String>` 正規化後的 `T`）或未宣告 `Generic[T]` 的自訂泛型類別（如 `ResponseResult[T]`）在 `import` 當下不會因為型別註記被求值而 `NameError`／`TypeError`。加上這一行後（PEP 563），函式簽名的型別註記變成延遲求值的字串，`import` 這個模組本身不會因為註記內容而失敗；API 邊界方法（router 層參數）因為型別全部來自 `openapi_spec`（05a 五章），本來就是可解析的乾淨型別，FastAPI 的 `get_type_hints()` 照常能正確 resolve，不受影響。這一行是**這份文件（渲染樣板契約）本身的一部分，不是留給 07b 實作階段才決定的事**：
+
 - **`class_name is None`（routers 層，05a 七章已定案這層一律為 `None`）**：檔案內是自由函式，不包 class。檔案開頭固定加：
   ```python
+  from __future__ import annotations
+
   from fastapi import APIRouter
 
   router = APIRouter()
   ```
-  每個函式渲染成：
+  **`class_name is None` 不等於「這個函式一定是 API 邊界方法」**：05a 三章的層級判定是依 Java class 的 stereotype（`@RestController`）整批決定，同一個 Controller 底下除了直接對應 endpoint 的方法，也可能有 05a 七章「私有／內部方法命名慣例」講的私有 helper、或其他未直接掛 `@GetMapping` 等 route annotation 的方法——這些方法一樣落在 `routers` 層、`class_name` 一樣是 `None`（05a 七章「routers 層的 `InterfaceSpec.class_name` 一律為 `None`」不分方法種類），但 `http_method`／`route_path` 只在**真正的 API 邊界方法**才非 `None`（05a 五章）。因此每個函式渲染前必須先判斷 `http_method`：
+  - `http_method` 非 `None`（API 邊界方法）：
+    ```python
+    @router.{http_method.lower()}("{route_path}")
+    def {function_name}({params}) -> {return_type}:
+        pass
+    ```
+  - `http_method` 為 `None`（routers 層裡的非邊界方法，如私有 helper）：**不加 `@router` 裝飾器**，渲染成一般自由函式：
+    ```python
+    def {function_name}({params}) -> {return_type}:
+        pass
+    ```
+  
+  **這不是理論上的邊角案例**：05a 七章「`interfaces` 涵蓋率規則」要求 `python_structure.interfaces` 涵蓋 `module_list` 每一個 module 的每一個方法（回應 00 八章「internal helper 不能漏」），任何一個 `@RestController` 只要有一個私有 helper 或非直接對應 endpoint 的方法，就會產生一筆 `http_method=None` 的 routers 層 `InterfaceSpec`——若不做這個判斷，無條件套用 `@router.{http_method.lower()}(...)` 樣板，`http_method` 是 `None` 時 `.lower()` 會直接 `AttributeError`，讓 `generate_scaffold()` 對這個真實常見的情況整個掛掉（`params` 直接是 `", ".join(f"{p['name']}: {p['type']}" for p in interface['params'])`，見三章，兩種渲染方式共用同一套 `params` 組裝邏輯，只差要不要加裝飾器）。
+- **`class_name` 非 `None`（services／repositories 層）**：檔案開頭同樣固定加 `from __future__ import annotations`（獨立一行，這兩層沒有像 routers 層那樣需要緊接著 `from fastapi import APIRouter` 之類的固定 import）。同一 `file_path` 底下按 `class_name` 分組各自渲染一個 `class`，方法縮排在 class 內：
   ```python
-  @router.{http_method.lower()}("{route_path}")
-  def {function_name}({params}) -> {return_type}:
-      pass
-  ```
-  （`http_method`／`route_path` 是 05a 五章新增的 `InterfaceSpec` 欄位，routers 層 API 邊界方法一定非 `None`；`params` 直接是 `", ".join(f"{p['name']}: {p['type']}" for p in interface['params'])`，見三章）
-- **`class_name` 非 `None`（services／repositories 層）**：同一 `file_path` 底下按 `class_name` 分組各自渲染一個 `class`，方法縮排在 class 內：
-  ```python
+  from __future__ import annotations
+
+
   class {class_name}:
-      def {function_name}({params}) -> {return_type}:
+      def {function_name}({class_params}) -> {return_type}:
           pass
   ```
+  **`{class_params}` 必須帶 `self`，不是直接沿用 `{params}`**：`InterfaceSpec.params` 依 05a 七章定案「不含隱含的 `self`」，這是刻意的邊界（`self` 對 Python 才有意義，Java 沒有對應概念，讓③輸出攜帶它只是徒增雜訊）——但這代表這裡渲染成 `class` 方法時，**必須由這一層自己補上**，不能直接把 `params` 字串塞進括號，否則 `def {function_name}({params})` 會漏掉 `self`，產生出的方法在執行期被實例呼叫時必然 `TypeError`（如 `def get_by_id(user_id: int):`，`repo.get_by_id(5)` 實際呼叫是 `get_by_id(repo, 5)`，兩個位置引數對上一個形式參數）——這不是理論上的邊界案例，是 services／repositories 兩層**每一個**方法都會踩到的必然錯誤，不能只在 routers 層的樣板算對就視為完成。組裝規則：`class_params = f"self, {params}" if params else "self"`（`params` 為空字串時不留下多餘的逗號，讓組出的文字讀起來乾淨；即使留一個 `def foo(self, ):` 這種尾隨逗號寫法本身也是合法 Python 語法，但沒有必要留這種不必要的雜訊）。`routers` 層（`class_name is None`，自由函式、不是 class 方法）不適用這條規則，`{params}` 原樣使用，見上方 routers 樣板。
+  
   **刻意不產生 `__init__`**：`InterfaceSpec` 沒有攜帶建構子／欄位依賴資訊（04a／05a 的職責邊界都只到方法簽名層級），這批 class 在骨架階段是無狀態的方法容器；跨 class 呼叫（如 service 呼叫 repository）留給 `fill_function()` 階段依 `context` 決定寫法（直接 import 後實例化，或呼叫端另有慣例），不是骨架階段能機械決定的事，見五章。
 
 **函式本體固定寫 `pass`**：語法合法、明確代表「待填」，也是六章 AST 定位／替換的目標錨點。
+
+**`from __future__ import annotations` 不經下方「import 解析：兩層機制」判斷**：這一行是每個生成檔案無條件的第一行，不是因為偵測到某個具體型別才觸發的 import，因此獨立於下方兩層機制之外，兩層機制只處理型別觸發的 import（`Session`／`Depends`／自訂型別等）。
 
 ### import 解析：兩層機制，不窮舉
 
@@ -149,6 +202,9 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
    | `UploadFile` | `from fastapi import UploadFile` |
    | `HTTPException` | `from fastapi import HTTPException` |
    | `Decimal` | `from decimal import Decimal` |
+   | `Callable[` | `from typing import Callable` |
+
+   **`Callable` 是這次新增的一項**：05a 五章的型別對應表（Layer 2）把 `Function`／`Supplier`／`Predicate` 等 `java.util.function` 常見型別機械轉成 `Callable[...]`，這些字串會出現在 services／repositories 層、以及 routers 層裡非 API 邊界方法（`http_method` 為 `None` 的私有 helper）的 `params`／`return_type` 裡——這幾種情況都不經過 openapi_spec 覆寫，都會走 `map_java_type()` 那條路徑，因此不是理論上才會出現的型別。`from __future__ import annotations`（見上方）讓型別註記延遲求值，避免了 `import` 當下就 `NameError`，但這解決的是「會不會直接炸」，不是「型別名稱有沒有正確 import」——⑤填空階段若要在函式本體實際使用這個型別（如型別檢查、建構一個符合 `Callable` 簽名的物件），仍然需要這個 import 真的存在，不能只靠註記延遲求值蒙混過去；沒有這一項，`services`／`repositories` 層任何回傳或接收 functional interface 的函式都會缺這個 import。命中比對用 `"Callable["`（含左中括號）而不是單獨的 `"Callable"`，避免不必要地跟其他字串裡剛好出現 `Callable` 這幾個字母的情況混淆（目前這個字串只會由 `map_java_type()` 產出，不會有這種混淆風險，但比對條件寫精確一點沒有壞處）。
 
 2. **自訂型別索引，兩個來源合併**：
    - **來源一（既有）**：掃描第二段（Schema 定義段）解析出的所有具名 class（`schemas/{module}.py`／`models/{module}.py` 底下的 Pydantic／dataclass）
@@ -167,26 +223,30 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
 1. 每個 `InterfaceSpec` 對應的函式簽名（正規化＋渲染後）先各自 `ast.parse()` 一次（用「這個簽名＋`pass`」組出的最小片段驗證，不用等整個檔案組完才驗證）
 2. 驗證失敗 → 這個函式**不渲染進檔案**，記進 `generate_scaffold()` 回傳值新增的 `skipped_interfaces` 欄位（`{file_path, class_name, function_name, error}`），繼續處理下一個 `InterfaceSpec`，**不影響同檔案其他函式，也不影響其他檔案**
 3. 同一個 `class_name` 分組若所有方法都被跳過（極端情況，理論上不該發生），該 `class` 仍要渲染出來，body 用 `pass` 佔位，維持檔案語法合法——不能因為跳過方法就留下一個空殼 `class Foo:` 沒有 body
-4. 所有 `InterfaceSpec` 處理完後，每個組裝完的完整檔案文字**再整份 `ast.parse()` 驗證一次**（防禦性：理論上必然成功，因為只由已個別驗證過的合法片段組成，但寫入前的最後一道檢查成本很低）——這一步才是真正的全域關卡，但這時候失敗代表的是「組裝邏輯本身有 bug」（如合併 Schema 定義段落時 import 沒去重乾淨），不是「某個介面型別字串剛好有問題」，性質不同：這種情況才維持中止回報，不吞掉
+4. 所有 `InterfaceSpec`（以及上方「`db_models` 併入」一節描述的每一項 `db_models` 檔案）處理完後，每個組裝完的完整檔案文字**再整份 `ast.parse()` 驗證一次**（防禦性：理論上必然成功，因為只由已個別驗證過的合法片段組成，但寫入前的最後一道檢查成本很低）——這一步才是真正的全域關卡，但這時候失敗代表的是「組裝邏輯本身有 bug」（如合併 Schema 定義段落時 import 沒去重乾淨），不是「某個介面型別字串剛好有問題」，性質不同：這種情況才維持中止回報，不吞掉
 
-**寫入時機**：全部檔案（含所有能建出來的骨架）驗證通過後，一次性寫入磁碟＋git commit（見八章）；步驟 4 的全域檢查失敗才整包不寫、直接中止回報。
+**「帶預設值的參數排序錯誤」不算在這裡的隔離範圍內，因為根因已在 05a 解決**：`db: Session = Depends(get_db)`（05a 七章「框架慣例參數」）、或 LLM 決定的框架注入參數（05a 五章「框架注入物件」，可能同樣是 `Depends(...)` 慣例）若排在其他不帶預設值的參數之前，會是 `SyntaxError: parameter without a default follows parameter with a default`（已實測驗證）。這類錯誤如果真的發生，一樣會被上面步驟 1／4 的 `ast.parse()` 攔下、走 `skipped_interfaces` 隔離流程——**但正常情況下不會發生**，因為 `design_agent/design.py` 的 `_reorder_params_defaults_last()` 在③組出 `InterfaceSpec.params` 的當下就保證帶預設值的參數一律排最後（見 `05a_design_agent_architecture.md` 七章「帶預設值的參數必須排在不帶預設值的參數之後」）。這裡的隔離機制因此對這一類問題而言，跟上方「型別字串正規化」的符號轉換一樣是 defense-in-depth，不是實際承接這個問題的那一層。
 
-**回傳契約新增 `skipped_interfaces`**：
+**寫入時機**：全部檔案（含所有能建出來的骨架、`db_models` 併入的模型檔案）驗證通過後，一次性寫入磁碟＋git commit（見八章）；步驟 4 的全域檢查失敗才整包不寫、直接中止回報。
+
+**回傳契約新增 `skipped_interfaces`／`skipped_db_models`**：
 
 ```python
 {
-    "success": bool,       # 步驟 4 的全域檢查通過即為 True，即使 skipped_interfaces 非空
+    "success": bool,       # 步驟 4 的全域檢查通過即為 True，即使 skipped_interfaces／skipped_db_models 非空
     "error": str | None,   # 只在 success=False 時有值（步驟 4 失敗，或環境前提不滿足，見二、九章）
     "skipped_interfaces": list[dict],  # [{file_path, class_name, function_name, error}, ...]，
                                         # 空清單代表這次沒有任何介面被跳過
+    "skipped_db_models": list[dict],   # [{file_path, error}, ...]，見「db_models：④ 自行取得的 DB
+                                        # schema 內容如何併入」一節，空清單代表沒有任何 db_models 項目被跳過
 }
 ```
 
-`success=True` 但 `skipped_interfaces` 非空是**預期中會發生、需要人工留意但不阻擋 pipeline** 的情況——呼應 00 十二章／02a「`excluded_folders`」同一種設計精神（非空不代表失敗，是「這次沒完整涵蓋，要留意」的訊號）。`skipped_interfaces` 裡列出的介面，對應的 ⑤ task 之後呼叫 `fill_function()` 時會在六章步驟 4「找不到目標函式」自然失敗、回報明確錯誤（`class_name`／`function_name`／`target_file` 都對得上，不是憑空找不到），不需要 `generate_scaffold()` 自己額外處理這個下游後果。
+`success=True` 但 `skipped_interfaces`／`skipped_db_models` 非空是**預期中會發生、需要人工留意但不阻擋 pipeline** 的情況——呼應 00 十二章／02a「`excluded_folders`」同一種設計精神（非空不代表失敗，是「這次沒完整涵蓋，要留意」的訊號）。`skipped_interfaces` 裡列出的介面，對應的 ⑤ task 之後呼叫 `fill_function()` 時會在六章步驟 4「找不到目標函式」自然失敗、回報明確錯誤（`class_name`／`function_name`／`target_file` 都對得上，不是憑空找不到），不需要 `generate_scaffold()` 自己額外處理這個下游後果。
 
 ---
 
-## 五、填空模式：`fill_function(target_file, class_name, function_name, description, context, context_files)`
+## 五、填空模式：`fill_function(python_project_path, task_id, target_file, class_name, function_name, description, context, context_files)`
 
 ### 為什麼 `fill_function` 需要 `class_name`／`function_name`
 
@@ -198,12 +258,14 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
 
 | 參數 | 來源 | 說明 |
 |---|---|---|
+| `python_project_path` | `state["python_project_path"]` | translator-cli 寫入目標的 repo 根目錄，見二章「新輸入：`python_project_path`」 |
+| `task_id` | `task.id` | 06a 八章 `TaskSpec.id`（`task_{:03d}` 格式），供八章 commit 訊息使用，見八章「`task_id` 是必要引數」 |
 | `target_file` | `task.target_files[0]` | 相對路徑，如 `app/repositories/user_repository.py` |
 | `class_name` | `task.class_name` | `None` 代表 routers 層自由函式 |
 | `function_name` | `task.function_name` | 連同 `class_name` 唯一定位這次要填的函式（見上方說明） |
 | `description` | `task.description` | 業務邏輯描述——**不是原始 Java 原始碼**，是 [P] 的 LLM 已經整合過 Java method 業務邏輯後產出的任務描述（見 06a 五章），translator-cli 不需要、也不會拿到逐字的 `.java` 檔案內容。00 三章「Java 原始邏輯」這個措辭在這裡具體落地成這份已經被 Claude 消化過的自然語言描述，不是文字檔案內容——這樣才符合 00 六章「Context 控制策略」控制 context 大小的目的：塞整段原始 Java 方法本文只會放大 context，不會提高正確率，[P] 產生 `description` 時已經把「該做什麼」萃取出來了 |
 | `context` | `task.context` | 補充依賴關係／邊界條件文字（06a 五章），現況 `implement_node.py` 尚未傳遞這個欄位，需要補上（見二章「與既有程式碼的介面異動」第 3 項） |
-| `context_files` | `task.target_files` | 這次呼叫要讀進 prompt 的檔案清單（含 `target_files[0]` 自己＋06a 七章組裝進來的 referenced 檔案／schemas／models），控制 context 大小的關鍵（00 六章） |
+| `context_files` | `task.target_files` | 這次呼叫要讀進 prompt 的檔案清單（含 `target_files[0]` 自己＋06a 七章組裝進來的 referenced 檔案／schemas／models），控制 context 大小的關鍵（00 六章）。**讀取容錯見七章「User / System Prompt 組裝」** |
 
 ### 輸出契約
 
@@ -236,6 +298,11 @@ class FillResult:
 
 ```
 1. source = target_file 現有內容（Path.read_text(encoding="utf-8")，見 00 六章「檔案讀寫編碼慣例」）
+   ——路徑先解析成 Path(python_project_path) / target_file（見二章「python_project_path 是顯式引數」）；
+   讀取遇到 FileNotFoundError（如該檔案因④「語法驗證與寫入」的 skipped_interfaces／skipped_db_models
+   隔離失敗而從未被建立）→ 直接視為與步驟 4 同一類「scaffold/task 不一致」，回傳
+   FillResult(success=False, error="scaffold/task 不一致：{target_file} 不存在")，不是任由
+   FileNotFoundError 這種作業系統例外原樣往外拋、繞過 FillResult 的錯誤回報契約
 2. tree = ast.parse(source)
 3. 若 class_name 為 None：在 tree.body 找 FunctionDef／AsyncFunctionDef，name == function_name
    若 class_name 非 None：先在 tree.body 找 ClassDef，name == class_name；
@@ -250,11 +317,23 @@ class FillResult:
 ```
 5. 呼叫 ollama（七章），取得 body_text（已通過 delimiter 抽取＋語法驗證，見七章）
 6. body_tree = ast.parse(body_text)   # body_text 是模型回傳的「未縮排」陳述式集合，見七章 delimiter 契約
+6a. 若 not body_tree.body（delimiter 標記之間只有空白／換行，沒有任何陳述式）→ 視為與 delimiter
+    抽取失敗同一類「模型輸出格式錯誤」，觸發七章「模型輸出格式錯誤的修正重試」，不進入步驟 7——
+    空 body 對 ast.parse(body_text) 本身是合法輸入（空字串／純空白等同一個空 module，body=[]），
+    這裡不特別攔下的話，會一路走到步驟 7 把空清單指定給函式節點的 body，Python 函式節點不允許空
+    body（至少要有一個陳述式），ast.unparse() 在這個情況下不會報錯，而是直接產出「有簽名、沒有
+    本體」的殘缺程式碼（如 `def foo(x: int) -> int:` 後面什麼都沒有），要等步驟 10 重新 parse
+    這段輸出時才會炸 SyntaxError——但那時候已經不在七章既有的重試觸發條件（「body_text 通不過
+    ast.parse()」）涵蓋範圍內，因為 body_text 自己是能被 parse 的。實測驗證：`ast.parse("")`
+    成功、`.body == []`；把這個空 body 指定給函式節點後 `ast.unparse()` 產出
+    `'def foo(x: int) -> int:'`（不報錯）；對這段輸出再 `ast.parse()` 才拋
+    `SyntaxError: expected an indented block after function definition`——因此必須在步驟 6 之後、
+    步驟 7 之前就攔下，不能依賴步驟 10 的最終檢查
 7. 目標函式節點.body = body_tree.body
 8. ast.fix_missing_locations(tree)
 9. new_source = ast.unparse(tree)
 10. ast.parse(new_source) 再驗證一次（防禦性：理論上必然成功，因為是從合法 AST 反渲染回來的，
-    但寫入磁碟前的最後一道檢查成本很低，值得留著）
+    且步驟 6a 已經擋掉空 body 這個已知的例外，但寫入磁碟前的最後一道檢查成本很低，值得留著）
 11. 驗證通過 → 寫入 target_file，見八章 commit
 ```
 
@@ -295,7 +374,12 @@ statement_2
 | `TRANSLATOR_CLI_NETWORK_RETRIES` | `2`（環境變數可調） | HTTP 連線失敗／timeout 這類**傳輸層**錯誤的立即重試次數，固定間隔 `3` 秒——這是 LAN 內部連線的暫時抖動，不是 Claude API 那種需要等配額恢復的限流情境，不需要 5 分鐘等待 |
 | delimiter／語法驗證失敗重試 | 固定 `1` 次 | 見下方「模型輸出格式錯誤的修正重試」，跟網路層重試是不同的錯誤類型、不同的重試機制，不共用同一個計數器 |
 
-**模型輸出格式錯誤的修正重試**（跟 04a/05a 的「批次重試」不同性質，這裡是「針對這次錯誤，把錯誤內容回饋給模型，讓它自己修正」）：六章 delimiter 抽取失敗，或抽取出來的 `body_text` 通不過 `ast.parse()`（`SyntaxError`），**重新呼叫一次模型**，這次的 user prompt 額外附上「上一次回應違反格式／語法錯誤訊息是 ...，請重新產生，務必遵守 delimiter 格式」。這一次呼叫仍然失敗（不論是同一種錯誤還是不同錯誤）→ 放棄，`FillResult(success=False, error=...)`，不無限重試——固定重試一次的理由跟 04a 的「一次性的固定延遲已經夠用」同構：這是扛過模型單次偶發輸出品質不穩的緩衝，不是要取代 ⑦ Debug Agent 那種「業務邏輯寫錯了」層級的修正機制。
+**模型輸出格式錯誤的修正重試**（跟 04a/05a 的「批次重試」不同性質，這裡是「針對這次錯誤，把錯誤內容回饋給模型，讓它自己修正」）：以下三種情況觸發**重新呼叫一次模型**，這次的 user prompt 額外附上「上一次回應違反格式／語法錯誤訊息是 ...，請重新產生，務必遵守 delimiter 格式」——
+1. 六章 delimiter 抽取失敗（找不到 sentinel）
+2. 抽取出來的 `body_text` 通不過 `ast.parse()`（`SyntaxError`）
+3. `body_text` 能 `ast.parse()`，但解析出的陳述式清單是空的（六章步驟 6a「空本體」——delimiter 標記之間只有空白／換行，沒有任何陳述式）——這個情況單獨列成第三種觸發條件，不能只看「`body_text` 通不過 `ast.parse()`」就以為涵蓋了它：空字串本身是合法的 Python（等同空 module），`ast.parse()` 不會報錯，只有把這個空 body 塞進函式節點、重新 `ast.unparse()` 再 `ast.parse()` 之後才會炸，若不單獨攔，這個錯誤會晚兩步才被發現、而且繞過了這裡的重試機制，見六章步驟 6a 完整說明
+
+這一次呼叫仍然失敗（不論是同一種錯誤還是不同錯誤）→ 放棄，`FillResult(success=False, error=...)`，不無限重試——固定重試一次的理由跟 04a 的「一次性的固定延遲已經夠用」同構：這是扛過模型單次偶發輸出品質不穩的緩衝，不是要取代 ⑦ Debug Agent 那種「業務邏輯寫錯了」層級的修正機制。
 
 ### System / User Prompt 組裝
 
@@ -315,17 +399,21 @@ System prompt 固定模板（不含業務內容，只定義輸出格式契約）
 
 User prompt 組裝內容：函式目前的簽名（第六章第 3 步定位到的節點，取 `ast.unparse()` 只渲染這個函式的 `decorator_list`＋簽名列，不含 body，讓模型知道自己在填什麼形狀的函式）、`description`、`context`（若非空）、`context_files` 逐檔案列出「路徑 + 完整內容」。
 
+**`context_files` 讀取容錯**：`context_files`（=`task.target_files` 全部清單）逐項 `open()` 讀取時，除了 `target_file` 本身（= `context_files[0]`，六章第 1 步已經確認存在，不會在這裡才踩到）以外，其餘項目**不保證檔案一定存在**——06a 七章對 services／repositories 層的 task 無條件把該 module 的 `models/{module}.py` 加進 `target_files`，但這個檔案只在④透過上方「`db_models` 併入」機制實際產出時才存在；沒有對應 DB 表的模組（純外部 API 串接）、或該筆 `db_models` 因型別驗證失敗被跳過（見四章 `skipped_db_models`），都會讓這個路徑合法地不存在。因此組裝這段內容時，逐項 `open()` 遇到 `FileNotFoundError` → **記一筆警告（含 task 識別資訊與該路徑），跳過這個檔案，繼續組裝其餘 `context_files`**，不是讓作業系統例外直接中斷整個 `fill_function()` 呼叫——這不是「隱藏錯誤」，被跳過的檔案本來就不該存在於這次任務的合理輸入裡；真正需要修 bug 的情況（`target_file` 本身不存在）由六章第 1 步的既有檢查把關，不會被這條容錯規則吞掉。
+
 ---
 
 ## 八、Git Snapshot 與 Commit 顆粒度
 
 回應 00 十章待決定事項：「translator-cli 的 git commit 顆粒度與平行寫入的鎖機制，細節待本文件定案」。
 
+**這一章存在的理由**：不是本文件自行加碼的設計，00 三章對 translator-cli 的原始要求已經明講：「寫入前後搭配 git snapshot 與語法驗證，確保每個 task 的異動可追蹤、可回滾。」本章（顆粒度）負責「可追蹤、可回滾」，九章（衝突偵測）負責防止在 working tree 假設跟磁碟實際狀態不一致時靜默覆蓋掉別人的東西——這是 Harness 的功能驗證完全不涵蓋的另一種風險（改了什麼、何時改的、有沒有意外覆蓋人工修正），兩者都不是可以省略的裝飾。
+
 ### 決策：每個 task 一個 commit，不需要鎖機制
 
-**顆粒度**：
-- `generate_scaffold()` 成功寫入所有骨架檔案後，`git add -A && git commit -m "scaffold: initial skeleton from python_structure"` 一次性 commit，作為後續所有 `fill_function()` commit 的共同基礎
-- `fill_function()` 每次成功寫入後，`git add {target_file} && git commit -m "implement: {task_id 或 class_name.function_name} fill {target_file}"`——**只 add 這次實際寫入的那一個檔案**，不用 `-A`：即使working tree因為某種原因存在其他未預期的變更（理論上不該發生，見九章），也不會被這次 commit 意外一起帶走
+**顆粒度**（所有 `git` 指令一律以呼叫端傳入的 `python_project_path` 為 repo 根目錄，如 `git -C {python_project_path} add -A`，不是 translator-cli 自己執行時的 cwd）：
+- `generate_scaffold()` 成功寫入所有骨架檔案（含 `db_models` 併入的內容，見四章）後，`git add -A && git commit -m "scaffold: initial skeleton from python_structure"` 一次性 commit，作為後續所有 `fill_function()` commit 的共同基礎
+- `fill_function()` 每次成功寫入後，`git add {target_file} && git commit -m "implement: {task_id} fill {class_name}.{function_name} in {target_file}"`（`class_name` 為 `None` 時省略該段，寫成 `fill {function_name} in {target_file}`）——`task_id` 現在是必要引數（見五章「輸入契約」），不再是「有就用、沒有退回 class_name.function_name」的 fallback；同時保留 `class_name.function_name` 是為了讓 `git log` 一眼看出這個 commit 改的是哪個函式，不需要另外反查 `task_id` 對應什麼。**只 add 這次實際寫入的那一個檔案**，不用 `-A`：即使working tree因為某種原因存在其他未預期的變更（理論上不該發生，見九章），也不會被這次 commit 意外一起帶走
 
 **為什麼不需要鎖機制**：00 十章把這件事列為待決定，隱含假設「可能有平行寫入」；但實際檢視現有排程設計，**這個系統結構上不存在並行寫入的可能**：
 
@@ -342,7 +430,7 @@ User prompt 組裝內容：函式目前的簽名（第六章第 3 步定位到�
 
 00 三章原文承諾「衝突偵測」，八章已經說明這不是併發鎖的情境；這裡的衝突偵測指的是另一種風險：**translator-cli 對 working tree 目前狀態的假設，跟磁碟上實際狀態不一致**。可能成因：人工不小心手動編輯了目標專案裡的檔案、上一輪執行中途被強制中斷、留下未 commit 的殘留寫入（理論上五章「呼叫失敗時不寫入任何內容」已經保證正常失敗路徑不會留殘留，但例如程序被 kill -9 這種非正常中斷仍可能留下部分寫入）。
 
-**機制：每次寫入前的 precondition 檢查**——`generate_scaffold()`／`fill_function()` 動筆寫任何檔案之前，先跑 `git status --porcelain`：
+**機制：每次寫入前的 precondition 檢查**——`generate_scaffold()`／`fill_function()` 動筆寫任何檔案之前，先跑 `git -C {python_project_path} status --porcelain`（同八章，一律以呼叫端傳入的 `python_project_path` 為 repo 根目錄）：
 
 - 輸出為空（working tree 乾淨，跟最後一次 commit 完全一致）→ 正常繼續
 - 輸出非空 → **不寫入任何內容**，直接回傳失敗（`generate_scaffold()` 回傳 `{"success": False, "error": "..."}`；`fill_function()` 回傳 `FillResult(success=False, error="working tree 不乾淨，拒絕寫入：{git status 輸出}")`），交由人工核對這份意外的變更是什麼
@@ -381,7 +469,7 @@ refactor-project/
     ├── client.py           # 對外唯一入口：generate_scaffold()、fill_function()
     ├── types.py            # FillResult（既有）
     ├── python_adapter.py   # 十章 LanguageAdapter 的 Python 實作：ast 定位／替換／渲染／語法驗證
-    ├── scaffold.py         # 四章：directory_tree 解析、interfaces 分組渲染、import 解析
+    ├── scaffold.py         # 四章：directory_tree 解析、interfaces 分組渲染、import 解析、db_models 併入
     ├── ollama_client.py    # 七章：httpx 呼叫 ollama（經 nginx）、delimiter 抽取、修正重試
     ├── prompts.py          # 七章 system/user prompt 模板
     ├── git_ops.py          # 八、九章：commit、git status 衝突偵測
@@ -402,8 +490,8 @@ refactor-project/
 
 沿用 01 四章已經定案的 node 對應，不需要新增或調整 node／edge 結構：
 
-- `scaffold`（④）：`await translator_cli.generate_scaffold(state["python_structure"])`，回傳 `{"scaffold_done": result["success"]}`（若失敗，`scaffold_done=False` 目前的 graph 結構不會因此特別分流——這屬於既有 `scaffold_node.py`／01 文件的既知限制，不在本文件範圍內解決，07a 只保證 `generate_scaffold()` 本身在失敗時清楚回報 `error`）。**`result["skipped_interfaces"]`（見四章）目前也還沒有管道往 `RefactorState` 寫**——`scaffold_node.py` 現在的回傳只有 `scaffold_done` 這個布林值，沒有欄位可以承接這份清單；短期內 `skipped_interfaces` 至少要記進日誌供人工事後查閱，State 是否需要新增對應欄位讓 ⑦ Debug Agent 之類的下游也讀得到，留給 08a（骨架實作 Agent 詳細設計，待建立）評估，不在本文件範圍內決定
-- `implement`（⑤）：`_run_one_task()` 在 `MODEL_SEMAPHORE(1)` 內呼叫 `translator_cli.fill_function(...)`，見二章「與既有程式碼的介面異動」需要補上的三個引數
+- `scaffold`（④）：`await translator_cli.generate_scaffold(state["python_project_path"], state["python_structure"], db_models=db_models)`，回傳 `{"scaffold_done": result["success"]}`（若失敗，`scaffold_done=False` 目前的 graph 結構不會因此特別分流——這屬於既有 `scaffold_node.py`／01 文件的既知限制，不在本文件範圍內解決，07a 只保證 `generate_scaffold()` 本身在失敗時清楚回報 `error`）。`db_models` 這個字典本身怎麼組出來（查詢 Postgres 測試 DB 或解析 Java entity 原始碼，見四章「`db_models`：④ 自行取得的 DB schema 內容如何併入」）屬於 08a（骨架實作 Agent 詳細設計，待建立）的範圍，07a 只定義這個參數送進 `generate_scaffold()` 之後的處理契約。**`result["skipped_interfaces"]`／`result["skipped_db_models"]`（見四章）目前也還沒有管道往 `RefactorState` 寫**——`scaffold_node.py` 現在的回傳只有 `scaffold_done` 這個布林值，沒有欄位可以承接這兩份清單；短期內至少要記進日誌供人工事後查閱，State 是否需要新增對應欄位讓 [P]／⑦ Debug Agent 之類的下游也讀得到，留給 08a 評估，不在本文件範圍內決定（[P] 因平行分支結構上看不到這份清單的既知缺口，另見 `00_refactor_architecture.md` 十章待決定事項）
+- `implement`（⑤）：`_run_one_task()` 在 `MODEL_SEMAPHORE(1)` 內呼叫 `translator_cli.fill_function(python_project_path=state["python_project_path"], task_id=task["id"], ...)`，見二章「與既有程式碼的介面異動」需要補上的引數
 
 translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼叫端組好的顯式引數——這是刻意的邊界：`translator_cli/` 套件不 import `graph.state`，維持跟 `refactor_harness/`／`spec_collection_agent/` 一致的獨立性（01 二章「設計原則」）。
 
@@ -425,12 +513,19 @@ translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼�
 ## 十四、待決定事項
 
 - [x] ~~`TaskSpec` 新增 `class_name`／`function_name` 欄位（見二章「與既有程式碼的介面異動」）~~——已套用並補上 `tests/plan_agent/` 測試、真實 Claude API 呼叫驗證過（見二章）；`RefactorState.python_project_path` 仍待套用
-- [ ] `implement_node.py` 補上 `context`／`class_name`／`function_name` 三個引數（見二章第 3 項）——待 translator-cli 本體（07b）落地時一併處理
 - [ ] 六章「已知關鍵字表」目前只列這個專案已知會用到的 FastAPI／SQLAlchemy／`Decimal` 型別，實際跑過真實專案後可能要補充其他框架型別（如 `BackgroundTasks`、`Header`），比照 05a 十三章「待接上真實專案輸出後校準」的既有模式
 - [ ] 七章 `TRANSLATOR_CLI_TIMEOUT_SECONDS`／`TRANSLATOR_CLI_NETWORK_RETRIES` 的預設值是估計值，需要接上真實 ollama／nginx 環境後依實測生成耗時調整
 - [ ] delimiter 抽取失敗／語法錯誤的「修正重試」prompt 具體措辭，需要用 qwen2.5-coder:32b 實測校準——不同模型對「請修正上次的格式錯誤」這類指令的遵從度不同，可能需要調整措辭甚至加入少量 few-shot 範例
 - [ ] `generate_scaffold()` 失敗時 `scaffold_node.py` 目前不會特別分流（見十二章）——這屬於 08a（骨架實作 Agent 詳細設計，待建立）該補的既知限制，07a 只確保失敗訊息清楚，不越界處理 node 層級的分流邏輯
-- [ ] **建議修正 05a 型別對應表（根因，不屬於 07a 範圍，07a 只做防禦）**：四章「型別字串正規化」發現的問題根因在 05a 五章的型別對應表——只涵蓋 JDK 集合型別，任何其他泛型包裝類別（專案自訂的 `ResponseResult<T>`、JDK `Function<T,R>`、Spring Data `Specification<T>`）落入「原樣保留字串」fallback，保留的是**未轉換的 Java 語法**。05a 文件字面上寫「交由六章 LLM 設計階段判斷」，但實測 06 章 `method_decisions` 的 LLM 呼叫只被問 `uncovered_params`／`needs_db_session`，從未被要求修正 return type——這個承諾沒有真的被兌現，`type_mapping.py` 也沒有對應的通用泛型轉換規則。07a 這裡的「型別字串正規化」是防禦性修正（保護 `generate_scaffold()` 不被上游的原始字串炸掉），**不是**取代 05a 該做的事——05a 若能在型別對應表就近直接加一條「非清單裡的泛型包裝類別，機械轉 `Foo<Bar>` → `Foo[Bar]`」規則，07a 這裡的正規化就變成單純的 defense-in-depth（永遠是 no-op，因為輸入早就已經合法），品質也會更好（05a 那層還能一併決定要不要順便處理殘留的裸型別變數 `T`／`String` 這類語意問題，07a 這裡只能做純符號轉換）。是否要回頭修 05a／05b，留給使用者評估，07a 不因此假設它一定會被修，仍然保留自己的正規化與失敗隔離機制
+- [x] ~~**建議修正 05a 型別對應表（根因，不屬於 07a 範圍，07a 只做防禦）**~~——已解決：`design_agent/type_mapping.map_java_type()` 新增 JDK functional interface 對照表（機械，零 LLM 成本）＋未知泛型的遞迴正規化＋符號轉換 fallback（見 `05a_design_agent_architecture.md` 五章「未知泛型包裝類別的處理」）；評估後確認不新增 LLM 判斷通道（`ResponseResult<T>` 的殘留問題在④骨架生成是否宣告 `Generic[T]`，`Specification<T>` 的殘留問題在⑤函式本體實作，都不是型別字串層級能解決的事）。四章「型別字串正規化」的符號轉換邏輯保留，現在對 ③ 的輸出而言恆為 no-op，是純防禦層——已依照當初設想的方向落地。**routers／services／repositories 三層套用 `from __future__ import annotations`（消掉未定義 TypeVar／不可 subscript 類別的執行期殘留風險）已一併解決**：這是渲染樣板契約本身的一部分，不必等 07b 才補——已直接定案進四章「`interfaces`：函式簽名渲染」的固定範本，「已知殘留限制」段落同步更新
+- [x] ~~`generate_scaffold(python_structure)` 沒有管道接收④自行取得的 DB schema 內容，④若自己另開一次寫入＋commit 會撞上 09a 的一次性 commit 契約與 08a／09a 的 working tree 衝突偵測~~——已解決：新增 `db_models: dict[str, str] | None = None` 引數，④把產出封裝成「檔案路徑 → 完整檔案內容」字典傳入，`generate_scaffold()` 內部併入同一個記憶體寫入佇列、跟 `interfaces`／`directory_tree` 渲染結果一起驗證、一次性寫入＋commit，見四章「`db_models`：④ 自行取得的 DB schema 內容如何併入」
+- [x] ~~06a 七章「`models/{module}.py` 無條件加入 `target_files`，沒有幽靈檔案風險」的判斷本身有誤——`generate_scaffold()` 原設計對 `models/{module}.py` 完全沒有內容來源，這個檔案在 `db_models` 修正之前實際上永遠不存在；即使加上 `db_models` 修正，沒有對應 DB 表的模組仍然合法地沒有這個檔案，`fill_function()` 逐檔讀取 `context_files` 遇到這種情況會被未攔截的 `FileNotFoundError` 直接中斷整個 task~~——已解決：七章「User / System Prompt 組裝」新增 `context_files` 讀取容錯（`FileNotFoundError` 記警告後跳過，不中斷整個呼叫），六章第 1 步同步補上 `target_file` 本身不存在時的明確 `FillResult(success=False)` 回報（原本也是未攔截的 OS 例外，同一類問題一併修正）
+- [x] ~~六章「替換」步驟：模型回傳的 delimiter 標記之間若沒有任何陳述式（只有空白／換行），`body_tree.body` 會是空清單，`ast.unparse()` 對此不會報錯、產出「有簽名沒本體」的殘缺程式碼，等步驟 10 重新 parse 才會炸，且不在七章既有的重試觸發條件涵蓋範圍內~~——已解決：六章新增步驟 6a，`not body_tree.body` 時視為與 delimiter 抽取失敗同一類「模型輸出格式錯誤」，觸發七章修正重試（已實測 `ast.parse("")` 與 `ast.unparse()` 對空 body 函式節點的實際行為，驗證這個判斷成立）
+- [x] ~~`generate_scaffold()`／`fill_function()` 兩個函式簽名都沒有任何欄位能告訴 translator-cli 要把檔案寫去哪個目錄，九章的 git 檢查、六章的檔案讀取都無法運作；二章雖然規劃了 `python_project_path` 這個環境變數與 `RefactorState` 欄位，但從未接上函式簽名本身~~——已解決：`python_project_path` 新增為兩個函式的第一個顯式引數，二章「新輸入」一節補上完整的傳遞路徑說明（`.env` → `main.py` `initial_state` → `RefactorState` → node 顯式傳入），四／五／六／八／九／十二章所有涉及檔案路徑解析與 git 操作的地方同步更新為以這個引數為準
+- [x] ~~四章 routers 層渲染樣板無條件套用 `@router.{http_method.lower()}("{route_path}")`，但 `class_name is None` 不代表這個函式一定是 API 邊界方法——05a 三章的層級判定依 Java class stereotype 整批決定，同一個 `@RestController` 底下的私有 helper／非直接對應 endpoint 的方法一樣落在 routers 層、`class_name` 一樣是 `None`，但 `http_method`／`route_path` 是 `None`（05a 五章），遇到這種方法會直接 `AttributeError: 'NoneType' object has no attribute 'lower'`，且不是理論邊角案例——05a 七章「涵蓋率規則」要求涵蓋每一個方法，任何 `@RestController` 有私有 helper 就會踩到~~——已解決：四章渲染邏輯改為先判斷 `http_method` 是否非 `None`，非 `None` 才套用 `@router` 裝飾器，否則渲染成一般自由函式（已用 Python 實測 `None.lower()` 確認 `AttributeError` 會發生，驗證這個判斷成立）
+- [x] ~~八章 commit 訊息格式 `"implement: {task_id 或 class_name.function_name} fill {target_file}"` 引用了 `task_id`，但二章／五章的 `fill_function()` 簽名從未接收這個參數，`git_ops.py` 無從取得，「task_id 或...」這個 fallback 因此是死路~~——已解決：`task_id: str` 新增為 `fill_function()` 的顯式引數（對應 06a 八章 `TaskSpec.id`），commit 訊息格式訂正為固定使用 `task_id`（不再是 fallback），`implement_node.py` 的介面異動清單同步補上 `task_id=task["id"]`
+- [x] ~~四章「已知關鍵字表」沒有 `Callable` 的 import 規則——05a 五章 Layer 2 把 `Function`／`Supplier`／`Predicate` 等 `java.util.function` 型別機械轉成 `Callable[...]`，這些字串會出現在 services／repositories 層與 routers 層非邊界方法的簽名裡，缺這個 import 會讓對應檔案的型別名稱無法正確解析~~——已解決：已知關鍵字表新增 `Callable[` → `from typing import Callable`
+- [x] ~~③組 `InterfaceSpec.params` 時，`db: Session = Depends(get_db)`（機械附加）或 LLM 決定的框架注入參數（可能同樣是 `Depends(...)` 慣例）若排在其他不帶預設值的參數之前，會產生 `SyntaxError: parameter without a default follows parameter with a default`，07a 這裡的「逐 InterfaceSpec 隔離失敗」機制雖然攔得住，但只是把根因留在 05a 沒解決~~——已在根因（05a／`design_agent/design.py`）解決，不是 07a 該扛的事：新增 `_reorder_params_defaults_last()`，③組出 `InterfaceSpec.params` 的當下就用穩定分割保證帶預設值的參數一律排最後，07a 這裡的隔離機制對這一類問題而言是 defense-in-depth，見四章「語法驗證與寫入」新增段落、`05a_design_agent_architecture.md` 七章「帶預設值的參數必須排在不帶預設值的參數之後」
 
 ---
 

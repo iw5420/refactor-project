@@ -25,7 +25,7 @@
 
 ## 零、`common/openapi_ref_resolver.py`——共用 `$ref` 展開
 
-對應 05a 五章「決策：抽為共用工具 `common/openapi_ref_resolver.py`」、00 六章「OpenAPI `$ref` 展開（共用工具）」。③ 是第一個直接對齊這個介面的 Agent；`spec_collection_agent/openapi_refs.py` 目前仍是內部各自的展開實作，尚未遷移過來共用，是已知技術債（見十一章「已知限制」），不在這次範圍內處理。
+對應 05a 五章「決策：抽為共用工具 `common/openapi_ref_resolver.py`」、00 六章「OpenAPI `$ref` 展開（共用工具）」。③／[B] Collection Agent 現在都直接呼叫這個共用介面；`spec_collection_agent/openapi_refs.py`（原本各自獨立的重複實作）已刪除，見十一章「已知限制」對應條目更新。
 
 ```python
 # common/openapi_ref_resolver.py
@@ -36,11 +36,10 @@ Agent（05a 五章）都需要對 openapi_spec 的 operation/schema 片段做同
 `components.schemas`），遞迴展開到底，不處理 `allOf`／`oneOf`／`anyOf`
 組合語法（等真的遇到再處理）。
 
-**現況**：③ 是第一個直接對齊這個共用介面的 Agent（見 05a 五章「決策：
-抽為共用工具 common/openapi_ref_resolver.py」）；`spec_collection_agent/
-openapi_refs.py` 目前仍是內部各自的展開實作，尚未遷移過來共用，是已知
-技術債（見 05a 十三章待決定事項），不在③本次設計範圍內處理——這裡的
-演算法沿用同一套邏輯，但物件上是獨立檔案，不是把舊檔案搬過來改名。
+**現況**：③（見 05a 五章「決策：抽為共用工具 common/openapi_ref_resolver.py」）
+與 [B] Collection Agent（`chain_dependency_detect.py`／`value_filler.py`）都已
+直接呼叫這裡的 `resolve_refs()`；`spec_collection_agent/openapi_refs.py`
+（原本各自獨立的重複實作）已刪除，見 05a 十三章已解決事項。
 """
 from __future__ import annotations
 
@@ -548,17 +547,44 @@ _SIMPLE_JAVA_TYPES = {
 _UNWRAP_SINGLE_PARAM = {"List": "list[{0}]", "Set": "list[{0}]", "Collection": "list[{0}]", "Optional": "{0} | None"}
 _GENERIC_RE = re.compile(r"^(\w+)<(.+)>$")
 
+# java.util.function 常見 functional interface，有唯一、明確的 Python
+# 對應（Callable 的各種形式），屬於機械規則能決定的範疇，不需要交給
+# LLM 判斷（00 二章）——回應 07a 十四章「建議修正 05a 型別對應表」的
+# 根因修正（見 map_java_type() docstring）。value 是
+# `(預期型別引數個數, 組出 Callable 字串的函式)`；型別引數個數對不上
+# 時視為理論上不該發生的情況（Java 編譯器本來就會擋掉數量錯誤的
+# 泛型引數），不硬套模板，退回下面的未知泛型 fallback。
+_FUNCTIONAL_INTERFACE_TEMPLATES = {
+    "Supplier": (1, lambda ts: f"Callable[[], {ts[0]}]"),
+    "Consumer": (1, lambda ts: f"Callable[[{ts[0]}], None]"),
+    "BiConsumer": (2, lambda ts: f"Callable[[{ts[0]}, {ts[1]}], None]"),
+    "Function": (2, lambda ts: f"Callable[[{ts[0]}], {ts[1]}]"),
+    "BiFunction": (3, lambda ts: f"Callable[[{ts[0]}, {ts[1]}], {ts[2]}]"),
+    "Predicate": (1, lambda ts: f"Callable[[{ts[0]}], bool]"),
+    "BiPredicate": (2, lambda ts: f"Callable[[{ts[0]}, {ts[1]}], bool]"),
+}
+
 
 def map_java_type(java_type: str, known_classes: frozenset[str] = frozenset()) -> str:
     """05a 五章基礎型別對應表的程式化版本，遞迴處理泛型容器。
     `known_classes`：專案內自訂 class 名稱集合，命中時原樣沿用（假設
-    同名 Python 類別存在，見 05a 五章表格最後一列）；不在表裡、也不在
-    `known_classes` 的型別原樣保留字串，交由六章 LLM 判斷（如專案內
-    少見的第三方型別，見 05a 五章表格「無法辨識的型別」）。
+    同名 Python 類別存在，見 05a 五章表格最後一列）。
 
     **`BigDecimal` → `Decimal` 只在這個函式的路徑上生效**，API 邊界方法
     改走 `resolve_api_boundary_signature()`、覆蓋不到（理由見 05a 五章
     「型別對應」）。
+
+    **未知泛型包裝類別的處理**（回應 07a 十四章「建議修正 05a 型別對應
+    表（根因）」）：不在 `_UNWRAP_SINGLE_PARAM`／`_FUNCTIONAL_INTERFACE_
+    TEMPLATES` 裡的泛型外層類別（專案自訂泛型如 `ResponseResult<T>`，
+    或其他框架型別如 `Specification<T>`）——遞迴正規化內層型別參數，
+    外層符號轉換 `Foo<Bar>` → `Foo[Bar]`，不猜測外層類別本身的語意（是
+    否該用 `Generic[T]`、該不該整個從簽名拿掉，這些判斷不是型別字串
+    層級能決定的事，留給更上游的職責範圍，見 05a 十三章「型別對應根因
+    修正：為什麼不做 LLM 判斷」）。這保證回傳的字串永遠是合法 Python
+    泛型 subscript 語法，07a 四章「型別字串正規化」的符號轉換防線因此
+    對這個函式的輸出而言恆為 no-op（純防禦，不再是實際承接轉換工作的
+    那一層）。
     """
     java_type = java_type.strip()
     if java_type in _SIMPLE_JAVA_TYPES:
@@ -568,29 +594,47 @@ def map_java_type(java_type: str, known_classes: frozenset[str] = frozenset()) -
     if match:
         outer, inner = match.group(1), match.group(2)
         if outer == "Map":
-            key_type, value_type = _split_top_level_comma(inner)
+            parts = _split_top_level_commas(inner)
+            if len(parts) != 2:
+                raise ValueError(f"無法解析 Map 泛型參數（預期 2 個型別參數，實際 {len(parts)} 個）: {inner}")
+            key_type, value_type = parts
             return f"dict[{map_java_type(key_type, known_classes)}, {map_java_type(value_type, known_classes)}]"
         if outer in _UNWRAP_SINGLE_PARAM:
             return _UNWRAP_SINGLE_PARAM[outer].format(map_java_type(inner, known_classes))
-        return java_type  # 未知的單參數泛型容器：不硬猜，原樣保留交給六章 LLM
+        if outer in _FUNCTIONAL_INTERFACE_TEMPLATES:
+            arity, render = _FUNCTIONAL_INTERFACE_TEMPLATES[outer]
+            type_args = _split_top_level_commas(inner)
+            if len(type_args) == arity:
+                return render([map_java_type(t, known_classes) for t in type_args])
+        # 未知的泛型包裝類別：遞迴正規化內層型別參數＋符號轉換
+        # <...> -> [...]，不猜測外層類別本身的語意（見 docstring）。
+        mapped_args = [map_java_type(t, known_classes) for t in _split_top_level_commas(inner)]
+        return f"{outer}[{', '.join(mapped_args)}]"
 
-    return java_type  # 命中 known_classes 或無法辨識，兩種情況都原樣沿用（見 docstring）
+    return java_type  # 命中 known_classes 或無法辨識的純量型別，原樣沿用（見 docstring）
 
 
-def _split_top_level_comma(inner: str) -> tuple[str, str]:
-    """`Map<K, V>` 的 `inner` 是 `"K, V"`，只在最外層逗號（不在巢狀
-    `<...>` 內）切分——K/V 本身仍可能是巢狀泛型（如 `Map<String,
-    List<Order>>`）。
+def _split_top_level_commas(inner: str) -> list[str]:
+    """依最外層逗號切分泛型型別引數列（不在巢狀 `<...>` 內的逗號才算數，
+    如 `Map<String, List<Order>>` 的 `inner` 是 `"String, List<Order>"`，
+    只切最外層那個逗號）。沒有頂層逗號時回傳單一元素清單（單一型別
+    引數的泛型，如 `Optional<T>`）。供 Map（固定 2 個引數）、JDK
+    functional interface（依各自 arity）、未知泛型 fallback（引數個數
+    不定）共用同一份切分邏輯，不再各自維護。
     """
     depth = 0
+    parts: list[str] = []
+    start = 0
     for i, ch in enumerate(inner):
         if ch == "<":
             depth += 1
         elif ch == ">":
             depth -= 1
         elif ch == "," and depth == 0:
-            return inner[:i].strip(), inner[i + 1 :].strip()
-    raise ValueError(f"無法解析 Map 泛型參數（找不到最外層逗號）: {inner}")
+            parts.append(inner[start:i].strip())
+            start = i + 1
+    parts.append(inner[start:].strip())
+    return parts
 
 
 _OPENAPI_SCALAR_TYPE = {"integer": "int", "number": "float", "string": "str", "boolean": "bool"}
@@ -939,6 +983,8 @@ def schema_name_for(operation: dict, *, part: str) -> str | None:
 **巢狀 `$ref` 型別**：額外驗證過 `User` 帶一個 `orders: List[Order]` 欄位（`Order` 是另一個具名 schema）的情況，`extract_schema_fields()` 正確產出 `"list[Order]"`，不是展開後退化成的 `"list[object]"`。
 
 **陣列包裝的 requestBody／response**：額外驗證過 requestBody 是 `List<UserCreateRequest>`（openapi 的 `requestBody` schema 是 `type: array, items: {$ref: UserCreateRequest}`）的情況——`schema_name_for()` 正確取到 `"UserCreateRequest"` 供 `_simple_type_name()` 比對（確認 `_simple_type_name("List<UserCreateRequest>")` 正確剝到 `"UserCreateRequest"`，不是誤取外層的 `"List"`），但最終寫進 `InterfaceSpec` 的參數型別是 `"list[UserCreateRequest]"`，不是弄丟容器語意的裸 `"UserCreateRequest"`；response 是同樣的陣列包裝時，`return_type` 也正確是 `"list[UserCreateRequest]"`。`collect_named_schemas()` 對這兩種陣列包裝的情況都正確收到 `("UserCreateRequest", ...)`，不會因為外層是陣列就漏收，Schema 定義段照樣會有 `class UserCreateRequest(BaseModel):`。
+
+**型別對應根因修正（回應 07a 十四章「建議修正 05a 型別對應表（根因）」，見 05a 五章「未知泛型包裝類別的處理」）已驗證**：`tests/design_agent/test_type_mapping.py`（24 筆）逐一驗證 JDK functional interface 表（`Supplier`／`Consumer`／`BiConsumer`／`Function`／`BiFunction`／`Predicate`／`BiPredicate`，含 inner 型別遞迴正規化、arity 對不上時正確退回未知泛型 fallback 而非 `IndexError`）與未知泛型 fallback；並直接複現 07a 四章原文列出的三個真實案例，逐一驗證輸出接進函式簽名後能通過 `ast.parse()`：`ResponseResult<T>` → `ResponseResult[T]`、`ResponseResult<Map<String, Object>>` → `ResponseResult[dict[str, Object]]`（巢狀 `Map` 遞迴正規化成 `dict[...]`，不是留下 `Map[String, Object]` 這種同樣不合法的殘留）、`Specification<ExamEntity>` → `Specification[ExamEntity]`。全專案 227 個測試通過。
 
 ---
 
@@ -1768,6 +1814,35 @@ def _build_method_contexts(
     return contexts
 
 
+def _reorder_params_defaults_last(params: list[ParamSpec]) -> list[ParamSpec]:
+    """Python 函式簽名要求「帶預設值的參數必須排在不帶預設值的參數之後」
+    （否則 `SyntaxError: parameter without a default follows parameter
+    with a default`，已用真實案例驗證：`def f(a: str = 1, b: int): ...`）。
+    下方 `_design_module()` 組 `params` 的順序是業務參數（`ctx.params`，
+    Java 原始簽名順序，一律不帶預設值）→ `extra_params`（六章 LLM 決定
+    的框架注入參數，型別字串可能像 `User = Depends(get_current_user)`
+    這樣自帶預設值，順序由 LLM 回應決定，沒有保證）→ `db`（機械附加，
+    只有 routers 層帶 `= Depends(get_db)` 預設值，其餘層級不帶）。任何
+    一個 `extra_params` 項目若帶預設值、且後面接著沒有預設值的其他項目
+    （另一個 `extra_params`，或機械附加的 `db`），組裝出的簽名就會違反
+    這條規則——這不是理論邊角案例，只要 LLM 判斷某個框架注入參數該用
+    FastAPI 的 `Depends(...)` 慣例（05a 五章「框架注入物件」原文舉的
+    例子就是這個），就有機會踩到。
+
+    穩定分割（stable partition）：不帶預設值的參數維持原有相對順序排在
+    前面，帶預設值的參數維持原有相對順序排在後面——不改變同一類別內部
+    的順序，只調整「有沒有預設值」這一個維度，保證輸出永遠是合法 Python
+    函式簽名，不需要要求 LLM 或後續哪個環節自己保證順序正確。用字面
+    `"="` 子字串比對判斷「帶不帶預設值」：這個專案目前所有帶預設值的
+    型別字串都來自這裡（`db` 的機械附加）或六章 LLM 的 `extra_params`
+    （如 `Depends(...)` 慣例），`map_java_type()`／openapi 覆寫產出的
+    型別字串從不含 `=`，比對不會誤判。
+    """
+    no_default = [p for p in params if "=" not in p["type"]]
+    with_default = [p for p in params if "=" in p["type"]]
+    return no_default + with_default
+
+
 def _design_module(
     module: ModuleInfo,
     boundary_index: dict[tuple[str, str, str], ApiMapping],
@@ -1826,6 +1901,7 @@ def _design_module(
             # 判斷，不是 ctx.layer（那個在無 stereotype 類別時還沒定案）。
             db_type = "Session = Depends(get_db)" if layer == "routers" else "Session"
             params.append(ParamSpec(name="db", type=db_type))
+        params = _reorder_params_defaults_last(params)
 
         interfaces.append(
             InterfaceSpec(
@@ -2001,6 +2077,7 @@ def _call_design_llm(
 - `get_by_id` 正確拿到 `userId: int` 業務參數 + LLM 決定的 `request: Request` 框架參數、回傳型別 `UserResponse`；`create` 正確拿到 `req: UserCreateRequest` 業務參數（型別比對修正後，沒有被誤判成 uncovered，見四章「已驗證」）；`helper`（private）正確產出 `function_name="_helper"`。
 - `directory_tree` 正確組出 Schema 定義段（`from pydantic import BaseModel` + `UserResponse(BaseModel)`／`UserCreateRequest(BaseModel)` 欄位）＋ `database.py`／`main.py`（含 `include_router()`）；`route_to_file_mapping` 正確帶上 `app/schemas/user.py`。
 - **db session 依層級產生不同宣告**：router 層方法標記 `needs_db_session=True` 時，正確產出 `db: Session = Depends(get_db)`；repository 層方法標記同樣的旗標時，正確產出不帶預設值的 `db: Session`（呼叫端往下傳，不是 FastAPI DI 進入點）。
+- **`_reorder_params_defaults_last()` 保證帶預設值的參數永遠排最後**：直接單元測試（`tests/design_agent/test_reorder_params.py`）驗證——`db`（帶 `= Depends(get_db)`）排在不帶預設值參數之前的組合，重排後正確移到最後，且移除重排這一步的話同一組輸入確實會是 `SyntaxError`（用 `ast.parse()` 反向確認問題本身存在）；多個帶預設值的參數（如同時有 `extra_params` 決定的 `Depends(get_current_user)` 與機械附加的 `db`）維持穩定排序、不打亂彼此相對順序；不帶預設值、全帶預設值、空清單三種輸入原樣不變。
 - **`related_files` 不含幽靈檔案**：一個只有 inline response schema（無 `$ref`）的 module，`directory_tree` 不會產出 `schemas/{module}.py`，`route_to_file_mapping` 也正確不把這個檔案路徑塞進 `related_files`；換成另一個有具名 schema 的 module 則正常帶上——`modules_with_schema_file` 精確追蹤到「這個 module 六章實際有沒有產出 schema 檔案」，不是用「有沒有 router 檔案」猜測。
 - **目錄結構段（`_render_directory_lines()`）涵蓋 `schemas`／`models`**：驗證過同一組多 module 輸入，目錄結構段正確列出所有 `all_module_names` 的 `app/models/{module}.py`，以及僅 `modules_with_schema_file` 裡 module 的 `app/schemas/{module}.py`（沒有具名 schema 的 module 不會出現）——跟上一條 `related_files` 的判斷邏輯共用同一個集合，兩處不會對不上。
 - **多載方法不會共用同一份 openapi operation，且挑選依參數個數而非宣告順序**：一個 class 內兩個同名多載方法（`save(String)`／`save(String, Integer)`），只有一個掛了實際 endpoint 時，驗證過 `_select_boundary_overload()` 正確挑中參數個數跟 operation 更接近的那一個拿到 openapi 覆寫的參數/回傳型別，另一個正確退回機械型別對應（`String`→`str`／`Integer`→`int`），不會兩個都套用同一份 operation；刻意把兩個多載在 `overloads` 清單裡的宣告順序對調後重跑，選中的仍是參數個數較接近的那一個，確認不是「永遠選第一個」。
@@ -2265,7 +2342,7 @@ async def run(state: RefactorState) -> dict:
 - **`_build_boundary_index()` 的多載碰撞（索引層級）**：`ApiMapping.java_controller` 不含參數簽名，同一 class 內若有多載方法各自掛不同 endpoint，索引本身只保留最後一筆 `ApiMapping`（見 `design.py` 該函式 docstring）——這一層的限制還在；但**消費端已經比宣告順序更好一步**：`_select_boundary_overload()` 依 Java 參數個數跟 operation 的 `parameters`＋`requestBody` 個數比對，挑參數個數最接近的那個多載套用這筆 operation，不會讓多個多載共用同一份 operation，也不再是「宣告順序第一個就中」（見七章「已驗證」）。這仍是啟發式、不是精確消歧——若兩個多載參數個數剛好相同，還是可能選錯。真實專案若真的出現這種多載碰撞，需要索引升級成 `dict[key, list[ApiMapping]]` 並想辦法消歧（可能需要 [B] Collection Agent 在 `ApiMapping` 額外帶入 Java 參數型別資訊）。
 - **`_classify_params()` 的 requestBody 型別比對退化情形**：Java DTO 類別名稱與 springdoc 產生的 schema 名稱不一致、且同一方法有多個型別比對不到的參數時，全部落入 `uncovered_params`、交給六章 LLM 依描述語境判斷，沒有更精確的機械手段（見 `type_mapping._classify_params()` docstring「已知限制」，這點 05a 十三章本來就列為「待接上真實專案輸出後校準」）。
 - **`route_mapping._module_of()` 的檔名慣例耦合**：從 `file_path` 反推 module 名稱依賴 `layout.file_path_for_layer()` 的命名慣例（`{module}_{layer_singular}.py`），兩邊若日後各自演化，需要同步維護；沒有另外傳一份 `file_path -> module` 對照表的原因是這份資訊在六章當下就有（`_design_module()` 內部知道），但 `route_mapping.py` 刻意設計成純函式、只吃 `interfaces`，不額外要求呼叫端多傳一份輔助結構。
-- **`common/openapi_ref_resolver.py` 與 `spec_collection_agent/openapi_refs.py` 尚未合併**：延續 05a 十三章的既有技術債，這次只新增了共用介面、讓③直接對齊，03a/03c 遷移過去共用是後續一個獨立的小重構。
+- ~~**`common/openapi_ref_resolver.py` 與 `spec_collection_agent/openapi_refs.py` 尚未合併**~~——已合併：`spec_collection_agent/openapi_refs.py` 刪除，`chain_dependency_detect.py`／`value_filler.py` 改直接呼叫 `common/openapi_ref_resolver.resolve_refs()`，見 05a 十三章已解決事項。
 - **`write_route_mappings()` 不保留 `config/harness.yaml` 既有註解**：PyYAML 的 `safe_load`／`safe_dump` 不是 round-trip parser，③第一次寫入後，檔案裡原本給人看的註解會消失（機器可讀的 key/value 不受影響）。接受的取捨，不是遺漏（見 `route_mapping.write_route_mappings()` docstring）。
 - **`route_to_module_mapping`（`build_route_mappings()`／`write_route_mappings()`）是本輪新增、尚未跑過「已驗證」段落那組真實 config/harness.yaml 測試**：邏輯上與既有的 `route_to_file_mapping` 共用同一個迴圈與 key，理論上不會有獨立的失效模式，但實際跑過 `RouteMapper.resolve_module()`（02b）讀取這份新段落之前，仍算未驗證，留待接上真實③輸出後補測。
 - **`X | None` 語法要求目標 Python 服務 ≥ 3.10**：`extract_schema_fields()`／`map_java_type()` 的 `Optional` 對應都用 PEP 604 union 語法。這項前提已經明訂進 `00_refactor_architecture.md` 三章「Python 目標技術棧」，不再是隱含假設；若這個前提未來改變，`extract_schema_fields()` 跟 `map_java_type()` 都需要一併改成 `typing.Optional[T]`，不是只改其中一處（見 `type_mapping.py` 相關函式 docstring「環境前提」）。

@@ -281,7 +281,16 @@
       "Bash(python -m pytest tests/plan_agent/ -v)",
       "Bash(python -m pytest tests/plan_agent/test_planning.py::test_plan_all_modules_happy_path -q)",
       "Bash(python -m pytest tests/plan_agent/ -q)",
-      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\7d7c7a54-d4e7-4105-9d1e-1127a4a79d75\\\\scratchpad\\\\run_plan_agent_real_api.py\")"
+      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\7d7c7a54-d4e7-4105-9d1e-1127a4a79d75\\\\scratchpad\\\\run_plan_agent_real_api.py\")",
+      "Bash(python -m pytest tests/common/test_openapi_ref_resolver.py tests/spec_collection_agent/ tests/design_agent/ -q)",
+      "Bash(python -m pytest tests/design_agent/test_type_mapping.py -v)",
+      "Bash(python -m pytest tests/design_agent/ -v)",
+      "Bash(python -m pytest tests/design_agent/ --collect-only -q)",
+      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\a0858d3c-e724-465b-8f18-cee06425e9e5\\\\scratchpad\\\\verify_self_bug.py\")",
+      "Bash(python \"C:\\\\Users\\\\ace\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\D--test-2026-refactor-project\\\\a0858d3c-e724-465b-8f18-cee06425e9e5\\\\scratchpad\\\\verify_empty_body.py\")",
+      "Bash(grep -n \"填空模式：\\\\`fill_function\\\\|## 五、\" docs/07a_translator_cli_architecture.md)",
+      "Bash(python -m pytest tests/design_agent/test_reorder_params.py -v)",
+      "Bash(grep -n \"已驗證（\\\\`unittest.mock.patch\\\\`\" docs/05b_design_agent_code.md)"
     ]
   }
 }

@@ -15,9 +15,9 @@ from typing import Any
 from common.chunking import chunk_by_char_budget
 from common.concurrency import default_concurrency
 from common.llm_client import LlmJsonError, call_claude_for_json
+from common.openapi_ref_resolver import resolve_refs
 from spec_collection_agent.exceptions import ChainDependencyDetectionError
 from spec_collection_agent.llm import DEFAULT_MODEL
-from spec_collection_agent.openapi_refs import resolve_refs
 from spec_collection_agent.prompts import (
     MAP_OUTPUT_SCHEMA,
     MAP_SYSTEM_PROMPT,

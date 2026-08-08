@@ -62,7 +62,7 @@ app/
 - **無 stereotype 的類別**（純工具類、無 annotation 的 helper）：不是機械規則能決定的情況，這部分**保留給六章的 LLM 設計階段判斷**歸屬哪一層（多半併入 `services`，但實際歸屬可能因業務語意而異），呼應 04a 四章「機械規則判斷不了時交給 LLM」的同一種分工原則。
 - **共用類別（04a 定義的 in-degree ≥ 2 類別）**：04a 的 Reduce 階段已經把每個共用類別指派到唯一一個 `module`（見 04a 四章），③ 直接信任這個歸屬，不重新判斷——一個 Java class 對應的 Python 檔案只會出現在它所屬 `module` 的那一層檔案裡，不會跨 module 重複產生。跨 module 呼叫共用類別，就是正常的 Python import，不需要特殊處理。
 
-**`directory_tree` 的定位**：`PythonStructure.directory_tree` 型別是 `str`（見 `graph/state.py`），是一段**文字**而非結構化資料。除了上面的目錄/檔案清單，③ 也把 `schemas/{module}.py` 底下**應包含哪些 Pydantic 類別與欄位**用文字列出（見五章、九章）——因為 `InterfaceSpec` 只能表達函式簽名，資料類別的欄位定義沒有對應的結構化欄位可放，只能靠這段文字傳遞給④的骨架生成呼叫（`generate_scaffold(python_structure)`，見九章）當作依據。`models/{module}.py`（SQLAlchemy ORM）不在這裡產出欄位內容——九章已明訂 DB schema 的欄位層級規格由④直接取得，不是③的職責，避免這裡跟九章各說各話。
+**`directory_tree` 的定位**：`PythonStructure.directory_tree` 型別是 `str`（見 `graph/state.py`），是一段**文字**而非結構化資料。除了上面的目錄/檔案清單，③ 也把 `schemas/{module}.py` 底下**應包含哪些 Pydantic 類別與欄位**用文字列出（見五章、九章）——因為 `InterfaceSpec` 只能表達函式簽名，資料類別的欄位定義沒有對應的結構化欄位可放，只能靠這段文字傳遞給④的骨架生成呼叫（`generate_scaffold(python_project_path, python_structure, db_models=None)`，見九章、`07a_translator_cli_architecture.md` 四章）當作依據。`models/{module}.py`（SQLAlchemy ORM）不在這裡產出欄位內容——九章已明訂 DB schema 的欄位層級規格由④直接取得，不是③的職責，避免這裡跟九章各說各話。
 
 **格式慣例（機械產生，固定格式，不是自由文字）**：`directory_tree` 字串固定分三段——
 
@@ -183,13 +183,18 @@ app/
 | `Optional<T>` | `T \| None` |
 | `void` | `None` |
 | 專案內自訂 class `Xxx` | `Xxx`（假設同名 Python 類別存在，實際定義由對應 module 的 `schemas`／`models`／service 回傳型別決定） |
-| 無法辨識的型別 | 原樣保留字串，交由六章 LLM 設計階段判斷（例如專案內少見的第三方型別） |
+| `java.util.function` 常見 functional interface（`Function`／`BiFunction`／`Supplier`／`Consumer`／`BiConsumer`／`Predicate`／`BiPredicate`） | `Callable[...]`（依各自 arity 組裝，如 `Function<T, R>` → `Callable[[T], R]`，見下方「未知泛型包裝類別」） |
+| 其他未知的泛型包裝類別（專案自訂泛型如 `ResponseResult<T>`、其他框架型別如 `Specification<T>`） | 遞迴正規化內層型別參數＋符號轉換 `Foo<Bar>` → `Foo[Bar]`，不猜測外層類別語意（見下方說明） |
 
 這張表是純字串對應，套用規則本身不需要 LLM——呼應 00 二章「能用程式判斷的，就不要交給 LLM」。
 
 **`BigDecimal` 獨立於 `double`／`float` 之外，刻意不共用同一個對應**：Java 生態系統選 `BigDecimal` 通常就是為了避開 IEEE 754 浮點誤差（金額、需要精確小數運算的場景），對到 Python `float` 會直接把這個精度保證丟掉。標準庫 `decimal` 模組的 `Decimal` 型別是 Pydantic 原生支援的型別，語意上才是正確對應。**表格裡寫的是不帶模組前綴的 `Decimal`，不是 `decimal.Decimal`**——`InterfaceSpec.params[].type`／`return_type` 裡的型別字串全部是裸名稱，`Session`／`Request`／`Annotated[User, Depends(get_current_user)]`／專案內自訂 class 都是同一個慣例（見上表其他列），實際 import 語句由④骨架生成階段自行解析，不是③在這裡就要組出完整的 dotted path。
 
 **這個對應只在非 API 邊界方法生效，覆蓋不到 API 邊界方法**：API 邊界方法改用 `openapi_spec` 決定型別（見下方「API 邊界方法：改用 openapi_spec 覆寫」），不會走這張表。springdoc 產生的 OpenAPI schema 對 `BigDecimal` 欄位通常序列化成通用的 `number` type，沒有任何欄位標示「這原本是 BigDecimal」，這種情況下 API 邊界方法的這個欄位型別仍是 `float`，不是 `Decimal`——這是「openapi_spec 為 API 邊界唯一權威來源」這個既有設計原則下的既知落差，不是型別對應表能單獨解決的問題。
+
+**未知泛型包裝類別的處理（回應 07a 十四章「建議修正 05a 型別對應表（根因）」）**：早期版本這裡寫「原樣保留字串，交由六章 LLM 設計階段判斷」，但六章 `method_decisions` 的輸出契約從未真的問過型別，這個承諾沒有兌現——07a 骨架生成階段的防禦性符號轉換（07a 四章「型別字串正規化」）因此發現真實專案裡 25/72（35%）介面的型別字串直接讓 `ast.parse()` 失敗（`ResponseResult<T>`／`Specification<ExamEntity>`／`Function<T, String>` 等）。現在改為在 `map_java_type()` 這一層機械解決：已知的 functional interface 查表轉成 `Callable[...]`（上表新增列）；其餘未知泛型遞迴正規化內層型別參數、外層符號轉換 `Foo<Bar>` → `Foo[Bar]`，保證回傳的字串永遠是合法 Python 泛型 subscript 語法（見 `type_mapping.map_java_type()` docstring）。
+
+**刻意不做 LLM 判斷**：`ResponseResult<T>` 這類專案自訂泛型，唯一殘留的問題是「`ResponseResult` 這個 class 有沒有宣告成 `Generic[T]`」——這不是型別字串層級能決定的事，是④骨架生成 `ResponseResult` 這個類別定義時的職責，屬於三章「孤兒類別／資料容器占位」判斷的鄰近缺口，不是六章型別對應能解決的。`Specification<ExamEntity>` 這類框架內部型別，真正困難在函式本體要怎麼寫等價的 SQLAlchemy 動態查詢，問 LLM「該用什麼型別」換不到解決真正問題的幫助，那是⑤/⑦ 該處理的層次。兩個代表案例拆解後都不是型別判斷能解決的問題，因此不新增 LLM 呼叫；07a 四章的符號轉換邏輯仍保留，但對這裡輸出的字串而言恆為 no-op，純粹是 defense-in-depth。
 
 ### API 邊界方法：改用 `openapi_spec` 覆寫
 
@@ -205,7 +210,7 @@ app/
 
 `common/openapi_ref_resolver.py` 對外唯一函式：`resolve_refs(fragment: dict, full_spec: dict) -> dict`，`fragment` 是呼叫端已經取出的 operation/schema 片段，`full_spec` 是完整 `openapi_spec`（供 JSON Pointer 解析用）。③、[B] 都只傳入「這次任務相關」的片段，不是整份 spec，維持 00 六章「只帶當次任務相關資料」的既有原則。
 
-**遺留事項**：03a/03c 既有的 `$ref` 展開實作目前仍是 `spec_collection_agent` 內部函式，尚未搬到 `common/`——這次只是③新增時直接對齊 `common/openapi_ref_resolver.py` 這個目標介面，03a/03c 遷移過去共用是後續一個獨立的小重構，不在③的設計範圍內處理，列入十三章待決定事項追蹤。
+**遺留事項（已解決）**：~~03a/03c 既有的 `$ref` 展開實作目前仍是 `spec_collection_agent` 內部函式，尚未搬到 `common/`~~——`spec_collection_agent/openapi_refs.py` 已刪除，`chain_dependency_detect.py`／`value_filler.py` 改直接呼叫 `common/openapi_ref_resolver.py`，見十三章已解決事項。
 
 **型別命名**：展開後的 schema 若有明確名稱（springdoc 通常會產生具名 schema，如 `UserCreateRequest`），③ 直接沿用這個名稱作為 Pydantic 類別名稱，寫入 `InterfaceSpec.params[].type`／`return_type`；同時把這個類別**應包含的欄位**（欄位名＋型別，來自展開後的 schema）機械渲染成文字，寫入三章提到的 `directory_tree` 文字區塊（`app/schemas/{module}.py` 底下），供④的骨架生成呼叫使用。這一步是機械的文字渲染，不需要 LLM 判斷。
 
@@ -213,7 +218,7 @@ app/
 
 **路徑／查詢參數**：`operation.parameters` 裡的 path/query 參數，型別直接用其 `schema.type`（走 OpenAPI 型別 → Python 型別的簡單對照，如 `integer`→`int`、`string`→`str`），不需要回頭比對 Java `@PathVariable`/`@RequestParam` 的宣告型別——`openapi_spec` 已經是可信來源。
 
-**router 層 API 邊界方法額外帶 `http_method`／`route_path`**：`InterfaceSpec` 新增兩個 nullable 欄位（見九章），只在這個方法是 router 層的 API 邊界方法時才非 `None`，值直接取自本章「查找方式」已經反查到的 `ApiMapping.http_method`／`ApiMapping.endpoint`——這筆對應在③組出這個 `InterfaceSpec` 的當下就已經算好，不是新的判斷，只是把既有的中繼結果一併寫進輸出。這樣做是為了解決④骨架生成階段的一個既有缺口：`translator_cli.generate_scaffold(python_structure)` 只吃 `PythonStructure`，若不把 HTTP method／路徑帶進 `InterfaceSpec`，④無法知道 router 函式該掛哪個 `@router.get(...)` 裝飾器；改由④／07a 自行拿 `api_to_python_target` 反查也行不通——`ApiMapping` 只到 `(module, java_controller)` 顆粒度，沒有 `function_name`，要配對到具體函式得重跑③內部「camelCase→snake_case＋多載消歧」那套邏輯（見七章「`function_name` 消歧」），等於在下游重新實作一次③已經做過的事。`route_path` 直接是 `ApiMapping.endpoint` 的原始字面值（如 `/api/v1/users/{userId}`），不需要額外轉換——path/query 參數的 `ParamSpec.name` 沿用原始 Java 參數命名、不轉 snake_case（見上方「路徑／查詢參數」），FastAPI 裝飾器裡的 `{userId}` 佔位符因此天然對得上函式參數名稱。多載方法只有 `_select_boundary_overload()`（05b 七章）選中、真正對應這個 endpoint 的那一個多載會帶上這兩個欄位，其餘多載維持 `None`，跟五章其餘欄位（`params`／`return_type`）已有的處理方式一致。`APIRouter(prefix=...)` 或裝飾器要不要寫完整路徑這類慣例，仍是④／08a 的決定範圍，③只保證資料送得到。
+**router 層 API 邊界方法額外帶 `http_method`／`route_path`**：`InterfaceSpec` 新增兩個 nullable 欄位（見九章），只在這個方法是 router 層的 API 邊界方法時才非 `None`，值直接取自本章「查找方式」已經反查到的 `ApiMapping.http_method`／`ApiMapping.endpoint`——這筆對應在③組出這個 `InterfaceSpec` 的當下就已經算好，不是新的判斷，只是把既有的中繼結果一併寫進輸出。這樣做是為了解決④骨架生成階段的一個既有缺口：`translator_cli.generate_scaffold()` 的 `python_structure` 引數只吃 `PythonStructure`（另有 `python_project_path`／`db_models` 兩個引數，跟 `InterfaceSpec` 的欄位無關，見 `07a_translator_cli_architecture.md` 四章），若不把 HTTP method／路徑帶進 `InterfaceSpec`，④無法知道 router 函式該掛哪個 `@router.get(...)` 裝飾器；改由④／07a 自行拿 `api_to_python_target` 反查也行不通——`ApiMapping` 只到 `(module, java_controller)` 顆粒度，沒有 `function_name`，要配對到具體函式得重跑③內部「camelCase→snake_case＋多載消歧」那套邏輯（見七章「`function_name` 消歧」），等於在下游重新實作一次③已經做過的事。`route_path` 直接是 `ApiMapping.endpoint` 的原始字面值（如 `/api/v1/users/{userId}`），不需要額外轉換——path/query 參數的 `ParamSpec.name` 沿用原始 Java 參數命名、不轉 snake_case（見上方「路徑／查詢參數」），FastAPI 裝飾器裡的 `{userId}` 佔位符因此天然對得上函式參數名稱。多載方法只有 `_select_boundary_overload()`（05b 七章）選中、真正對應這個 endpoint 的那一個多載會帶上這兩個欄位，其餘多載維持 `None`，跟五章其餘欄位（`params`／`return_type`）已有的處理方式一致。`APIRouter(prefix=...)` 或裝飾器要不要寫完整路徑這類慣例，仍是④／08a 的決定範圍，③只保證資料送得到。
 
 ### 框架注入物件：openapi_spec 覆寫的例外
 
@@ -286,6 +291,8 @@ app/
 
 **框架慣例參數**：任一層（`routers`／`services`／`repositories`）的方法若需要 SQLAlchemy session，由③在設計時視情況加入 `params`——這是「怎麼寫出可執行的 Python 程式碼」判斷，Java 端沒有直接對應（Java 用 Spring 的 `@Autowired`/建構子注入，不是逐一方法傳參），交由 LLM 依 FastAPI + SQLAlchemy 的慣例決定，機械表格解決不了。**不只問 `repositories`／`services`，`routers` 層也要問**：FastAPI 的依賴注入只在被 `@router` 裝飾的端點函式這一層生效，`db: Session = Depends(get_db)` 只能宣告在 router 方法上，再以一般引數往下傳給它呼叫的 service/repository；router 方法若會呼叫到需要 db 的下游，同樣需要這個參數，排除在問題範圍外會漏掉這個最常見的宣告位置。**兩種宣告方式依最終解析出的層級機械決定，不是 LLM 判斷的一部分**：`routers` 層 → `db: Session = Depends(get_db)`；`services`／`repositories` 層 → 不帶預設值的 `db: Session`（呼叫端以一般引數往下傳，不是 FastAPI DI 進入點）。
 
+**帶預設值的參數必須排在不帶預設值的參數之後**（Python 語法要求，否則 `SyntaxError: parameter without a default follows parameter with a default`，已實測驗證）：`params` 組裝順序是業務參數（一律不帶預設值）→ 六章 LLM 決定的框架注入參數（`extra_params`，型別字串可能像 `User = Depends(get_current_user)` 這樣自帶預設值，順序由 LLM 回應決定，沒有保證）→ 機械附加的 `db`（只有 `routers` 層帶預設值）。若 LLM 判斷某個框架注入參數該用 `Depends(...)` 慣例、且它不是這個清單裡最後一個不帶預設值的參數，組裝出的簽名就會違反這條規則——這不是理論邊角案例，`design.py` 因此在組裝完 `params` 後一律套用 `_reorder_params_defaults_last()`：不帶預設值的參數維持原相對順序排前面，帶預設值的排後面（穩定分割，不改變同一類別內部的順序），保證輸出永遠是合法 Python 函式簽名，不依賴 LLM 或後續任何環節自己保證順序正確。單元測試見 `tests/design_agent/test_reorder_params.py`。
+
 ---
 
 ## 八、`route_to_file_mapping` 與 `route_to_module_mapping` 產出（機械合併）
@@ -350,12 +357,12 @@ class PythonStructure(TypedDict):
 
 `route_to_file_mapping: dict` 產出後直接寫入 `config/harness.yaml` 的 `route_to_file_mapping` 段（見 `00_refactor_architecture.md` 八章、`02a_harness_architecture.md` 十一章），不需人工填寫。`route_to_module_mapping`（見八章）與它在同一次呼叫中一併產出、寫進 `config/harness.yaml` 的另一個段落，但**不是** `RefactorState` 欄位（理由見八章「只寫入 config/harness.yaml，不進 RefactorState」）。
 
-**與④的邊界**：③ 的輸出是 `translator_cli.generate_scaffold(python_structure)`（見 `translator_cli/client.py`）的唯一輸入——這個既有介面只吃 `PythonStructure`，不吃 `openapi_spec`。這代表：
+**與④的邊界**：③ 的輸出是 `translator_cli.generate_scaffold(python_project_path, python_structure, db_models=None)`（見 `07a_translator_cli_architecture.md` 四章）的 `python_structure` 這一個引數——這是③唯一貢獻的部分，不吃 `openapi_spec`。這代表：
 
 - `interfaces`：函式簽名層級，④直接依此建立空函式骨架，這是 ⑤ 呼叫 translator-cli 填空模式的目標（00 七章④）；routers 層的 API 邊界方法額外帶 `http_method`／`route_path`（見五章），讓④知道該掛哪個 `@router` 裝飾器
-- Pydantic schema／SQLAlchemy model 的**欄位內容**：`InterfaceSpec` 沒有欄位可以表達資料類別的欄位定義，因此③把這部分內容以文字形式併入 `directory_tree`（見三章、五章）；DB schema 本身（SQLAlchemy model 對應的資料表結構）不是③的職責，由④直接從既有 Postgres 測試 DB（`MOC_MATSUEXAM_TEST`，schema 已於 00 五章確認同步完成）或 Java entity 原始碼取得，00 七章原文即已明訂「④…建立目錄、base class、router 骨架、config、**DB schema**」
+- Pydantic schema／SQLAlchemy model 的**欄位內容**：`InterfaceSpec` 沒有欄位可以表達資料類別的欄位定義，因此③把這部分內容以文字形式併入 `directory_tree`（見三章、五章）；DB schema 本身（SQLAlchemy model 對應的資料表結構）不是③的職責，由④直接從既有 Postgres 測試 DB（`MOC_MATSUEXAM_TEST`，schema 已於 00 五章確認同步完成）或 Java entity 原始碼取得，封裝成 `generate_scaffold()` 的 `db_models` 引數（檔案路徑 → 完整檔案內容字串），00 七章原文即已明訂「④…建立目錄、base class、router 骨架、config、**DB schema**」，07a 四章「`db_models`：④ 自行取得的 DB schema 內容如何併入」定義了這個引數的完整契約
 
-③ 不越界去產生 DB schema 的欄位層級規格，也不需要在 `python_structure` 之外新增 State 欄位——所有必要資訊都在既有兩個欄位的既有型別範圍內傳遞。
+③ 不越界去產生 DB schema 的欄位層級規格，也不需要在 `python_structure` 之外新增 State 欄位——所有必要資訊都在既有兩個欄位的既有型別範圍內傳遞；`db_models` 是④自己組裝、經由 `generate_scaffold()` 的獨立引數傳遞，不流經③的輸出。
 
 ---
 
@@ -405,11 +412,12 @@ refactor-project/
 
 ## 十三、待決定事項
 
-- [ ] **03a/03c 遷移至 `common/openapi_ref_resolver.py`**：五章已定案③新增的 `$ref` 展開邏輯直接對齊 `common/openapi_ref_resolver.py` 這個共用介面，但 03a/03c 既有實作尚未搬過去共用，目前是兩份行為相同、程式碼各自獨立的實作——後續應把 03a/03c 改成呼叫同一個 `common` 函式，避免長期維護兩份，不在③本次設計範圍內執行
+- [x] ~~**03a/03c 遷移至 `common/openapi_ref_resolver.py`**：五章已定案③新增的 `$ref` 展開邏輯直接對齊 `common/openapi_ref_resolver.py` 這個共用介面，但 03a/03c 既有實作尚未搬過去共用，目前是兩份行為相同、程式碼各自獨立的實作~~——已遷移：`spec_collection_agent/openapi_refs.py` 刪除，`chain_dependency_detect.py`／`value_filler.py` 改 import `common.openapi_ref_resolver.resolve_refs`；原本掛在 `spec_collection_agent` 底下的假資料單元測試搬到 `tests/common/test_openapi_ref_resolver.py`（`common/openapi_ref_resolver.py` 原本沒有專屬測試，一併補上），全數通過
 - [ ] 無 stereotype 類別的層級歸屬（三章）、框架注入物件轉換（五章）、框架慣例參數注入（七章）這三處「LLM 判斷」的實際 prompt 設計與品質，待接上真實專案輸出後校準
 - [ ] `directory_tree` 的 Schema 定義段／基礎設施段／孤兒類別與資料容器占位段（三章）固定格式在 08a 設計 `generate_scaffold()` 實際解析方式時，需要反向確認本地模型（qwen2.5-coder:32b）對這個格式的辨識穩定度是否足夠，必要時調整 fenced code block 的標記慣例
 - [x] ~~孤兒類別／資料容器占位判斷優先序（三章）的第 2 分支（Lombok 標記）尚未接上真實 `lang-exam-api-refactor` 專案驗證~~——已對真實專案跑過，`LanguageRq`／`GetRandomQuestionsRq`／`TypePartRq` 等多個真實 DTO 正確渲染成 `dataclass`、標註「偵測到 Lombok/JPA 資料標記」，`common/java_annotations.DATA_CLASS_ANNOTATIONS` 這份清單涵蓋了這個專案實際用到的 Lombok annotation，沒有出現漏判。**第 4 分支（無 Lombok 標記、純欄位低信心推斷）這次沒有真實案例觸發**，這個專案的資料容器類別都有標註 Lombok annotation，仍待遇到真的沒標註的專案才能驗證這條路徑
 - [x] ~~router 層方法目前沒有任何管道把 HTTP method／路徑帶給④~~——已解決，見五章「router 層 API 邊界方法額外帶 http_method／route_path」與九章型別定義
+- [x] ~~型別對應根因修正（回應 07a 十四章「建議修正 05a 型別對應表（根因）」）：未知泛型包裝類別（`ResponseResult<T>`／`Specification<T>`／`Function<T,R>` 等）落入「原樣保留字串」fallback，保留的是未轉換的 Java 語法，07a 骨架生成階段實測 25/72（35%）介面因此讓 `ast.parse()` 失敗~~——已解決，見五章「未知泛型包裝類別的處理」：`map_java_type()` 新增 JDK functional interface 對照表（機械，零 LLM 成本）＋未知泛型的遞迴正規化＋符號轉換 fallback，兩者合計保證輸出字串永遠語法合法；評估後確認不新增 LLM 判斷通道（理由見同節「刻意不做 LLM 判斷」）。單元測試見 `tests/design_agent/test_type_mapping.py`，全專案 227 個測試通過
 
 ---
 

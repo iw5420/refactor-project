@@ -393,65 +393,11 @@ REDUCE_OUTPUT_SCHEMA: dict = {
 }
 ```
 
-### 1.4 `openapi_refs.py`——OpenAPI `$ref` 展開
+### 1.4 OpenAPI `$ref` 展開（已遷移至 `common/openapi_ref_resolver.py`）
 
 對應 03a 三章「OpenAPI `$ref` 展開（Claude API payload 組裝的共用前處理）」。人工填值模板產生（2.6 `value_filler._operation_param_schema()`）與鏈式依賴偵測（2.4 `chain_dependency_detect.group_operations_by_tag()`）共用同一個 `resolve_refs()`，組出內容之前先展開，才看得到真正的欄位名稱與型別，不用靠 DTO 類別名稱猜。
 
-```python
-# spec_collection_agent/openapi_refs.py
-"""OpenAPI `$ref` 展開，對應 03a 三章「OpenAPI `$ref` 展開（Claude API
-payload 組裝的共用前處理）」。人工填值模板產生（`value_filler.
-_operation_param_schema()`，給人看的參考欄位）與鏈式依賴偵測
-（`chain_dependency_detect.py`，送給 Claude API）組出各自需要的內容之前，
-都要先用這裡的 `resolve_refs()` 把 operation 片段裡的 `$ref` 展開成實際
-schema 定義，才看得到真正的欄位名稱與型別，不用靠 DTO 類別名稱猜。
-"""
-from __future__ import annotations
-
-from typing import Any
-
-from spec_collection_agent.types import OpenAPISpec
-
-
-def resolve_refs(obj: Any, spec: OpenAPISpec, *, _seen: frozenset[str] = frozenset()) -> Any:
-    """遞迴展開 `obj` 內出現的 `$ref`（JSON Pointer，如
-    `"#/components/schemas/SaveScoreRq"`），只展開 `obj` 實際用到的部分，
-    不會把整份 `components.schemas` 攤平塞進來（見 03a 該節 Context 控制
-    原則）。
-
-    循環參照時停止繼續展開，回傳一個帶 `_circular` 標記的殘留 `$ref`，
-    不無限遞迴。找不到指標對應的節點時原樣保留該 `$ref`，不拋例外中止
-    ——展開失敗不該讓呼叫端（填值／鏈式依賴偵測）連帶整個失敗，寧可讓
-    模型看到一個沒展開的指標，也不要讓這個函式本身變成新的硬性失敗點。
-    """
-    if isinstance(obj, dict):
-        ref = obj.get("$ref")
-        if isinstance(ref, str) and ref.startswith("#/"):
-            if ref in _seen:
-                return {"$ref": ref, "_circular": True}
-            target = _resolve_json_pointer(spec, ref)
-            if target is None:
-                return obj
-            return resolve_refs(target, spec, _seen=_seen | {ref})
-        return {k: resolve_refs(v, spec, _seen=_seen) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [resolve_refs(v, spec, _seen=_seen) for v in obj]
-    return obj
-
-
-def _resolve_json_pointer(spec: OpenAPISpec, ref: str) -> Any | None:
-    """解析 `"#/a/b/c"` 這種 JSON Pointer（RFC 6901），沿路徑走到 `spec`
-    裡對應的節點；沿路徑走不下去（key 不存在）就回傳 `None`。
-    """
-    node: Any = spec
-    for segment in ref[2:].split("/"):
-        segment = segment.replace("~1", "/").replace("~0", "~")
-        if isinstance(node, dict) and segment in node:
-            node = node[segment]
-        else:
-            return None
-    return node
-```
+**原本這裡是 `spec_collection_agent/openapi_refs.py`，`[B]` 與 ③ 架構設計 Agent 各自維護一份行為相同的展開實作**（05a 十三章曾列為技術債）。現已合併：`spec_collection_agent/openapi_refs.py` 刪除，`value_filler.py`／`chain_dependency_detect.py` 改直接 `from common.openapi_ref_resolver import resolve_refs`，跟 ③（見 `05b_design_agent_code.md` 零章）共用同一份實作——完整程式碼見 `05b_design_agent_code.md` 零章，這裡不重複貼。原本掛在 `spec_collection_agent` 底下的假資料單元測試已搬到 `tests/common/test_openapi_ref_resolver.py`。
 
 ---
 
@@ -842,8 +788,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from common.openapi_ref_resolver import resolve_refs
 from spec_collection_agent import manual_fill
-from spec_collection_agent.openapi_refs import resolve_refs
 from spec_collection_agent.postman_tree import (
     iter_leaf_items,
     normalized_path_from_item,
@@ -1126,7 +1072,7 @@ def apply_manual_fill_to_collections(
 
 1. `_condense_spec_for_chain_detection()`：剝除敘述性欄位，降低 context
 2. `_exclude_endpoints()`：從 spec 拿掉人工標記 `Decision.SKIP` 的 endpoint（見 03a 三章「輸入前先過濾 Decision.SKIP 的 endpoint」），呼叫端（`__init__.py` 階段二，見三）傳入 `excluded_endpoints` 參數
-3. `group_operations_by_tag()`：依 tag 分組（多 tag 取第一個，無 tag 進 `_untagged`），並在這一步展開每個 operation 的 `$ref`（見 1.4 `openapi_refs.py`、03a 三章「OpenAPI $ref 展開」）
+3. `group_operations_by_tag()`：依 tag 分組（多 tag 取第一個，無 tag 進 `_untagged`），並在這一步展開每個 operation 的 `$ref`（見 1.4「OpenAPI `$ref` 展開」、03a 三章「OpenAPI $ref 展開」）
 4. `_chunk_operations()`：單一 tag 過大時依字元數切子批次
 5. `_map_analyze_group()` × N：平行呼叫 Claude API 取候選，彙整所有候選 producer／consumer；候選 producer 依 `endpoint` 的 method 機械過濾，只保留 `MUTATION_METHODS`（見 03a 三章「候選 producer 僅限 mutation method」）
 6. 候選 producer 與 candidate consumer 皆非空？
@@ -1157,9 +1103,9 @@ from typing import Any
 from common.chunking import chunk_by_char_budget
 from common.concurrency import default_concurrency
 from common.llm_client import LlmJsonError, call_claude_for_json
+from common.openapi_ref_resolver import resolve_refs
 from spec_collection_agent.exceptions import ChainDependencyDetectionError
 from spec_collection_agent.llm import DEFAULT_MODEL
-from spec_collection_agent.openapi_refs import resolve_refs
 from spec_collection_agent.prompts import (
     MAP_OUTPUT_SCHEMA,
     MAP_SYSTEM_PROMPT,
