@@ -192,7 +192,7 @@ app/
 
 **這個對應只在非 API 邊界方法生效，覆蓋不到 API 邊界方法**：API 邊界方法改用 `openapi_spec` 決定型別（見下方「API 邊界方法：改用 openapi_spec 覆寫」），不會走這張表。springdoc 產生的 OpenAPI schema 對 `BigDecimal` 欄位通常序列化成通用的 `number` type，沒有任何欄位標示「這原本是 BigDecimal」，這種情況下 API 邊界方法的這個欄位型別仍是 `float`，不是 `Decimal`——這是「openapi_spec 為 API 邊界唯一權威來源」這個既有設計原則下的既知落差，不是型別對應表能單獨解決的問題。
 
-**未知泛型包裝類別的處理（回應 07a 十四章「建議修正 05a 型別對應表（根因）」）**：早期版本這裡寫「原樣保留字串，交由六章 LLM 設計階段判斷」，但六章 `method_decisions` 的輸出契約從未真的問過型別，這個承諾沒有兌現——07a 骨架生成階段的防禦性符號轉換（07a 四章「型別字串正規化」）因此發現真實專案裡 25/72（35%）介面的型別字串直接讓 `ast.parse()` 失敗（`ResponseResult<T>`／`Specification<ExamEntity>`／`Function<T, String>` 等）。現在改為在 `map_java_type()` 這一層機械解決：已知的 functional interface 查表轉成 `Callable[...]`（上表新增列）；其餘未知泛型遞迴正規化內層型別參數、外層符號轉換 `Foo<Bar>` → `Foo[Bar]`，保證回傳的字串永遠是合法 Python 泛型 subscript 語法（見 `type_mapping.map_java_type()` docstring）。
+**未知泛型包裝類別的處理**：`map_java_type()` 這一層機械解決——已知的 functional interface 查表轉成 `Callable[...]`（上表新增列）；其餘未知泛型遞迴正規化內層型別參數、外層符號轉換 `Foo<Bar>` → `Foo[Bar]`，保證回傳的字串永遠是合法 Python 泛型 subscript 語法（見 `type_mapping.map_java_type()` docstring）。
 
 **刻意不做 LLM 判斷**：`ResponseResult<T>` 這類專案自訂泛型，唯一殘留的問題是「`ResponseResult` 這個 class 有沒有宣告成 `Generic[T]`」——這不是型別字串層級能決定的事，是④骨架生成 `ResponseResult` 這個類別定義時的職責，屬於三章「孤兒類別／資料容器占位」判斷的鄰近缺口，不是六章型別對應能解決的。`Specification<ExamEntity>` 這類框架內部型別，真正困難在函式本體要怎麼寫等價的 SQLAlchemy 動態查詢，問 LLM「該用什麼型別」換不到解決真正問題的幫助，那是⑤/⑦ 該處理的層次。兩個代表案例拆解後都不是型別判斷能解決的問題，因此不新增 LLM 呼叫；07a 四章的符號轉換邏輯仍保留，但對這裡輸出的字串而言恆為 no-op，純粹是 defense-in-depth。
 
@@ -210,7 +210,7 @@ app/
 
 `common/openapi_ref_resolver.py` 對外唯一函式：`resolve_refs(fragment: dict, full_spec: dict) -> dict`，`fragment` 是呼叫端已經取出的 operation/schema 片段，`full_spec` 是完整 `openapi_spec`（供 JSON Pointer 解析用）。③、[B] 都只傳入「這次任務相關」的片段，不是整份 spec，維持 00 六章「只帶當次任務相關資料」的既有原則。
 
-**遺留事項（已解決）**：~~03a/03c 既有的 `$ref` 展開實作目前仍是 `spec_collection_agent` 內部函式，尚未搬到 `common/`~~——`spec_collection_agent/openapi_refs.py` 已刪除，`chain_dependency_detect.py`／`value_filler.py` 改直接呼叫 `common/openapi_ref_resolver.py`，見十三章已解決事項。
+**遺留事項（已解決）**：~~03a/03c 既有的 `$ref` 展開實作目前仍是 `spec_collection_agent` 內部函式，尚未搬到 `common/`~~——`spec_collection_agent/openapi_refs.py` 已刪除，`chain_dependency_detect.py`／`value_filler.py` 改直接呼叫 `common/openapi_ref_resolver.py`。
 
 **型別命名**：展開後的 schema 若有明確名稱（springdoc 通常會產生具名 schema，如 `UserCreateRequest`），③ 直接沿用這個名稱作為 Pydantic 類別名稱，寫入 `InterfaceSpec.params[].type`／`return_type`；同時把這個類別**應包含的欄位**（欄位名＋型別，來自展開後的 schema）機械渲染成文字，寫入三章提到的 `directory_tree` 文字區塊（`app/schemas/{module}.py` 底下），供④的骨架生成呼叫使用。這一步是機械的文字渲染，不需要 LLM 判斷。
 
@@ -412,12 +412,9 @@ refactor-project/
 
 ## 十三、待決定事項
 
-- [x] ~~**03a/03c 遷移至 `common/openapi_ref_resolver.py`**：五章已定案③新增的 `$ref` 展開邏輯直接對齊 `common/openapi_ref_resolver.py` 這個共用介面，但 03a/03c 既有實作尚未搬過去共用，目前是兩份行為相同、程式碼各自獨立的實作~~——已遷移：`spec_collection_agent/openapi_refs.py` 刪除，`chain_dependency_detect.py`／`value_filler.py` 改 import `common.openapi_ref_resolver.resolve_refs`；原本掛在 `spec_collection_agent` 底下的假資料單元測試搬到 `tests/common/test_openapi_ref_resolver.py`（`common/openapi_ref_resolver.py` 原本沒有專屬測試，一併補上），全數通過
 - [ ] 無 stereotype 類別的層級歸屬（三章）、框架注入物件轉換（五章）、框架慣例參數注入（七章）這三處「LLM 判斷」的實際 prompt 設計與品質，待接上真實專案輸出後校準
 - [ ] `directory_tree` 的 Schema 定義段／基礎設施段／孤兒類別與資料容器占位段（三章）固定格式在 08a 設計 `generate_scaffold()` 實際解析方式時，需要反向確認本地模型（qwen2.5-coder:32b）對這個格式的辨識穩定度是否足夠，必要時調整 fenced code block 的標記慣例
-- [x] ~~孤兒類別／資料容器占位判斷優先序（三章）的第 2 分支（Lombok 標記）尚未接上真實 `lang-exam-api-refactor` 專案驗證~~——已對真實專案跑過，`LanguageRq`／`GetRandomQuestionsRq`／`TypePartRq` 等多個真實 DTO 正確渲染成 `dataclass`、標註「偵測到 Lombok/JPA 資料標記」，`common/java_annotations.DATA_CLASS_ANNOTATIONS` 這份清單涵蓋了這個專案實際用到的 Lombok annotation，沒有出現漏判。**第 4 分支（無 Lombok 標記、純欄位低信心推斷）這次沒有真實案例觸發**，這個專案的資料容器類別都有標註 Lombok annotation，仍待遇到真的沒標註的專案才能驗證這條路徑
-- [x] ~~router 層方法目前沒有任何管道把 HTTP method／路徑帶給④~~——已解決，見五章「router 層 API 邊界方法額外帶 http_method／route_path」與九章型別定義
-- [x] ~~型別對應根因修正（回應 07a 十四章「建議修正 05a 型別對應表（根因）」）：未知泛型包裝類別（`ResponseResult<T>`／`Specification<T>`／`Function<T,R>` 等）落入「原樣保留字串」fallback，保留的是未轉換的 Java 語法，07a 骨架生成階段實測 25/72（35%）介面因此讓 `ast.parse()` 失敗~~——已解決，見五章「未知泛型包裝類別的處理」：`map_java_type()` 新增 JDK functional interface 對照表（機械，零 LLM 成本）＋未知泛型的遞迴正規化＋符號轉換 fallback，兩者合計保證輸出字串永遠語法合法；評估後確認不新增 LLM 判斷通道（理由見同節「刻意不做 LLM 判斷」）。單元測試見 `tests/design_agent/test_type_mapping.py`，全專案 227 個測試通過
+- [ ] 孤兒類別／資料容器占位判斷優先序（三章）的第 4 分支（無 Lombok 標記、純欄位低信心推斷）尚未有真實案例觸發過——目前接上的 `lang-exam-api-refactor` 專案資料容器類別都有標註 Lombok annotation，仍待遇到真的沒標註的專案才能驗證這條路徑
 
 ---
 

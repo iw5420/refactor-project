@@ -72,6 +72,14 @@ class TaskSpec(TypedDict):
 class RefactorState(TypedDict):
     # 進入點輸入（main.py 組裝 initial_state 時填入，見九）
     java_project_path: str
+    # translator-cli 寫入目標的 Python 專案根目錄，對應 .env 的
+    # PYTHON_PROJECT_PATH（見 07a_translator_cli_architecture.md 二章
+    # 「新輸入：python_project_path」）——與 refactor-project/、
+    # java_project_path 同層、各自獨立的 git repo，scaffold_node.py／
+    # implement_node.py 呼叫 translator_cli.generate_scaffold()／
+    # fill_function() 時顯式傳入，translator_cli 本身不 import
+    # graph.state（見 07a 十二章）。
+    python_project_path: str
 
     # 環境設定（main.py 從 .env 讀入，見九；implement node 需要，之前遺漏未列入 State）
     test_dsn: str          # 對應 .env 的 TEST_DB_DSN，Orchestrator 直接連 DB 用

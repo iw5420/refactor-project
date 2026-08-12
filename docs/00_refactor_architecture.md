@@ -115,9 +115,14 @@ Orchestrator 是**純 Python 程式邏輯，不是 Agent**。
 
 ### 程式碼執行工具：translator-cli（自製）
 
-LangGraph 呼叫本地模型完成程式碼填寫的橋接工具，取代通用的 chat 式編輯工具（如 aider）。核心設計是「填空式」輸出契約：給模型已知的函式簽名（骨架已建好）+ Java 原始邏輯，模型只回傳函式本體，由 CLI 用 AST 精準插入，而非依賴模型生成可精確比對原文的 diff。每次呼叫只帶入「當次任務相關」的檔案，控制 context 大小；寫入前後搭配 git snapshot 與語法驗證，確保每個 task 的異動可追蹤、可回滾。
+Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（如 aider），對外提供**兩種各自獨立的模式**：
 
-> **連線方式**：translator-cli 不是直接打 ollama，中間多掛一層 **nginx 反向代理**做 token 驗證——本地模型機器對外只開放 nginx 的 port，nginx 驗證 `Authorization: Bearer <token>` 通過後才轉發給後面的 ollama；ollama 本身沒有變、還是同一顆 `qwen2.5-coder:32b`。詳見四、環境架構。
+- **骨架生成模式**（④ 呼叫）：輸入是 Agent ③ 已經決定好的 `python_structure`（目錄結構＋每個檔案路徑、class、函式簽名，見七/③）與④自行取得的 `db_models`。這一步**不呼叫任何模型**——③ 送到這一步的資料已經結構化、無歧義，translator-cli 只是把它機械組裝、渲染成語法正確的空殼 `.py` 檔案（函式本體固定 `pass`），純粹是同步、確定性的字串／AST 組裝，不需要模型判斷或創造。
+- **填空模式**（⑤ 呼叫）：輸入是骨架生成模式已建好的函式簽名 + [P] 拆出的單一 task（Java 業務邏輯描述）。這一步才真的呼叫本地模型（qwen2.5-coder:32b）——核心設計是「填空式」輸出契約：給模型已知的函式簽名 + Java 原始邏輯，模型只回傳函式本體，由 CLI 用 AST 精準插入，而非依賴模型生成可精確比對原文的 diff。每次呼叫只帶入「當次任務相關」的檔案，控制 context 大小。
+
+兩種模式都在寫入前後搭配 git snapshot 與語法驗證，確保每個 task 的異動可追蹤、可回滾。
+
+> **連線方式（僅填空模式適用）**：translator-cli 不是直接打 ollama，中間多掛一層 **nginx 反向代理**做 token 驗證——本地模型機器對外只開放 nginx 的 port，nginx 驗證 `Authorization: Bearer <token>` 通過後才轉發給後面的 ollama；ollama 本身沒有變、還是同一顆 `qwen2.5-coder:32b`。骨架生成模式完全不會觸發這條連線，全程留在 Orchestrator 所在機器內完成。詳見四、環境架構。
 
 → 完整設計（adapter 介面、delimiter 契約、git snapshot 流程、衝突偵測）見 `07a_translator_cli_architecture.md`。
 
@@ -138,13 +143,15 @@ LangGraph 呼叫本地模型完成程式碼填寫的橋接工具，取代通用�
 ├── LangGraph Orchestrator（輕量 Python 流程控制）
 ├── Claude API 呼叫（雲端，解析/設計/Debug Agent）
 ├── Java／Python 服務（本機執行：[A] 啟動的 java -jar、日後 Python 服務同樣跑在這台機器）
-└── translator-cli（subprocess 呼叫）→ HTTP（帶 Authorization: Bearer <token>）→ 另一台 Mac
-                                        └── nginx（反向代理，驗證 token）
-                                             └── ollama（僅接受來自 nginx 的本機轉發）
-                                                  └── qwen2.5-coder:32b（程式碼實作）
+└── translator-cli（subprocess 呼叫）
+      ├── 骨架生成模式（④）：純機械組裝，全程留在這台機器，不發出任何請求
+      └── 填空模式（⑤）：HTTP（帶 Authorization: Bearer <token>）→ 另一台 Mac
+                            └── nginx（反向代理，驗證 token）
+                                 └── ollama（僅接受來自 nginx 的本機轉發）
+                                      └── qwen2.5-coder:32b（程式碼實作）
 ```
 
-> 本地模型機器對外只曝露 nginx 的 port，ollama 自己的 port（預設 `11434`）不對外開放，只接受 nginx 轉發進來的請求；translator-cli 端的 `OLLAMA_BASE_URL` 因此指向的是 nginx，而不是 ollama 本身。
+> 本地模型機器對外只曝露 nginx 的 port，ollama 自己的 port（預設 `11434`）不對外開放，只接受 nginx 轉發進來的請求；translator-cli 端的 `OLLAMA_BASE_URL` 因此指向的是 nginx，而不是 ollama 本身。這條連線只有填空模式會用到，骨架生成模式不涉及。
 
 ---
 
@@ -166,7 +173,7 @@ LangGraph 呼叫本地模型完成程式碼填寫的橋接工具，取代通用�
 
 **你的電腦（額外）**
 - translator-cli（自製工具）與其依賴（AST 處理套件、git）
-- 確認 git 已初始化 Python 專案目錄，作為 translator-cli 寫入前後 snapshot 的版控基礎
+- Python 目標專案（translator-cli 寫入目標）：與 `refactor-project/`、Java 專案複製版同層、獨立的第三個資料夾，有自己的 `.git`（`git init` 過、沒有任何 commit），`.env` 新增 `PYTHON_PROJECT_PATH` 指向這個目錄——完整目錄配置與一次性準備步驟見 `07a_translator_cli_architecture.md` 二章「新輸入：python_project_path」
 - 確認 `.env` 的 `OLLAMA_API_KEY` 與另一台 Mac 上 nginx 設定的 token 一致
 
 → translator-cli 的安裝與設定細節見 `07a_translator_cli_architecture.md`。
@@ -361,9 +368,9 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 ### ④ 骨架實作 Agent（translator-cli）
 
-依 Agent ③ 的目錄結構與 interface 定義，建立目錄、base class、router 骨架、config、DB schema，不含業務邏輯。骨架階段產出的函式簽名，是 Agent ⑤ 呼叫 translator-cli 時「填空」的目標。
+依 Agent ③ 已經決定好的 `python_structure`（目錄結構＋interface 定義，見三/translator-cli），透過 translator-cli 骨架生成模式機械組裝出目錄、base class、router 骨架、config、DB schema，不含業務邏輯、不呼叫本地模型。骨架階段產出的函式簽名，是 Agent ⑤ 呼叫 translator-cli 填空模式時的目標。
 
-> **不呼叫本地模型**：`generate_scaffold()`（骨架生成模式）是同步、確定性的機械組裝，`PythonStructure` 送到這一步時已經是結構化、無歧義的資料，不需要模型判斷或創造——這點原本的假設（骨架生成也呼叫 qwen2.5-coder:32b）已在 `07a_translator_cli_architecture.md` 四章修正，只有⑤的「填空模式」`fill_function()` 才真的呼叫本地模型（見七/⑤）。DB schema 內容由④自行從既有 DB 或 Java entity 取得、封裝成 `db_models` 傳給 `generate_scaffold()`（見 07a 四章），這一步同樣是機械讀取，不需要模型。
+> DB schema 內容由④自行從既有 DB 或 Java entity 取得、封裝成 `db_models` 傳給 `generate_scaffold()`（見 07a 四章），這一步同樣是機械讀取，不需要模型。
 >
 > 與 [P] Plan Agent 平行執行，兩者都完成後才進入 Agent ⑤。
 
@@ -437,7 +444,6 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 
 ## 十、待決定事項
 
-- [ ] translator-cli 的 git commit 顆粒度與平行寫入的鎖機制，細節待 `07a_translator_cli_architecture.md` 定案
 - [ ] **`skipped_interfaces`（④ 骨架生成，見 07a 四章）與 [P] Plan Agent 涵蓋率保證（06a 三章「強制 1:1 涵蓋率」）之間的結構性缺口**：[P] 與④是平行分支（見一章流程圖，兩者都只依賴③的輸出、互不依賴），[P] 拆 task 時**結構上看不到**④實際跳過了哪些 `InterfaceSpec`——若④因型別字串殘留問題（07a 四章「已知殘留限制」）跳過某個介面，[P] 仍會照常為它產生 task，這個缺口要到⑤呼叫 `fill_function()` 時才會在「AST 定位失敗：scaffold/task 不一致」這一步爆出來，訊息看起來像⑤的實作問題，根因其實在④。真實觸發機率極低（05a Layer 1/2 型別修正後，唯一已知殘留案例是這個專案沒出現過的萬用字元泛型，見 07a 四章），不建議為此打破 [P]/④ 平行執行縮短關鍵路徑的既有設計（那需要改一章流程圖與 01 的圖結構，代價遠高於效益）。**建議落點**：08a 決定 `skipped_interfaces` 是否要進 `RefactorState`（07a 十二章已把這題留給 08a）；06a 補一條「已知例外」，說明「AST 定位失敗：scaffold/task 不一致」這個特定錯誤代表的是④的 scaffold 缺口、不是⑤的實作錯誤；09a／⑦ Debug Agent（皆待建立）據此把這種失敗歸類成「回頭找④」而非「回頭找⑤」的訊號
 
 ---
