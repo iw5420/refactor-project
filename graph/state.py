@@ -113,6 +113,15 @@ class RefactorState(TypedDict):
     # Agent ④：平行分支旗標，scaffold 節點回傳「做完了」用，僅供除錯觀察，
     # LangGraph 的 fan-in（見五）靠邊結構完成，不依賴讀取這個值
     scaffold_done: bool
+    # Agent ④：generate_scaffold() 回傳的 skipped_interfaces／
+    # skipped_db_models（見 07a 四章、08a 十二章），單次寫入的快照，不
+    # 逐次累加，不需要 reducer——scaffold 不在 retry_count 迴圈內，只會
+    # 執行一次。skipped_db_models 固定是 {file_path, class_name, error}
+    # 三欄位 schema（class_name 為 None 代表 07a 檔案級失敗，非 None 代表
+    # 08a entity 級失敗，見 08a 十二章），下游（09a／⑦ Debug Agent）不需要
+    # 分辨兩種來源各自的欄位形狀。
+    skipped_interfaces: list[dict]
+    skipped_db_models: list[dict]
 
     # Agent ⑤（逐 task 累積寫入，需要 reducer）
     completed_tasks: Annotated[list[str], operator.add]

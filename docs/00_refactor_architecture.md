@@ -49,7 +49,7 @@
 | ② 測試 Agent（Harness 錄製端） | 對 Java 服務執行 Postman，記錄 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
 | ③ 架構設計 Agent | 輸出 Python 專案結構、模組 interface、route_to_file_mapping | `05a_design_agent_architecture.md` / `05b_design_agent_code.md` |
 | [P] Plan Agent | 產出 Agent ⑤ 的 task list | `06a_plan_agent_architecture.md` / `06b_plan_agent_code.md` |
-| ④ 骨架實作 Agent | 建立目錄與骨架（呼叫 translator-cli「骨架生成模式」） | `08a_scaffold_agent_architecture.md` / `08b_scaffold_agent_code.md`（待建立，介面定義見 `07a_translator_cli_architecture.md`） |
+| ④ 骨架實作 Agent | 建立目錄與骨架（呼叫 translator-cli「骨架生成模式」），並從 Java entity 原始碼組出 `db_models` | `08a_scaffold_agent_architecture.md` / `08b_scaffold_agent_code.md` |
 | ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md`（待建立，介面定義見 `07a_translator_cli_architecture.md`） |
 | ⑥ 測試執行 Agent（Harness 驗證端） | 對 Python 服務執行 Postman，比對 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
 | ⑦ Debug Agent | 分析 diff、定位問題，回饋給 ⑤ | `10a_debug_agent_architecture.md` / `10b_debug_agent_code.md`（待建立） |
@@ -280,7 +280,16 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 `[B] Collection Agent`（見 03a）與 `③ 架構設計 Agent`（見 05a 五章）都需要對 `openapi_spec` 的 operation/schema 片段做同一件事：遞迴展開 `$ref`，只展開這次任務相關的片段（不整包攤平 `components.schemas`），遞迴展開到底，不處理 `allOf`／`oneOf`／`anyOf` 組合語法。跟前兩節同一種情況——兩個 Agent 需要的是同一份機械邏輯，不是恰好想法一致，因此集中到 `common/openapi_ref_resolver.py`：
 
 - `common/openapi_ref_resolver.resolve_refs(fragment: dict, full_spec: dict) -> dict`：唯一對外函式，`fragment` 是呼叫端已取出的 operation/schema 片段，`full_spec` 是完整 `openapi_spec`（供 JSON Pointer 解析用）
-- **現況**：`③`／`[B]`（03a/03c）皆已直接呼叫 `common/openapi_ref_resolver.py`；`spec_collection_agent` 原本各自獨立的展開實作（`openapi_refs.py`）已刪除，見 `05a_design_agent_architecture.md` 十三章已解決事項
+- `③`／`[B]`（03a/03c）皆直接呼叫這個共用函式，不各自維護獨立的展開實作
+
+### Java 型別／命名對應（共用工具）
+
+③ 架構設計 Agent（方法簽名的型別／命名轉換，見 `05a_design_agent_architecture.md` 五章）與④骨架實作 Agent（JPA entity 欄位的型別／命名轉換，見 `08a_scaffold_agent_architecture.md` 五章）都需要「Java 型別字面字串 → Python 型別字串」（如 `BigDecimal` → `Decimal`、`Optional<String>` → `str | None`）與「Java camelCase 識別字 → Python snake_case 識別字」這兩件事，規則完全相同，不是恰好想法一致，因此集中到 `common/java_type_mapping.py`：
+
+- `common/java_type_mapping.map_java_type(java_type: str, known_classes: frozenset[str] = frozenset()) -> str`：遞迴處理泛型容器，未知型別原樣沿用
+- `common/java_type_mapping.camel_to_snake(name: str) -> str`：camelCase 轉 snake_case，連續大寫（縮寫）視為單一詞界
+- `design_agent/type_mapping.py` 從這裡 `import camel_to_snake, map_java_type`，既有呼叫端（`type_mapping.map_java_type(...)` 這種模組屬性存取寫法）不需要改動，見 05a 五章、08a 五章
+- `map_java_type()` 額外涵蓋 `java.time`／`java.util` 日期時間型別對應（`LocalDate`／`LocalDateTime`／`LocalTime`／`Date`／`Instant`），見 08a 五章
 
 ### Java class annotation 判斷（共用工具）
 
@@ -444,7 +453,7 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 
 ## 十、待決定事項
 
-- [ ] **`skipped_interfaces`（④ 骨架生成，見 07a 四章）與 [P] Plan Agent 涵蓋率保證（06a 三章「強制 1:1 涵蓋率」）之間的結構性缺口**：[P] 與④是平行分支（見一章流程圖，兩者都只依賴③的輸出、互不依賴），[P] 拆 task 時**結構上看不到**④實際跳過了哪些 `InterfaceSpec`——若④因型別字串殘留問題（07a 四章「已知殘留限制」）跳過某個介面，[P] 仍會照常為它產生 task，這個缺口要到⑤呼叫 `fill_function()` 時才會在「AST 定位失敗：scaffold/task 不一致」這一步爆出來，訊息看起來像⑤的實作問題，根因其實在④。真實觸發機率極低（05a Layer 1/2 型別修正後，唯一已知殘留案例是這個專案沒出現過的萬用字元泛型，見 07a 四章），不建議為此打破 [P]/④ 平行執行縮短關鍵路徑的既有設計（那需要改一章流程圖與 01 的圖結構，代價遠高於效益）。**建議落點**：08a 決定 `skipped_interfaces` 是否要進 `RefactorState`（07a 十二章已把這題留給 08a）；06a 補一條「已知例外」，說明「AST 定位失敗：scaffold/task 不一致」這個特定錯誤代表的是④的 scaffold 缺口、不是⑤的實作錯誤；09a／⑦ Debug Agent（皆待建立）據此把這種失敗歸類成「回頭找④」而非「回頭找⑤」的訊號
+- [ ] **06a 是否要為「[P]／④ 平行執行、彼此看不到對方輸出」這個結構性限制補一條「已知例外」文字說明**：資料面已經有 `RefactorState.skipped_interfaces`／`skipped_db_models`（`scaffold_node.py` 寫入，見 08a 十二章）供之後的 09a／⑦ Debug Agent 在遇到「AST 定位失敗：scaffold/task 不一致」時比對，判斷根因是④的骨架缺口、不是⑤的實作問題；這裡懸而未決的只是 06a 文件本身要不要額外補一段對應說明，不影響資料落地
 
 ---
 
@@ -466,7 +475,7 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 | `06b_plan_agent_code.md` | [P] Plan Agent 的實際程式碼實作 |
 | `07a_translator_cli_architecture.md` | translator-cli 詳細設計：填空契約、骨架生成介面、AST 插入機制、git snapshot 流程、衝突偵測、目標語言 adapter 介面 |
 | `07b_translator_cli_code.md` | translator-cli 的實際程式碼實作 |
-| `08a_scaffold_agent_architecture.md` | ④ 骨架實作 Agent 詳細設計：如何依 ③ 的輸出呼叫 translator-cli 骨架生成介面 |
+| `08a_scaffold_agent_architecture.md` | ④ 骨架實作 Agent 詳細設計：如何依 ③ 的輸出呼叫 translator-cli 骨架生成介面、`db_models` 如何從 Java entity 原始碼組出（JPA entity 掃描、table／欄位對應、`RefactorState` 介面異動） |
 | `08b_scaffold_agent_code.md` | ④ 骨架實作 Agent 的實際程式碼實作 |
 | `09a_implement_agent_architecture.md` | ⑤ 功能改寫 Agent 詳細設計：task list 消費邏輯、module 排程、task／module 兩層驗證觸發時機 |
 | `09b_implement_agent_code.md` | ⑤ 功能改寫 Agent 的實際程式碼實作 |

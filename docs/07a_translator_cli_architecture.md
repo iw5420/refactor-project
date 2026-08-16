@@ -73,16 +73,11 @@ async def fill_function(
 
 **`task_id` 是必要引數**：對應 06a 八章 `TaskSpec.id`（`task_{:03d}` 格式，穩定、可重現），讓 `git log`（八章 commit 訊息格式）能精確對回 [P] Plan Agent 產出的具體 task，不需要每次靠 `class_name.function_name` 反推——尤其同一個 `(class_name, function_name)` 若因為某種原因被呼叫超過一次（見五章「冪等」），只有 `task_id` 才能唯一區分是哪一次呼叫留下的 commit。
 
-`python_project_path` 是**呼叫端顯式傳入**的引數，不是 translator-cli 自己讀 `os.environ["PYTHON_PROJECT_PATH"]`，也不是靠 import `graph.state` 去拿——這跟 `python_structure`／`task.*` 這些既有引數是同一種模式：`.env` 的值先進 `main.py` 組的 `initial_state`（見「與既有程式碼的介面異動」第 3 項），流進 `RefactorState.python_project_path`，`scaffold_node.py`／`implement_node.py` 從 state 取出後再顯式傳給 translator-cli，translator-cli 本身仍然不 import `graph.state`（見十二章），維持既有的獨立性原則。下方四／五／六／八／九章所有描述「目標目錄」「target_file 現有內容」「git repo」的地方，一律以呼叫端傳入的這個 `python_project_path` 為準（`Path(python_project_path) / target_file` 這類相對路徑解析）。
+`python_project_path` 是**呼叫端顯式傳入**的引數，不是 translator-cli 自己讀 `os.environ["PYTHON_PROJECT_PATH"]`，也不是靠 import `graph.state` 去拿——這跟 `python_structure`／`task.*` 這些既有引數是同一種模式：`.env` 的值先進 `main.py` 組的 `initial_state`（見下方「與既有程式碼的介面異動」），流進 `RefactorState.python_project_path`，`scaffold_node.py`／`implement_node.py` 從 state 取出後再顯式傳給 translator-cli，translator-cli 本身仍然不 import `graph.state`（見十二章），維持既有的獨立性原則。下方四／五／六／八／九章所有描述「目標目錄」「target_file 現有內容」「git repo」的地方，一律以呼叫端傳入的這個 `python_project_path` 為準（`Path(python_project_path) / target_file` 這類相對路徑解析）。
 
 ### 與既有程式碼的介面異動
 
-本文件設計出的契約，需要對已實作的部分做以下**小幅**異動，列在這裡供使用者確認是否要一併套用：
-
-1. `graph/state.py`：`RefactorState` 新增 `python_project_path: str` 欄位——尚待套用
-2. `graph/nodes/implement_node.py`：`_run_one_task()` 呼叫 `translator_cli.fill_function()` 時補上 `python_project_path=state["python_project_path"]`／`task_id=task["id"]`／`class_name=task["class_name"]`／`function_name=task["function_name"]`／`context=task["context"]` 五個引數（目前只傳了 `target_file`／`description`／`context_files`）——`implement_node.py` 目前仍是 stub 階段，等 translator-cli 本身（07b）落地時一併處理
-3. `main.py`：`initial_state` 新增 `"python_project_path": os.environ["PYTHON_PROJECT_PATH"]`
-4. `graph/nodes/scaffold_node.py`：呼叫 `translator_cli.generate_scaffold()` 時補上 `python_project_path=state["python_project_path"]`（目前的 stub／既有實作只傳了 `python_structure`）——等 07b 落地時一併處理
+本文件設計出的契約需要對 `graph/state.py`／`main.py`／`graph/nodes/scaffold_node.py`／`graph/nodes/implement_node.py` 做小幅異動（新增 `python_project_path` 欄位並在對應呼叫點傳遞）——這份異動清單已經全部套用完成，實際內容以 `07b_translator_cli_code.md` 九章「與既有程式碼的介面異動」為準，不在這裡重複列一份會跟著實作進度過期的清單。
 
 ---
 
@@ -190,7 +185,7 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
 
 每個函式的 `params`／`return_type` 字串裡可能出現需要額外 import 的型別（`Session`、`Depends(...)`、專案內自訂 class 如 `UserCreateRequest`）。`generate_scaffold()` 用兩層規則機械決定每個檔案開頭要加哪些 import：
 
-1. **已知關鍵字表（機械，涵蓋這個專案已知會出現的框架型別）**：型別字串命中以下關鍵字就加對應 import，一個檔案內出現多次只加一次。以英數字元結尾的關鍵字（`Session`／`get_db`／`Request`／`UploadFile`／`HTTPException`／`Decimal`——下表除了 `Depends(`／`Callable[` 以外的全部）用單字邊界比對（Python 識別字不能包含非英數字元，邊界即等同識別字邊界），避免命中自訂型別名稱剛好包含這個關鍵字當子字串的情況（Java DTO 常見命名 `LoginRequest`／`UserSession` 這種以 Request／Session 結尾的類別，若用純子字串比對會被誤判成需要 import 標準庫的 `Request`／`Session`）；以標點結尾的關鍵字（`Depends(`／`Callable[`）維持純子字串比對，理由見下方 `Callable` 說明：
+1. **已知關鍵字表（機械，涵蓋這個專案已知會出現的框架型別）**：型別字串命中以下關鍵字就加對應 import，一個檔案內出現多次只加一次。以英數字元結尾的關鍵字（`Session`／`get_db`／`Request`／`UploadFile`／`HTTPException`／`Decimal`／`date`／`datetime`／`time`／`UUID`——下表除了 `Depends(`／`Callable[` 以外的全部）用單字邊界比對（Python 識別字不能包含非英數字元，邊界即等同識別字邊界），避免命中自訂型別名稱剛好包含這個關鍵字當子字串的情況（Java DTO 常見命名 `LoginRequest`／`UserSession` 這種以 Request／Session 結尾的類別，若用純子字串比對會被誤判成需要 import 標準庫的 `Request`／`Session`）；以標點結尾的關鍵字（`Depends(`／`Callable[`）維持純子字串比對，理由見下方 `Callable` 說明：
 
    | 命中關鍵字 | 加入的 import |
    |---|---|
@@ -201,14 +196,21 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
    | `UploadFile` | `from fastapi import UploadFile` |
    | `HTTPException` | `from fastapi import HTTPException` |
    | `Decimal` | `from decimal import Decimal` |
+   | `date` | `from datetime import date` |
+   | `datetime` | `from datetime import datetime` |
+   | `time` | `from datetime import time` |
+   | `UUID` | `from uuid import UUID` |
    | `Callable[` | `from typing import Callable` |
 
    **`Callable` 是這次新增的一項**：05a 五章的型別對應表（Layer 2）把 `Function`／`Supplier`／`Predicate` 等 `java.util.function` 常見型別機械轉成 `Callable[...]`，這些字串會出現在 services／repositories 層、以及 routers 層裡非 API 邊界方法（`http_method` 為 `None` 的私有 helper）的 `params`／`return_type` 裡——這幾種情況都不經過 openapi_spec 覆寫，都會走 `map_java_type()` 那條路徑，因此不是理論上才會出現的型別。`from __future__ import annotations`（見上方）讓型別註記延遲求值，避免了 `import` 當下就 `NameError`，但這解決的是「會不會直接炸」，不是「型別名稱有沒有正確 import」——⑤填空階段若要在函式本體實際使用這個型別（如型別檢查、建構一個符合 `Callable` 簽名的物件），仍然需要這個 import 真的存在，不能只靠註記延遲求值蒙混過去；沒有這一項，`services`／`repositories` 層任何回傳或接收 functional interface 的函式都會缺這個 import。命中比對用 `"Callable["`（含左中括號）而不是單獨的 `"Callable"`，避免不必要地跟其他字串裡剛好出現 `Callable` 這幾個字母的情況混淆（目前這個字串只會由 `map_java_type()` 產出，不會有這種混淆風險，但比對條件寫精確一點沒有壞處）。
+
+   **`date`／`datetime`／`time`／`UUID` 是 08a（④骨架實作 Agent）落地時新增的四項**：`common/java_type_mapping.py`（見 08a 五章「共用邏輯」）補上 `java.time`／`java.util.UUID` 對應後，③的方法簽名（非 API 邊界的內部方法，同樣走 `map_java_type()` 這條路徑）也可能產生這幾個型別字串，原表沒涵蓋會重演上面 `Callable` 那段講的同一種缺 import 情況。`"date"`／`"datetime"`／`"time"` 三個關鍵字都以英數字元結尾，走上面講的單字邊界比對——`"datetime"` 內含 `"date"`／`"time"` 兩個子字串，但邊界比對不會誤觸發（`"date"` 與後面的 `"time"` 之間沒有字元邊界，不構成獨立識別字），三者互不誤判。
 
 2. **自訂型別索引，兩個來源合併**：
    - **來源一（既有）**：掃描第二段（Schema 定義段）解析出的所有具名 class（僅 `schemas/{module}.py` 底下的 Pydantic／dataclass——Schema 定義段不含 `models/{module}.py` 內容，見下方「來源三」）
    - **來源二（新增，見上方「型別字串正規化」的真實案例）**：直接從 `python_structure.interfaces` 收集每個 `class_name → file_path`（排除 `class_name is None`）。**這一步是必要的，不是加強保險**：真實資料裡有 **44 筆**跨檔案引用（見上方 `ResponseResult`／`Result` 案例）——這些型別是 `services` 層的一般類別（如 `common_service.py` 的 `ResponseResult`），根本不會出現在 Schema 定義段裡（Schema 定義段只收錄 API 邊界 Pydantic model／資料容器 dataclass，不收錄一般 `services`／`repositories` 層的類別），只靠來源一完全抓不到。這個來源不需要額外解析文字——`python_structure.interfaces` 本身就是結構化資料，直接建索引即可，比來源一的正則掃描更直接
    - **來源三（新增）**：對 `db_models` 字典（見上方「`db_models`」一節，key 為 `app/models/{module}.py` 這類路徑，value 是④已產出的完整檔案內容字串）逐項 `ast.parse()` 取出頂層 `ClassDef` 名稱，`class_name → file_path`（= `db_models` 的 key）併入索引——這個 `ast.parse()` 不是新增的驗證負擔，上方「`db_models`」一節第 1 點已經對每個 `db_models[file_path]` 各自 `ast.parse()` 一次做語法驗證，這裡直接複用同一次解析結果取 `ClassDef`。**這一步是必要的，不是加強保險**：標註 `@Entity`／`@Embeddable`／`@MappedSuperclass` 的類別依 05a 三章「孤兒類別與資料容器占位」判斷優先序第 1 點，③直接跳過、不渲染任何 `InterfaceSpec`——這些 ORM class 因此從頭到尾不會出現在來源一（不在 Schema 定義段）或來源二（沒有對應 `InterfaceSpec.class_name`）裡，只存在於 `db_models` 的檔案內容字串中。Repository／Service 方法若回傳型別是這類 Model class（如 00 六章 `UserRepository.get_by_id()` 對應 `user.py` 這個 model 檔案，回傳型別依 05a 五章型別對應表就是裸名稱 `User`），沒有這個來源就會落入下方「兩層都比對不到時保守不加」，永遠補不上對應 import——這是每個有 DB 表的 module 都會踩到的常態情況，不是邊角案例
+   - **來源三同時掃 `Table(...)` 變數賦值，不是只掃 `ClassDef`**：08a_scaffold_agent_architecture.md 八章「`@ManyToMany`：產生中介表定義」把多對多關聯的中介表渲染成 `user_roles = Table(...)`（`ast.Assign`），不是 class——這種中介表沒有對應的 Java entity，本來就不會有 `ClassDef`。⑤填空時若需要對這張表直接操作（新增／刪除一筆多對多關聯，08a 八章明講的既有動機），生成的程式碼會直接引用 `user_roles` 這個名稱；若只掃 `ClassDef`，這個名稱永遠進不了索引，會被下方「兩層都比對不到時保守不加」吞掉。因此來源三對 `db_models_valid` 的每個 `tree` 額外呼叫 `_table_assignment_names(tree)`（只認「單一目標、RHS 是呼叫 `Table(...)` 或 `xxx.Table(...)`」這個精確形狀，不誤收一般常數賦值），把找到的變數名一併併入索引
    
    三個來源合併成一份索引（key 衝突時優先序為來源三／來源二＞來源一：前兩者是結構化資料或已驗證通過語法的實際檔案內容，精確度高於來源一的正則掃描文字；實務上三者對應的 class 集合本來就不重疊——來源一只收 API 邊界 Pydantic model／資料容器 dataclass，來源二只收有 `InterfaceSpec` 的一般類別，來源三只收被③排除在 `interfaces` 之外的 JPA entity class，衝突理論上不會發生，這裡只是定義一個明確的 tie-break 規則）。裸型別名稱的擷取用 AST，不用字串裁切／正則：`ast.parse(正規化後的 params／return_type 字串, mode="eval")` 後 `ast.walk()` 遍歷取出所有 `ast.Name` 節點的 `.id`，逐一比對這份索引，命中就加 `from {module_path} import {class_name}`（`module_path` 由 `file_path` 去掉 `.py`、`/` 換 `.` 得到）。用 AST 而非字串裁切是必要的，不是風格選擇——`ResponseResult[User]`、`dict[str, UserCreateRequest]` 這類巢狀泛型若用字串裁切／正則容易只抓到最外層（如 `ResponseResult`），漏掉內層真正需要 import 的型別（`User`），巢狀深度不固定時字串規則無法窮舉；`ast.walk()` 不論巢狀多深都能一次抓齊所有裸名稱。這些型別字串本來就已經在上方「型別字串正規化」一節保證能被 `ast.parse()` 合法解析，這裡不需要額外的容錯處理。
 
@@ -298,7 +300,7 @@ class FillResult:
 2. 對照檔案現有的 import 陳述式，扣掉已經 import 過的名稱
 3. 剩下的候選名稱，比照四章的兩層機制比對：
    - **已知關鍵字表**：精確集合成員判斷，不是子字串比對——候選名稱已經是逐一拆開的裸識別字（AST `Name` 節點），不需要在一段文字裡搜尋子字串，精確比對本身就是最精確的判斷方式
-   - **自訂型別索引**：改成直接掃描磁碟上 `app/` 底下所有 `.py` 檔案的頂層 class 定義，不是沿用骨架階段記憶體裡的三來源索引——填空階段沒有 `python_structure` 可用（`fill_function()` 刻意不依賴這份輸入，跟二章「`python_project_path` 是顯式引數」的獨立性原則同構），掃描磁碟是唯一能拿到完整類別清單的方式，而且天然反映最新狀態（含同一次 pipeline 執行中先前 task 已經填入的內容）
+   - **自訂型別索引**：改成直接掃描磁碟上 `app/` 底下所有 `.py` 檔案的頂層 class 定義**，以及模組層級的 `Table(...)` 變數賦值**（同四章來源三「`Table(...)` 變數賦值」，08a 八章 `@ManyToMany` 中介表沒有對應 class，qwen 生成的本體若直接操作這張表，引用的是這個變數名，不是 class 名稱），不是沿用骨架階段記憶體裡的三來源索引——填空階段沒有 `python_structure` 可用（`fill_function()` 刻意不依賴這份輸入，跟二章「`python_project_path` 是顯式引數」的獨立性原則同構），掃描磁碟是唯一能拿到完整類別清單的方式，而且天然反映最新狀態（含同一次 pipeline 執行中先前 task 已經填入的內容）
 4. 兩層都比對不到的名稱，維持四章「保守不加、不猜」的既有原則——不主動修正，留給 Harness 的 module 局部驗證與 ⑦ Debug Agent 處理
 
 這是接上真實 qwen2.5-coder:32b、對真實 Java 專案跑過完整 pipeline 才發現的缺口，不是設計初期就預見的——已對真實案例驗證修正有效（router 層函式呼叫 `UserRepository`／拋出 `HTTPException`，兩者都正確補上 import，語法驗證通過）。記錄在這裡是因為它改變了 `fill_function()` 的既有流程（骨架階段的 import 解析只跑一次，填空階段現在還會再跑一次），不只是實作細節。
@@ -393,7 +395,7 @@ statement_2
 |---|---|---|
 | `TRANSLATOR_CLI_TIMEOUT_SECONDS` | `300`（環境變數可調） | 單次 HTTP 呼叫的 timeout，本地模型生成時間比雲端 API 長，需要比 Claude 呼叫更寬鬆的預設值 |
 | `TRANSLATOR_CLI_NETWORK_RETRIES` | `2`（環境變數可調） | HTTP 連線失敗／timeout 這類**傳輸層**錯誤的立即重試次數，固定間隔 `3` 秒——這是 LAN 內部連線的暫時抖動，不是 Claude API 那種需要等配額恢復的限流情境，不需要 5 分鐘等待 |
-| delimiter／語法驗證失敗重試 | 固定 `2` 次 | 見下方「模型輸出格式錯誤的修正重試」，跟網路層重試是不同的錯誤類型、不同的重試機制，不共用同一個計數器。原本固定 `1` 次，對真實 qwen2.5-coder:32b 實測後發現：對 context 檔案多、邏輯複雜的任務，第一次回應違反格式的機率不低，固定重試 1 次不一定夠，調成 2 次 |
+| delimiter／語法驗證失敗重試 | 固定 `2` 次 | 見下方「模型輸出格式錯誤的修正重試」，跟網路層重試是不同的錯誤類型、不同的重試機制，不共用同一個計數器——對 context 檔案多、邏輯複雜的任務，第一次回應違反格式的機率不低，固定重試 1 次不夠 |
 
 **模型輸出格式錯誤的修正重試**（跟 04a/05a 的「批次重試」不同性質，這裡是「針對這次錯誤，把錯誤內容回饋給模型，讓它自己修正」）：以下四種情況觸發**重新呼叫一次模型**，這次的 user prompt 額外附上「上一次回應違反格式／語法錯誤訊息是 ...，請重新產生，務必遵守 delimiter 格式」——
 1. 六章 delimiter 抽取失敗（找不到 sentinel）
@@ -511,7 +513,7 @@ refactor-project/
 
 沿用 01 四章已經定案的 node 對應，不需要新增或調整 node／edge 結構：
 
-- `scaffold`（④）：`await translator_cli.generate_scaffold(state["python_project_path"], state["python_structure"], db_models=db_models)`，回傳 `{"scaffold_done": result["success"]}`（若失敗，`scaffold_done=False` 目前的 graph 結構不會因此特別分流——這屬於既有 `scaffold_node.py`／01 文件的既知限制，不在本文件範圍內解決，07a 只保證 `generate_scaffold()` 本身在失敗時清楚回報 `error`）。`db_models` 這個字典本身怎麼組出來（查詢 Postgres 測試 DB 或解析 Java entity 原始碼，見四章「`db_models`：④ 自行取得的 DB schema 內容如何併入」）屬於 08a（骨架實作 Agent 詳細設計，待建立）的範圍，07a 只定義這個參數送進 `generate_scaffold()` 之後的處理契約。**`result["skipped_interfaces"]`／`result["skipped_db_models"]`（見四章）目前也還沒有管道往 `RefactorState` 寫**——`scaffold_node.py` 現在的回傳只有 `scaffold_done` 這個布林值，沒有欄位可以承接這兩份清單；短期內至少要記進日誌供人工事後查閱，State 是否需要新增對應欄位讓 [P]／⑦ Debug Agent 之類的下游也讀得到，留給 08a 評估，不在本文件範圍內決定（[P] 因平行分支結構上看不到這份清單的既知缺口，另見 `00_refactor_architecture.md` 十章待決定事項）
+- `scaffold`（④）：`await translator_cli.generate_scaffold(state["python_project_path"], state["python_structure"], db_models=db_models)`，回傳 `{"scaffold_done": result["success"]}`（`scaffold_done=False` 時 `implement`→`run_tests` 之間的 conditional edge 會直接分流到 `give_up`，不進 `debug` 重試迴圈，見 01 五章「scaffold 失敗時的收尾路徑」——07a 只保證 `generate_scaffold()` 本身在失敗時清楚回報 `error`，分流邏輯屬於 01／`graph/nodes/implement_node.py` 的範圍）。`db_models` 這個字典本身怎麼組出來（查詢 Postgres 測試 DB 或解析 Java entity 原始碼，見四章「`db_models`：④ 自行取得的 DB schema 內容如何併入」）屬於 08a（骨架實作 Agent 詳細設計，待建立）的範圍，07a 只定義這個參數送進 `generate_scaffold()` 之後的處理契約。**`result["skipped_interfaces"]`／`result["skipped_db_models"]`（見四章）目前也還沒有管道往 `RefactorState` 寫**——`scaffold_node.py` 現在的回傳只有 `scaffold_done` 這個布林值，沒有欄位可以承接這兩份清單；短期內至少要記進日誌供人工事後查閱，State 是否需要新增對應欄位讓 [P]／⑦ Debug Agent 之類的下游也讀得到，留給 08a 評估，不在本文件範圍內決定（[P] 因平行分支結構上看不到這份清單的既知缺口，另見 `00_refactor_architecture.md` 十章待決定事項）
 - `implement`（⑤）：`_run_one_task()` 在 `MODEL_SEMAPHORE(1)` 內呼叫 `translator_cli.fill_function(python_project_path=state["python_project_path"], task_id=task["id"], ...)`，見二章「與既有程式碼的介面異動」需要補上的引數
 
 translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼叫端組好的顯式引數——這是刻意的邊界：`translator_cli/` 套件不 import `graph.state`，維持跟 `refactor_harness/`／`spec_collection_agent/` 一致的獨立性（01 二章「設計原則」）。
@@ -533,11 +535,7 @@ translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼�
 
 ## 十四、待決定事項
 
-- [x] 四章「已知關鍵字表」目前只列這個專案已知會用到的 FastAPI／SQLAlchemy／`Decimal` 型別，實際跑過真實專案後可能要補充其他框架型別——**已對真實 Java 專案（93 個檔案、70 個 interfaces）實測**：`skipped_interfaces` 全部為空，現有關鍵字表沒有漏接的情況。過程中發現一個相關但不屬於這裡的問題：真實資料出現 `MultipartFile`（Java 型別）沒有被 `map_java_type()` 轉換成 `UploadFile`，導致關鍵字表比對不到——這是 05a 型別對應的問題，不是關鍵字表本身缺項，記錄於此供追蹤
-- [x] 七章 `TRANSLATOR_CLI_TIMEOUT_SECONDS`／`TRANSLATOR_CLI_NETWORK_RETRIES` 的預設值是估計值，需要接上真實環境後依實測調整——**已對真實 ollama 環境實測**：簡單任務單次生成 15～19 秒，遠低於 300 秒的 `TRANSLATOR_CLI_TIMEOUT_SECONDS` 預設值，判斷這個預設值足夠，不調整。`TRANSLATOR_CLI_NETWORK_RETRIES`（預設 2）在一次真實案例遇到連線失敗耗盡重試，但評估後判斷不需要調高：`fill_function()` 任何原因的失敗（網路層、格式層）最終都走同一條路徑（不寫入、回報 `success=False`），下游有 09a／⑦ Debug Agent 的重試機制兜底（見下方 09a 待補項目），不需要在這一層堆更多重試預算
-- [x] delimiter 抽取失敗／語法錯誤的「修正重試」prompt 具體措辭，需要用 qwen2.5-coder:32b 實測校準——**已對真實 qwen2.5-coder:32b 實測**：對 context 檔案多、邏輯複雜的任務（真實案例：6 個 target_files 的動態查詢組合），連續三次重現都在第一次回應時違反 delimiter 格式，不是偶發。已將 `_FORMAT_RETRY_COUNT` 從 1 調整為 2（見七章表格）；prompt 措辭本身未調整，若未來實測發現 2 次仍不夠，才需要回頭改措辭或加 few-shot 範例
-- [ ] `generate_scaffold()` 失敗時 `scaffold_node.py` 目前不會特別分流（見十二章）——這屬於 08a（骨架實作 Agent 詳細設計，待建立）該補的既知限制，07a 只確保失敗訊息清楚，不越界處理 node 層級的分流邏輯
-- [x] **`fill_function()` 生成的函式本體可能引用簽名以外的名稱，現有 import 解析機制看不到**——**已修正**：見五章新增小節「填空模式：本體 import 解析」，填空完成後對新本體重新掃一次，比照四章兩層機制補上遺漏的 import（已知關鍵字表精確比對＋掃描磁碟的自訂型別索引）。已對真實案例重新驗證：router 層函式呼叫 `UserRepository`／拋出 `HTTPException`，兩者的 import 都正確補上，寫入內容語法驗證通過
+- [ ] **`MultipartFile`（Java 型別）沒有被 `map_java_type()` 轉換成 `UploadFile`，導致四章「已知關鍵字表」比對不到**：真實 Java 專案（93 個檔案、70 個 interfaces）實測時發現，其餘型別關鍵字表命中正常（`skipped_interfaces` 全部為空）；這是 05a 型別對應範圍的缺口，不是這裡的關鍵字表本身缺項，留給 05a 之後處理
 
 ---
 

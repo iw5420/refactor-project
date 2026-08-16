@@ -30,6 +30,8 @@ async def main():
         "route_to_file_mapping": {},
         "task_list": [],
         "scaffold_done": False,
+        "skipped_interfaces": [],
+        "skipped_db_models": [],
         "completed_tasks": [],
         "failed_tasks": [],
         "partial_reports": [],

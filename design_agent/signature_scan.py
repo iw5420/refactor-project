@@ -32,6 +32,7 @@ from pathlib import Path
 import javalang
 import javalang.tree
 
+from common.java_type_mapping import type_str as _type_str
 from design_agent.types import JavaClassSignature, JavaField, JavaMethodSignature, JavaParam
 
 _STEREOTYPES = {"RestController", "Controller", "Service", "Component", "Repository"}
@@ -158,19 +159,7 @@ def _constructor_signature(class_name: str, ctor_decl: javalang.tree.Constructor
     )
 
 
-def _type_str(java_type) -> str:
-    """把 javalang 型別節點還原成含泛型參數的原始 Java 型別字面字串
-    （如 `List<UserDto>`），供 `type_mapping.map_java_type()` 解析——跟
-    `parse_agent/call_graph.py` 只取 `.name`（外層型別，供依賴解析用）
-    的需求不同，這裡需要完整還原含泛型的字面字串，才能做五章的型別
-    對應。多層巢狀泛型（如 `Map<String, List<Order>>`）遞迴處理。
-    """
-    name = java_type.name
-    arguments = getattr(java_type, "arguments", None)
-    if not arguments:
-        return name
-    inner_types = []
-    for arg in arguments:
-        inner = getattr(arg, "type", None)
-        inner_types.append(_type_str(inner) if inner is not None else "?")
-    return f"{name}<{', '.join(inner_types)}>"
+# `_type_str()` 已搬到 common/java_type_mapping.py（見該檔案 module
+# docstring）——④骨架實作 Agent 對 JPA entity 欄位需要同一個 javalang
+# 型別節點還原邏輯，額外多了 ArrayType（陣列型別）這個原本沒處理的
+# 節點形狀，見 08a_scaffold_agent_architecture.md 四章。這裡改為 import。

@@ -92,8 +92,19 @@ def build_graph():
     builder.add_edge("plan", "implement")
     builder.add_edge("scaffold", "implement")
 
-    # implement → run_tests
-    builder.add_edge("implement", "run_tests")
+    # implement → run_tests，或 scaffold 失敗時直接 give_up（見 01 五章
+    # 「scaffold 失敗時的收尾路徑」、implement_node.should_run_tests_or_
+    # give_up()）。`implement` 只有單一前驅（上面的 fan-in 合流點不受
+    # 影響），把這條邊改成 conditional edge 不影響 01 已驗證過的平行
+    # 分支語意。
+    builder.add_conditional_edges(
+        "implement",
+        implement_node.should_run_tests_or_give_up,
+        {
+            "run_tests": "run_tests",
+            "give_up": "give_up",
+        },
+    )
 
     # Retry 迴圈：run_tests 的 conditional edge
     builder.add_conditional_edges(

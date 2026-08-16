@@ -5,12 +5,14 @@ import pytest
 
 from translator_cli.exceptions import TranslatorCliAssemblyError
 from translator_cli.scaffold import (
+    _build_custom_type_index,
     _extract_code_blocks,
     _merge_schema_blocks,
     _normalize_type,
     _render_function_snippet,
     _resolve_imports,
     _scan_project_custom_types,
+    _table_assignment_names,
     build_files,
     insert_import_lines,
     resolve_body_imports,
@@ -123,6 +125,35 @@ def test_resolve_imports_callable_with_nested_brackets_still_matches():
     # 字元），單字邊界比對會誤判成不匹配。
     lines = _resolve_imports(["Callable[[int, str], bool]"], {})
     assert "from typing import Callable" in lines
+
+
+def test_resolve_imports_uuid_type():
+    # 08a_scaffold_agent_architecture.md 五章新增：common/java_type_mapping.py
+    # 的 map_java_type() 補上 java.util.UUID 對應後，③的方法簽名也可能
+    # 產生 "UUID" 這個型別字串，需要對應的 import 規則。
+    lines = _resolve_imports(["UUID"], {})
+    assert "from uuid import UUID" in lines
+
+
+def test_resolve_imports_date_time_types_resolve_independently():
+    # date／datetime／time 三者都以英數字元結尾，走單字邊界比對——
+    # "datetime" 內含 "date"／"time" 兩個子字串，但邊界比對不應該讓
+    # "datetime" 這個型別字串誤觸發 "date" 或 "time" 各自獨立的 import。
+    assert _resolve_imports(["date"], {}) == ["from datetime import date"]
+    assert _resolve_imports(["time"], {}) == ["from datetime import time"]
+    lines = _resolve_imports(["datetime"], {})
+    assert lines == ["from datetime import datetime"]
+    assert "from datetime import date" not in lines
+    assert "from datetime import time" not in lines
+
+
+def test_resolve_imports_date_and_datetime_together_both_present():
+    # 同一個檔案同時出現 date 型別欄位與 datetime 型別欄位是常見情況
+    # （如 birth_date: date、created_at: datetime），兩者都要各自加上
+    # 對應 import，不能因為 "date" 是 "datetime" 的子字串就漏掉一個。
+    lines = _resolve_imports(["date", "datetime"], {})
+    assert "from datetime import date" in lines
+    assert "from datetime import datetime" in lines
 
 
 def test_merge_schema_blocks_handles_bare_import():
@@ -318,6 +349,64 @@ def test_scan_project_custom_types_skips_unparseable_file(tmp_path):
 
 def test_scan_project_custom_types_missing_app_dir_returns_empty(tmp_path):
     assert _scan_project_custom_types(str(tmp_path)) == {}
+
+
+def test_table_assignment_names_finds_bare_call():
+    # 08a_scaffold_agent_architecture.md 八章「@ManyToMany：產生中介表
+    # 定義」：user_roles = Table(...) 是 ast.Assign，不是 ast.ClassDef，
+    # 兩處自訂型別索引（_build_custom_type_index／_scan_project_
+    # custom_types）都得靠這個函式才找得到。
+    tree = ast.parse(
+        "from sqlalchemy import Column, ForeignKey, Table\n\n"
+        'user_roles = Table(\n    "user_roles",\n    Base.metadata,\n'
+        '    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),\n)\n'
+    )
+    assert _table_assignment_names(tree) == ["user_roles"]
+
+
+def test_table_assignment_names_finds_attribute_call():
+    # func 是 ast.Attribute（sqlalchemy.Table(...) 完整路徑呼叫），不是
+    # ast.Name——兩種匯入風格都要認得。
+    tree = ast.parse('user_roles = sqlalchemy.Table("user_roles", Base.metadata)\n')
+    assert _table_assignment_names(tree) == ["user_roles"]
+
+
+def test_table_assignment_names_ignores_unrelated_assignments():
+    # 一般常數賦值、非單一目標賦值、呼叫其他函式，都不該被誤收進索引。
+    tree = ast.parse(
+        "DEFAULT_TIMEOUT = 30\n"
+        "a = b = Table(\"x\", Base.metadata)\n"
+        "user_roles = SomeOtherThing()\n"
+    )
+    assert _table_assignment_names(tree) == []
+
+
+def test_scan_project_custom_types_finds_table_assignment(tmp_path):
+    (tmp_path / "app" / "models").mkdir(parents=True)
+    (tmp_path / "app" / "models" / "user.py").write_text(
+        "from sqlalchemy import Column, ForeignKey, Integer, Table\n\n"
+        'user_roles = Table(\n    "user_roles",\n    Base.metadata,\n'
+        '    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),\n)\n',
+        encoding="utf-8",
+    )
+
+    index = _scan_project_custom_types(str(tmp_path))
+    assert index["user_roles"] == "app/models/user.py"
+
+
+def test_build_custom_type_index_source_three_includes_table_assignment():
+    # 來源三（db_models）除了既有的 ClassDef 掃描，也要納入 Table(...)
+    # 賦值——這是 _build_custom_type_index() 三個來源合併時的完整路徑，
+    # 不只是 _table_assignment_names() 這個底層函式本身正確。
+    db_models_valid = {
+        "app/models/order.py": ast.parse(
+            "from sqlalchemy import Column, ForeignKey, Integer, Table\n\n"
+            'user_roles = Table(\n    "user_roles",\n    Base.metadata,\n'
+            '    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),\n)\n'
+        )
+    }
+    index = _build_custom_type_index(interfaces=[], schema_trees={}, db_models_valid=db_models_valid)
+    assert index["user_roles"] == "app/models/order.py"
 
 
 def test_resolve_body_imports_finds_known_keyword_and_custom_type(tmp_path):

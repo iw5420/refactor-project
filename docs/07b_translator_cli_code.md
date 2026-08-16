@@ -22,13 +22,13 @@
 | `graph/nodes/scaffold_node.py` | 07a 十二章 | 接上 `translator_cli.generate_scaffold()`（取代 stub） |
 | `graph/nodes/implement_node.py` | 07a 十二章 | `_run_one_task()` 接上 `translator_cli.fill_function()` 完整引數（取代 stub） |
 | `tests/translator_cli/test_python_adapter.py` | 07a 六、十章 | `PythonAdapter`／`extract_body_statements()` 測試（14 個） |
-| `tests/translator_cli/test_scaffold.py` | 07a 四、五章 | 型別正規化、Schema 合併、import 解析、端對端 `build_files()` 測試、填空模式本體 import 解析測試（29 個） |
+| `tests/translator_cli/test_scaffold.py` | 07a 四、五章 | 型別正規化、Schema 合併、import 解析、端對端 `build_files()` 測試、填空模式本體 import 解析測試（37 個） |
 | `tests/translator_cli/test_git_ops.py` | 07a 八、九章 | 真實 git repo 整合測試，含 rollback 復原（19 個） |
 | `tests/translator_cli/test_ollama_client.py` | 07a 七章 | delimiter 抽取、格式錯誤重試、網路層重試、環境變數缺失測試（13 個，`monkeypatch` 假造 httpx／ollama 回應） |
 | `tests/translator_cli/test_client.py` | 07a 二、四、五、八、九章 | `generate_scaffold()`／`fill_function()` 端對端測試（19 個，真實 tmp_path git repo＋假造模型回應） |
 | `tests/translator_cli/test_formatting.py` | — | `formatting.format_paths()` 硬性依賴行為測試（5 個） |
 
-**已驗證**：`python -m pytest tests/ -q` 全數通過（332 個），見十一章列出尚未能驗證的部分。`translator_cli` 套件在 `graph` 套件完全不可 import 的情況下仍能正常 import（見二章），證實跟 `graph/`（LangGraph 編排層）之間確實沒有 import-time 依賴。**已對真實 ollama／nginx 環境＋真實 Java 專案（93 個檔案）跑過端對端測試**：真實 pipeline（① 解析 → ③ 設計 → [P] 規劃 → ④ 骨架 → ⑤ 實作）70 個 task 中 69 個成功，過程中 delimiter 修正重試、網路層重試都真實觸發並驗證過；填空模式本體 import 解析也已對真實案例（router 層函式呼叫 `UserRepository`、拋出 `HTTPException`）重新驗證修正有效；詳見十一章。
+**已驗證**：`python -m pytest tests/ -q` 全數通過（340 個），見十一章列出尚未能驗證的部分。`translator_cli` 套件在 `graph` 套件完全不可 import 的情況下仍能正常 import（見二章），跟 `graph/`（LangGraph 編排層）之間沒有 import-time 依賴。已對真實 ollama／nginx 環境＋真實 Java 專案（93 個檔案）跑過端對端測試：真實 pipeline 70 個 task 中 69 個成功，delimiter 修正重試、網路層重試、填空模式本體 import 解析都真實觸發並驗證過，詳見十一章。
 
 ---
 
@@ -389,7 +389,7 @@ class PythonAdapter:
         ast.parse(source)
 ```
 
-**已驗證**（`tests/translator_cli/test_python_adapter.py`，14 個測試）：`locate_function()` 涵蓋自由函式／類別方法／找不到 class／找不到方法四種情況；`extract_body_statements()` 涵蓋正常案例、語法錯誤、空 body、簽名重複輸出、以及「巢狀函式但名稱不同不誤觸發」的邊界案例；`splice_body()` 涵蓋成功替換與失敗時不異動原節點兩種情況。
+**已驗證**（`tests/translator_cli/test_python_adapter.py`，14 個測試）：涵蓋 `locate_function()` 定位、`extract_body_statements()` 的正常／語法錯誤／空 body／簽名重複輸出等驗證分支、`splice_body()` 成功與失敗兩種路徑。
 
 ---
 
@@ -622,7 +622,7 @@ def _prune_empty_parent_dirs(python_project_path: str, file_paths: list[str]) ->
 
 **rollback 不違反「衝突偵測不自動化解」的原則**：07a 九章要防的是「來源不明的意外變更」（人工手動改了什麼、上一輪執行中途被強制中斷）；`discard_file_changes()`／`discard_written_files()` 撤銷的是**這次呼叫自己造成、成因完全已知**的變更（就是剛寫入但沒 commit 成功的內容），可歸因、可安全撤銷，兩者是不同類別的「dirty」。若不這麼做，一次 `git commit` 失敗（index lock、權限問題）就會讓 working tree 卡在「不乾淨」，之後每一次呼叫的 precondition 檢查都會連帶失敗，等同整條 pipeline 卡死。
 
-**已驗證**（`tests/translator_cli/test_git_ops.py`，19 個測試，全部對真實 `tmp_path` git repo 執行，不 mock `subprocess`）：目錄不存在／非 git repo／乾淨 repo 三種 `ensure_git_repo()` 情況；乾淨／有 untracked 檔案兩種 `check_clean_working_tree()` 情況、**`git status` 指令本身失敗時（用損毀的 `.git/index` 觸發，`rev-parse` 仍會成功）拋出基底 `TranslatorCliError`，不是語意不準確的 `TranslatorCliNotGitRepoError`**；`commit_scaffold()`／`commit_fill()` 的 commit message 與範圍；`discard_file_changes()`／`discard_written_files()` 涵蓋一般還原、初次骨架（repo 尚無任何 commit）、覆蓋既有骨架、空清單 no-op、範圍精準（清單外的「重要未追蹤檔案」完全不受影響）、**全新巢狀目錄（`app/models/`）被清空後空目錄本身也一併清除、一路往上到 repo 根目錄**、**父目錄底下還有清單以外的其他既有檔案時不會被連帶刪除**——以及**檔案已經被 `git add` 進 index 但 commit 本身失敗**這個真實時序下仍能正確還原（`git checkout`／`clean` 都不會動 index，沒有先 `reset` 的話這個情境下的 rollback 會完全失效，見 `discard_file_changes()`／`discard_written_files()` docstring）。
+**已驗證**（`tests/translator_cli/test_git_ops.py`，19 個測試，全部對真實 `tmp_path` git repo 執行，不 mock `subprocess`）：涵蓋 `ensure_git_repo()`／`check_clean_working_tree()` 各種前置狀態、`commit_scaffold()`／`commit_fill()` 的 commit message 與範圍，以及 `discard_file_changes()`／`discard_written_files()` 的還原路徑——包含「檔案已經 `git add` 進 index 但 commit 本身失敗」這個真實時序（`git checkout`／`clean` 都不會動 index，沒有先 `reset` 的話 rollback 會完全失效，見對應函式 docstring）與巢狀目錄清空後一併清除的邊界情況。
 
 ---
 
@@ -870,7 +870,7 @@ async def get_function_body(
     raise TranslatorCliModelOutputError(f"模型輸出格式錯誤，修正重試仍失敗：{last_error}")
 ```
 
-**已驗證**（`tests/translator_cli/test_ollama_client.py`，13 個測試）：`_extract_delimited_body()` 成功／找不到 delimiter；`get_function_body()` 首次成功、格式錯誤重試一次後成功（含空 body）、**兩次重試都失敗、第三次（第二次重試）才成功**、兩次重試都用盡仍失敗放棄；`_call_ollama_once()` 網路層重試成功、耗盡重試次數仍失敗時拋出 `TranslatorCliNetworkError`（不是 `TranslatorCliModelOutputError`——見一章「為什麼分開」）、`httpx.HTTPStatusError`（模擬 401）立即失敗、不進重試迴圈（`call_count` 驗證只呼叫一次）、payload 明確帶 `"stream": False`、環境變數缺失轉成 `TranslatorCliConfigError`、同一次呼叫的多次重試只建立一個 `httpx.AsyncClient` 實例（`monkeypatch` 假造 `httpx.AsyncClient`／`_call_ollama_once`，不需要真的連線）。
+**已驗證**（`tests/translator_cli/test_ollama_client.py`，13 個測試，`monkeypatch` 假造 `httpx.AsyncClient`／`_call_ollama_once`，不需要真的連線）：涵蓋 delimiter 抽取成功／失敗、格式錯誤重試（含兩次都失敗、第二次重試才成功）、網路層重試與耗盡後拋出 `TranslatorCliNetworkError`（不是 `TranslatorCliModelOutputError`，見一章「為什麼分開」）、`httpx.HTTPStatusError` 立即失敗不進重試迴圈、環境變數缺失轉成 `TranslatorCliConfigError`、同一次呼叫的多次重試只建立一個 `httpx.AsyncClient` 實例。
 
 ---
 
@@ -916,6 +916,18 @@ _KNOWN_KEYWORD_IMPORTS: list[tuple[str, str]] = [
     ("UploadFile", "from fastapi import UploadFile"),
     ("HTTPException", "from fastapi import HTTPException"),
     ("Decimal", "from decimal import Decimal"),
+    # 08a_scaffold_agent_architecture.md 五章新增：common/java_type_mapping.py
+    # 的 map_java_type() 補上 java.time／java.util.UUID 對應後，③的方法簽名
+    # （非 API 邊界的內部方法，走 map_java_type() 這條路徑）也可能產生這幾個
+    # 型別字串，原表沒涵蓋會重演本章「填空模式：本體 import 解析」修正前的
+    # 缺 import 情況。"date"／"datetime"／"time" 三個關鍵字都以英數字元結尾，
+    # 走 _keyword_hits() 的 \b 單字邊界比對——"datetime" 內含 "date"／"time"
+    # 兩個子字串，但邊界比對不會誤觸發（"date" 與後面的 "time" 之間沒有字元
+    # 邊界），三者互不誤判。
+    ("date", "from datetime import date"),
+    ("datetime", "from datetime import datetime"),
+    ("time", "from datetime import time"),
+    ("UUID", "from uuid import UUID"),
     ("Callable[", "from typing import Callable"),
 ]
 
@@ -1039,6 +1051,43 @@ def _merge_schema_blocks(blocks: list[str]) -> str:
     return "\n\n\n".join(parts) + "\n"
 
 
+def _table_assignment_names(tree: ast.Module) -> list[str]:
+    """找出模組層級「`name = Table(...)`」這種 SQLAlchemy Core `Table`
+    變數賦值的名稱——對應 08a_scaffold_agent_architecture.md 八章
+    「`@ManyToMany`：產生中介表定義」：`@ManyToMany` 的中介表沒有對應
+    的 Java entity class，`scaffold_agent` 渲染成純 `Table(...)` 賦值
+    （`ast.Assign`），不是 `ast.ClassDef`——若自訂型別索引只掃
+    `ClassDef`（見下方 `_build_custom_type_index()`／
+    `_scan_project_custom_types()`），這種名稱永遠進不了索引，⑤填空時
+    只要在函式本體引用這個中介表（如 `insert(user_roles).values(...)`，
+    見 08a 八章「⑤填空時若需要對這張表直接操作」的既有動機），兩層
+    import 解析都比對不到，會被四章「兩層都比對不到時保守不加、不猜」
+    這條既有原則吞掉，產出缺 import 的程式碼。
+
+    只認「單一目標、RHS 是呼叫 `Table(...)` 或 `xxx.Table(...)`」這個
+    精確形狀，不是任意模組層級賦值——避免誤把一般常數賦值（如
+    `DEFAULT_TIMEOUT = 30`）也當成自訂型別收進索引。`func` 可能是
+    `ast.Name("Table")`（`from sqlalchemy import Table` 之後直接呼叫）
+    或 `ast.Attribute(attr="Table")`（`sqlalchemy.Table(...)` 這種完整
+    路徑呼叫），08a 八章的渲染範例走前者，這裡兩種都認，不假設呼叫端
+    一定用哪一種匯入風格。
+    """
+    names: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        func_name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if func_name == "Table":
+            names.append(node.targets[0].id)
+    return names
+
+
 def _build_custom_type_index(
     interfaces: list[InterfaceSpec], schema_trees: dict[str, ast.Module], db_models_valid: dict[str, ast.Module]
 ) -> dict[str, str]:
@@ -1046,7 +1095,10 @@ def _build_custom_type_index(
 
     - 來源一：Schema 定義段合併後的每個檔案，AST 掃出頂層 `ClassDef`
     - 來源二：`interfaces` 的 `class_name → file_path`（排除 `None`）
-    - 來源三：`db_models` 合併後每個檔案，AST 掃出頂層 `ClassDef`
+    - 來源三：`db_models` 合併後每個檔案，AST 掃出頂層 `ClassDef`，
+      **以及** `_table_assignment_names()` 找到的 `Table(...)` 賦值
+      （08a 八章 `@ManyToMany` 中介表，見該函式 docstring）——這兩種
+      頂層宣告形狀只會出現在 `db_models`，來源一／二不需要一併掃
 
     優先序三／二＞一，用寫入順序達成（後寫入覆蓋先寫入）——三個來源
     對應的 class 集合理論上不重疊，這裡只是定義明確的 tie-break 規則。
@@ -1069,14 +1121,16 @@ def _build_custom_type_index(
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 index[node.name] = file_path
+        for name in _table_assignment_names(tree):
+            index[name] = file_path
     return index
 
 
 def _keyword_hits(keyword: str, combined: str) -> bool:
     """`_KNOWN_KEYWORD_IMPORTS` 命中判斷。以英數字元結尾的關鍵字
     （`Session`／`get_db`／`Request`／`UploadFile`／`HTTPException`／
-    `Decimal`——`_KNOWN_KEYWORD_IMPORTS` 裡除了 `Depends(`／`Callable[`
-    以外的全部）用 `\\b` 單字邊界比對，避免命中自訂型別名稱裡剛好包含
+    `Decimal`／`date`／`datetime`／`time`／`UUID`——`_KNOWN_KEYWORD_IMPORTS`
+    裡除了 `Depends(`／`Callable[` 以外的全部）用 `\\b` 單字邊界比對，避免命中自訂型別名稱裡剛好包含
     這個關鍵字當子字串的情況（如 Java DTO 常見命名 `LoginRequest`／
     `UserSession` 這種以 Request／Session 結尾的類別）——這種名稱在
     `combined` 裡只會是 `custom_type_index` 已知的裸名稱（見本函式
@@ -1347,8 +1401,10 @@ def write_files(python_project_path: str, files: dict[str, str]) -> None:
 
 def _scan_project_custom_types(python_project_path: str) -> dict[str, str]:
     """掃描 `python_project_path` 底下 `app/` 目錄所有 `.py` 檔案的頂層
-    `ClassDef`，建立 `class_name -> file_path` 索引。供 `resolve_body_
-    imports()` 在填空階段解析本體引用的跨檔案自訂類別使用。
+    `ClassDef`（以及 `_table_assignment_names()` 找到的 `Table(...)`
+    賦值，見該函式 docstring），建立 `class_name -> file_path` 索引。供
+    `resolve_body_imports()` 在填空階段解析本體引用的跨檔案自訂類別
+    （及 08a 八章 `@ManyToMany` 中介表變數）使用。
 
     跟 `_build_custom_type_index()` 不同：那個函式在骨架生成階段用
     「還在記憶體裡、尚未寫入磁碟」的三個結構化來源建索引；這裡則是在
@@ -1371,6 +1427,8 @@ def _scan_project_custom_types(python_project_path: str) -> dict[str, str]:
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 index[node.name] = rel_path
+        for name in _table_assignment_names(tree):
+            index[name] = rel_path
     return index
 
 
@@ -1468,7 +1526,7 @@ def insert_import_lines(tree: ast.Module, import_lines: list[str]) -> None:
     tree.body[insert_at:insert_at] = new_nodes
 ```
 
-**已驗證**（`tests/translator_cli/test_scaffold.py`，29 個測試）：型別正規化、code block 擷取、Schema 定義段合併（import 去重、`from __future__` 只留一次且放最前面、正確處理裸 `import xxx`／PEP 8 多行 import、機械註解不被 `ast.unparse()` 弄丟）、函式片段渲染（routers 邊界方法的裝飾器、class 方法的 `self` 前綴）、兩層 import 解析（已知關鍵字、AST 自訂型別、都比對不到時不加、自訂型別名稱剛好包含關鍵字子字串時不誤觸發（`_keyword_hits()` 單字邊界比對）、`Callable[[int, str], bool]` 雙層中括號仍正確命中）；`build_files()` 端對端測試涵蓋正常情況、單一介面型別字串非法時被隔離跳過、`file_path` 不在三層目錄底下時記進 `skipped_interfaces`（unknown layer，不靜默丟棄）、Schema 定義段本身損毀時整體中止；`write_files()` 驗證會自動建立巢狀目錄。**`_scan_project_custom_types()`／`resolve_body_imports()`／`insert_import_lines()`（填空模式本體 import 解析）**：掃描結果跨 routers／services／repositories 層都找得到、單一檔案語法錯誤不拖累其他檔案、`app/` 目錄不存在時回傳空索引；本體引用已知關鍵字（`HTTPException`）與跨檔案自訂類別（`UserRepository`）都正確解析、函式參數與 `self` 不誤判成缺 import、Python builtin 不誤判、本體內部區域變數賦值不誤判、已經 import 過的名稱不重複加、兩層都比對不到時保守不加（不猜）；插入位置正確接在既有 import 區塊（含模組 docstring）之後、空清單是 no-op。
+**已驗證**（`tests/translator_cli/test_scaffold.py`，37 個測試）：涵蓋型別正規化、code block 擷取、Schema 定義段合併（import 去重、機械註解不被 `ast.unparse()` 弄丟）、函式片段渲染、兩層 import 解析（已知關鍵字表含 `Callable`／`UUID`／`date`／`datetime`／`time`，AST 自訂型別索引，都比對不到時不加）、`build_files()` 端對端（正常情況、單一介面隔離失敗、Schema 定義段損毀時中止）、`write_files()` 自動建目錄。`_table_assignment_names()`（08a 八章 `@ManyToMany` 中介表支援）認得 `Table(...)`／`sqlalchemy.Table(...)` 兩種匯入風格且不誤收一般賦值；`resolve_body_imports()`／`insert_import_lines()`（填空模式本體 import 解析）涵蓋跨層掃描、已知關鍵字與跨檔案自訂類別解析、函式參數與 builtin 不誤判、兩層都比對不到時保守不加。
 
 ---
 
@@ -1775,7 +1833,7 @@ async def fill_function(
     return FillResult(success=True, error=None, diff=diff)
 ```
 
-**已驗證**（`tests/translator_cli/test_client.py`，19 個測試，真實 `tmp_path` git repo＋`monkeypatch` 假造 ollama／git／磁碟呼叫）：`generate_scaffold()` 涵蓋非 git repo／working tree 不乾淨兩種 precondition 失敗、正常寫入＋commit、commit 失敗時自動 rollback、`write_files()` 中途 `OSError` 時同樣自動 rollback；`fill_function()` 端對端涵蓋成功填空並正確 commit、**填入的本體引用簽名以外的名稱（跨檔案自訂類別＋框架例外）時正確補上 import、寫入內容語法合法**、**同一個 task 重複呼叫、LLM 生成內容與現有版本完全相同時視為冪等成功、不建立新 commit（見 07a 五章「冪等」，`git commit` 不帶 `--allow-empty` 遇到空 staging area 原本會誤判成失敗）**、`target_file` 不存在、函式在骨架裡找不到、`context_files` 缺少非首項檔案不中斷、`context_files` 遇到 `PermissionError` 等真實 `OSError`（非 `FileNotFoundError`）時轉成 `FillResult(success=False)` 而不是往外洩漏、working tree 不乾淨時拒絕寫入、模型生成期間 working tree 才被人工改動的競態情境、commit 失敗時自動 rollback、格式化失敗時自動 rollback（走 `discard_file_changes()`，不是 commit 失敗那條路徑）、`write_text()` 拋出 `OSError`、環境變數缺失轉成 `FillResult(success=False)` 而不是原生例外洩漏。整個檔案用 autouse fixture 把 `formatting.format_paths()` stub 成 no-op（測試環境本身沒裝 `ruff`）——`ruff` 本身找不到／執行失敗這條路徑由 `test_formatting.py` 獨立驗證，這裡只測 `client.py` 收到格式化失敗訊號後的串接邏輯。
+**已驗證**（`tests/translator_cli/test_client.py`，19 個測試，真實 `tmp_path` git repo＋`monkeypatch` 假造 ollama／git／磁碟呼叫，`formatting.format_paths()` 用 autouse fixture stub 成 no-op）：`generate_scaffold()` 涵蓋 precondition 失敗與寫入／commit 失敗時自動 rollback；`fill_function()` 端對端涵蓋成功填空並正確 commit、本體引用簽名以外名稱時正確補 import、**同一個 task 重複呼叫且生成內容與現有版本相同時視為冪等成功、不建立空 commit**（見 07a 五章「冪等」）、`target_file`／函式找不到、`context_files` 部分缺失的容錯、working tree 不乾淨時拒絕寫入（含模型生成期間才被改動的競態）、commit／格式化失敗時分別走對應的 rollback 路徑、環境變數缺失轉成 `FillResult(success=False)` 而非原生例外洩漏。
 
 ### `formatting.py`
 
@@ -1864,13 +1922,13 @@ def format_paths(python_project_path: str, *relative_paths: str) -> None:
 
 `requirements.txt` 新增一行 `ruff>=0.8.0`——執行環境沒有安裝 `ruff` 時，`generate_scaffold()`／`fill_function()` 每次呼叫都會在格式化步驟失敗並觸發 rollback，不會有「跑起來但格式沒套用」的中間狀態。
 
-**已驗證**（`tests/translator_cli/test_formatting.py`，5 個測試）：空路徑清單是 no-op、不呼叫子行程；`ruff` 執行檔不存在時拋出 `TranslatorCliError`（測試環境本身沒裝 `ruff`，天然驗證這條路徑）；`ruff check --select I --fix`（import 排序）本身失敗時拋出；`ruff format` 本身失敗時拋出；成功時兩步依序都執行、不拋出，且組出正確的指令（`["ruff", "check", "--select", "I", "--fix", ...]` 接著 `["ruff", "format", ...]`）。`client.py` 收到這個例外後的 rollback 串接邏輯另見八章 `test_client.py` 的 `test_fill_function_rolls_back_on_format_failure`。
+**已驗證**（`tests/translator_cli/test_formatting.py`，5 個測試）：空路徑清單 no-op、`ruff` 執行檔不存在或 `check`／`format` 任一步失敗時拋出 `TranslatorCliError`、成功時兩步依序執行且組出正確指令。`client.py` 收到這個例外後的 rollback 串接邏輯另見八章 `test_client.py` 的 `test_fill_function_rolls_back_on_format_failure`。
 
 ---
 
 ## 九、與既有程式碼的介面異動
 
-對應 07a 二章「與既有程式碼的介面異動」列出的四項，全部已套用：
+對應 07a 二章「與既有程式碼的介面異動」，新增 `python_project_path` 並在對應呼叫點傳遞，以下四項全部已套用（`graph/nodes/scaffold_node.py` 這一項後續又被 08b 進一步修改，見該項說明）：
 
 ### 1. `graph/state.py`：新增 `python_project_path` 欄位
 
@@ -1907,55 +1965,11 @@ PYTHON_PROJECT_PATH=../python-target-project
 
 且目標目錄需完成 07a 二章「一次性前置準備」：目錄存在、`git init` 過、沒有任何 commit（`generate_scaffold()` 執行前會用 `git_ops.ensure_git_repo()` 檢查，沒準備好會直接回報明確錯誤）。
 
-### 3. `graph/nodes/scaffold_node.py`：接上 `generate_scaffold()`
+### 3. `graph/nodes/scaffold_node.py`：接上 `generate_scaffold()`（07b 當時的版本，已被 08b 取代）
 
-```python
-"""
-④ 骨架實作 Agent（translator-cli，骨架生成模式）
-依 Agent ③ 的目錄結構與 interface 定義，建立目錄、base class、router 骨架、config
-見 07a_translator_cli_architecture.md、07b_translator_cli_code.md
+07b 這一步只接上 `generate_scaffold()` 本身的呼叫契約：`python_project_path` 顯式傳入，`db_models` 當時固定傳 `None`（`db_models` 這個字典本身怎麼組出來，07a 十二章明訂屬於「08a（骨架實作 Agent 詳細設計，待建立）」的範圍，07b 落地時 08a 還不存在），`result["skipped_interfaces"]`／`["skipped_db_models"]` 當時也還沒有管道寫進 `RefactorState`，只先記警告。
 
-平行分支 node：與 [P] Plan Agent 同以 record_tests／design 為共同前驅
-（見 01 五章），只回傳自己的 key，不展開 state。
-"""
-import logging
-
-from graph.state import RefactorState
-from translator_cli import client as translator_cli
-
-logger = logging.getLogger(__name__)
-
-
-async def run(state: RefactorState) -> dict:
-    # db_models 由④自行從既有 DB 或 Java entity 原始碼取得（見 07a 四章
-    # 「db_models」一節），這部分屬於 08a（骨架實作 Agent 詳細設計，待
-    # 建立）的範圍——07b 只接上 generate_scaffold() 本身，db_models 暫時
-    # 固定傳 None，等 08a 落地時再補上真正的字典（見 07a 十二章）。
-    result = await translator_cli.generate_scaffold(
-        python_project_path=state["python_project_path"],
-        python_structure=state["python_structure"],
-        db_models=None,
-    )
-
-    # result["skipped_interfaces"]／["skipped_db_models"]（見 07a 四章）
-    # 目前還沒有管道寫進 RefactorState——這是 07a 十二章、00 十章已知的
-    # 結構性缺口，State 是否需要新增對應欄位留給 08a 評估，這裡先記警告
-    # 供人工事後查閱，不阻擋 pipeline。
-    if result["skipped_interfaces"] or result["skipped_db_models"]:
-        logger.warning(
-            "generate_scaffold() 有 %d 個 interface、%d 個 db_model 被跳過，"
-            "見回傳值 skipped_interfaces／skipped_db_models（07a 四章、十二章）",
-            len(result["skipped_interfaces"]),
-            len(result["skipped_db_models"]),
-        )
-    if not result["success"]:
-        logger.error("generate_scaffold() 失敗：%s", result["error"])
-
-    # 注意：scaffold 是平行分支 node，只回傳自己的 key，不展開 state
-    return {"scaffold_done": result["success"]}
-```
-
-`db_models=None` 是刻意的暫時狀態：07a 十二章明訂「`db_models` 這個字典本身怎麼組出來...屬於 08a（骨架實作 Agent 詳細設計，待建立）的範圍」，07b 只負責接上 `generate_scaffold()` 本身的呼叫契約。
+**這個檔案後續被 08a／08b 進一步修改**：`db_models` 改由 `scaffold_agent.build_db_models()` 真正算出，`RefactorState` 新增 `skipped_interfaces`／`skipped_db_models` 兩個欄位承接。目前的權威版本見 `08b_scaffold_agent_code.md` 八章「與既有程式碼的介面異動」，這裡不重複貼一份會跟著實作進度過期的程式碼片段。
 
 ### 4. `graph/nodes/implement_node.py`：`_run_one_task()` 補齊完整引數
 
@@ -2022,9 +2036,9 @@ refactor-project/
 
 - **已接上真實 ollama／nginx 環境＋真實 Java 專案（93 個檔案）跑過端對端測試**：真實 pipeline（① 解析 → ③ 設計 → [P] 規劃 → ④ 骨架 → ⑤ 實作）70 個 task 中 69 個成功，delimiter 修正重試、網路層重試都真實觸發並驗證過。`_FORMAT_RETRY_COUNT` 依實測結果從 1 調整為 2（見七章）；`TRANSLATOR_CLI_TIMEOUT_SECONDS`（300 秒）依實測判斷足夠（簡單任務單次生成 15～19 秒）；`TRANSLATOR_CLI_NETWORK_RETRIES` 維持 2 不調整，理由見 07a 十四章。唯一失敗的真實案例（複雜查詢邏輯、6 個 target_files）已定位根因：qwen 對這個複雜度的任務，第一次回應違反 delimiter 格式的機率偏高，不是偶發——這超出 translator-cli 自己重試機制能保證解決的範圍，屬於 09a（⑤ Agent 詳細設計，待建立）該補的「task 永久失敗後如何交給 ⑦ Debug Agent 重試」機制，07a 十四章已記錄這個分工。
 - **填空模式本體 import 解析（`resolve_body_imports()`）已對真實案例驗證**：真實 pipeline 執行中發現 qwen 生成的函式本體確實會引用簽名以外的名稱（如呼叫 `UserRepository`、拋出 `HTTPException`），已實作修正並對同一個真實案例重新對真實 ollama 驗證，import 正確補上、寫入內容語法合法，見七章。
-- **`db_models` 目前固定傳 `None`**：`scaffold_node.py` 還沒有能力從 DB 或 Java entity 取得 `db_models` 字典，這是 07a 十二章明訂的 08a（骨架實作 Agent 詳細設計，待建立）範圍——這代表目前跑 `generate_scaffold()`，`app/models/{module}.py` 這批檔案都不會被產出。等 08a 落地、`scaffold_node.py` 補上真正的 `db_models` 字典後，`build_files()`／`write_files()` 不需要改動。
-- **`skipped_interfaces`／`skipped_db_models` 沒有管道進 `RefactorState`**：見九章「3. `scaffold_node.py`」——這是 07a 十二章、00 十章已經記錄的已知結構性缺口（`[P]`／④ 是平行分支，`[P]` 結構上看不到④實際跳過了哪些 `InterfaceSpec`），07b 只確保這兩份清單被正確計算並記警告，留給 08a 評估是否需要新增 State 欄位。
-- **`generate_scaffold()` 失敗時 `scaffold_node.py` 不會特別分流**：`result["success"] = False` 時，目前只記一筆 `logger.error()`，LangGraph 圖結構本身不會因此走不同的邊——屬於 08a 該補的範圍，07b 只確保失敗訊息清楚。
+- **（已由 08a／08b 解決）`db_models` 曾經固定傳 `None`**：07b 落地當下 `scaffold_node.py` 還沒有能力從 DB 或 Java entity 取得 `db_models` 字典。08a／08b 已補上 `scaffold_agent.build_db_models()`，`scaffold_node.py` 現在傳的是真正的字典，`app/models/{module}.py` 會正常產出，`build_files()`／`write_files()` 一如當初預期不需要改動，見 08b 六、八章。
+- **（已由 08a／08b 解決）`skipped_interfaces`／`skipped_db_models` 曾經沒有管道進 `RefactorState`**：08a 十二章已補上這兩個 State 欄位，`scaffold_node.py` 現在會把 `generate_scaffold()` 與 `build_db_models()` 兩邊的跳過清單合併寫入，見 08b 八章。
+- **（已解決）`generate_scaffold()` 失敗時 `scaffold_node.py` 不會特別分流**：`result["success"] = False` 時，`scaffold_done=False` 會經由 `implement`→`run_tests` 之間新增的 conditional edge（`implement_node.should_run_tests_or_give_up()`）直接分流到 `give_up`，不進 `debug` 重試迴圈（`debug` 對這類失敗無能為力，進去只會浪費重試次數），見 01 五章「scaffold 失敗時的收尾路徑」與對應測試 `tests/graph/test_implement_node.py`。
 - **`_normalize_type()`／型別正規化的「已知殘留限制」未特別測試**：07a 四章提到的萬用字元泛型（如 `List<? extends Foo>`）轉換後仍含非法字元 `?`，測試涵蓋了「隔離失敗、不拖累其餘介面」的行為，但沒有涵蓋其他潛在殘留寫法——這批資料目前的目標專案沒有出現過，維持 07a 原文「暫不特別處理」的既有結論。
 - **rollback 本身失敗時，只回報清楚的錯誤訊息，不會再重試或進一步自動處理**：這是刻意的邊界——rollback 本身失敗代表 git 環境有更根本的問題，不是 translator-cli 這一層能安全猜測、自動修復的情況，維持 07a 十三章「需要人工介入的錯誤不重試」的既有原則。
 - **`ast.parse()`／`ast.unparse()` 不保留任何註解，是 `ast` 模組本身的根本限制**：LLM 在 `fill_function()` 生成的函式本體若含有解釋性註解，在 `extract_body_statements()` 把 `body_source` 解析成陳述式清單的那一刻就已經遺失（Python 標準庫 `ast` 不把註解視為語法樹的一部分），`formatting.format_paths()` 面對的已經是「沒有註解」的程式碼，救不回來。真正要保留 LLM 生成程式碼裡的註解，需要換掉 `ast.parse`／`ast.unparse` 這個核心機制（例如改用保留具體語法樹的 `libcst`），這是 07a 六章「AST 插入機制」設計決策本身的範圍，記錄在這裡供未來若確定需要保留生成程式碼裡的註解時，回頭重新評估。**`prompts.py` 的 `SYSTEM_PROMPT` 明確告知模型「不要寫 `#` 註解，反正會被丟掉」**——這不解決根本限制，但能省下模型生成註解的 output token（既然一定會被丟掉），也讓模型不會誤以為留了有意義的說明。

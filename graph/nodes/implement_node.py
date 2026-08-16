@@ -53,7 +53,49 @@ def _partial_verify(module: str, db, verifier) -> dict:
     }
 
 
+def should_run_tests_or_give_up(state: RefactorState) -> str:
+    """對應 01 五章「scaffold 失敗時的收尾路徑」：④ 骨架生成失敗時，
+    run_tests（⑥）打的是一個從未被正確產出程式碼的 Python 服務——02a
+    五章「Newman 共用執行器」明訂服務沒起來時 newman 執行器會直接拋出
+    例外，不是回傳一筆失敗的比對結果。若放任 `implement` 之後無條件接
+    `run_tests`，這個例外會讓整條 `graph.ainvoke()` 崩潰，根本走不到
+    `should_debug_or_done()` 這個既有的 conditional edge。
+
+    這裡在 `implement → run_tests` 之間插入這道判斷：`implement` 只有
+    單一前驅（`scaffold → implement` 才是 fan-in，這裡改的不是那個合流
+    點，不影響 01 五章已經驗證過的平行分支語意）。`debug → implement`
+    的重試迴圈對 `generate_scaffold()` 的失敗無能為力（07a 十三章：
+    working tree 不乾淨等錯誤「需要人工介入核對，不是可以自動化解的
+    暫時性錯誤」），因此直接跳 `give_up`，不浪費重試次數在注定不會
+    改變結果的迴圈上。
+    """
+    return "give_up" if state.get("scaffold_done") is False else "run_tests"
+
+
 async def run(state: RefactorState) -> RefactorState:
+    # ④ 骨架生成若失敗，這個 pipeline run 底下不會有任何一個
+    # target_file 真的存在，逐一呼叫 fill_function() 只會各自用
+    # FileNotFoundError 快速失敗（見 07a 六章步驟 1「scaffold/task 不
+    # 一致」），不需要真的跑一輪排程器才知道結果。提前在這裡短路：
+    #
+    # 全部標記成 failed_modules，不是 blocked_modules——blocked_modules
+    # 不消耗 retry_count（見 debug_node.py），若這裡誤用 blocked會讓
+    # debug → implement 永遠原地打轉、每次都因為同一個 scaffold 失敗
+    # 再次全員 blocked，retry_count 永遠不增加，卡成無限迴圈。標記成
+    # failed_modules 才能讓既有的 should_debug_or_done() 正確判斷，
+    # 但實際路由改由上面的 should_run_tests_or_give_up() 接手，不會真的
+    # 再跑一次 run_tests——這裡設 failed_modules 純粹是為了語意一致
+    # （這個 module 確實「沒有被正確處理完」），不是為了觸發 debug 迴圈。
+    if state.get("scaffold_done") is False:
+        return {
+            **state,
+            "completed_tasks": [],
+            "failed_tasks": [],
+            "partial_reports": [],
+            "blocked_modules": [],
+            "failed_modules": [m["module"] for m in state["module_list"]],
+        }
+
     # 恢復前一輪執行（debug 迴圈重入）的進度
     latest_module_status = {}
     for r in state.get("partial_reports", []):

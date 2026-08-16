@@ -35,6 +35,18 @@ _KNOWN_KEYWORD_IMPORTS: list[tuple[str, str]] = [
     ("UploadFile", "from fastapi import UploadFile"),
     ("HTTPException", "from fastapi import HTTPException"),
     ("Decimal", "from decimal import Decimal"),
+    # 08a_scaffold_agent_architecture.md 五章新增：common/java_type_mapping.py
+    # 的 map_java_type() 補上 java.time／java.util.UUID 對應後，③的方法簽名
+    # （非 API 邊界的內部方法，走 map_java_type() 這條路徑）也可能產生這幾個
+    # 型別字串，原表沒涵蓋會重演 07a 五章「填空模式：本體 import 解析」修正
+    # 前的缺 import 情況。"date"／"datetime"／"time" 三個關鍵字都以英數字元
+    # 結尾，走 _keyword_hits() 的 \b 單字邊界比對——"datetime" 內含 "date"／
+    # "time" 兩個子字串，但邊界比對不會誤觸發（"date" 與後面的 "time" 之間
+    # 沒有字元邊界），三者互不誤判。
+    ("date", "from datetime import date"),
+    ("datetime", "from datetime import datetime"),
+    ("time", "from datetime import time"),
+    ("UUID", "from uuid import UUID"),
     ("Callable[", "from typing import Callable"),
 ]
 
@@ -158,6 +170,43 @@ def _merge_schema_blocks(blocks: list[str]) -> str:
     return "\n\n\n".join(parts) + "\n"
 
 
+def _table_assignment_names(tree: ast.Module) -> list[str]:
+    """找出模組層級「`name = Table(...)`」這種 SQLAlchemy Core `Table`
+    變數賦值的名稱——對應 08a_scaffold_agent_architecture.md 八章
+    「`@ManyToMany`：產生中介表定義」：`@ManyToMany` 的中介表沒有對應
+    的 Java entity class，`scaffold_agent` 渲染成純 `Table(...)` 賦值
+    （`ast.Assign`），不是 `ast.ClassDef`——若自訂型別索引只掃
+    `ClassDef`（見下方 `_build_custom_type_index()`／
+    `_scan_project_custom_types()`），這種名稱永遠進不了索引，⑤填空時
+    只要在函式本體引用這個中介表（如 `insert(user_roles).values(...)`，
+    見 08a 八章「⑤填空時若需要對這張表直接操作」的既有動機），兩層
+    import 解析都比對不到，會被四章「兩層都比對不到時保守不加、不猜」
+    這條既有原則吞掉，產出缺 import 的程式碼。
+
+    只認「單一目標、RHS 是呼叫 `Table(...)` 或 `xxx.Table(...)`」這個
+    精確形狀，不是任意模組層級賦值——避免誤把一般常數賦值（如
+    `DEFAULT_TIMEOUT = 30`）也當成自訂型別收進索引。`func` 可能是
+    `ast.Name("Table")`（`from sqlalchemy import Table` 之後直接呼叫）
+    或 `ast.Attribute(attr="Table")`（`sqlalchemy.Table(...)` 這種完整
+    路徑呼叫），08a 八章的渲染範例走前者，這裡兩種都認，不假設呼叫端
+    一定用哪一種匯入風格。
+    """
+    names: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        func_name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if func_name == "Table":
+            names.append(node.targets[0].id)
+    return names
+
+
 def _build_custom_type_index(
     interfaces: list[InterfaceSpec], schema_trees: dict[str, ast.Module], db_models_valid: dict[str, ast.Module]
 ) -> dict[str, str]:
@@ -165,7 +214,10 @@ def _build_custom_type_index(
 
     - 來源一：Schema 定義段合併後的每個檔案，AST 掃出頂層 `ClassDef`
     - 來源二：`interfaces` 的 `class_name → file_path`（排除 `None`）
-    - 來源三：`db_models` 合併後每個檔案，AST 掃出頂層 `ClassDef`
+    - 來源三：`db_models` 合併後每個檔案，AST 掃出頂層 `ClassDef`，
+      **以及** `_table_assignment_names()` 找到的 `Table(...)` 賦值
+      （08a 八章 `@ManyToMany` 中介表，見該函式 docstring）——這兩種
+      頂層宣告形狀只會出現在 `db_models`，來源一／二不需要一併掃
 
     優先序三／二＞一，用寫入順序達成（後寫入覆蓋先寫入）——三個來源
     對應的 class 集合理論上不重疊，這裡只是定義明確的 tie-break 規則。
@@ -188,6 +240,8 @@ def _build_custom_type_index(
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 index[node.name] = file_path
+        for name in _table_assignment_names(tree):
+            index[name] = file_path
     return index
 
 
@@ -466,8 +520,10 @@ def write_files(python_project_path: str, files: dict[str, str]) -> None:
 
 def _scan_project_custom_types(python_project_path: str) -> dict[str, str]:
     """掃描 `python_project_path` 底下 `app/` 目錄所有 `.py` 檔案的頂層
-    `ClassDef`，建立 `class_name -> file_path` 索引。供 `resolve_body_
-    imports()` 在填空階段解析本體引用的跨檔案自訂類別使用。
+    `ClassDef`（以及 `_table_assignment_names()` 找到的 `Table(...)`
+    賦值，見該函式 docstring），建立 `class_name -> file_path` 索引。供
+    `resolve_body_imports()` 在填空階段解析本體引用的跨檔案自訂類別
+    （及 08a 八章 `@ManyToMany` 中介表變數）使用。
 
     跟 `_build_custom_type_index()` 不同：那個函式在骨架生成階段用
     「還在記憶體裡、尚未寫入磁碟」的三個結構化來源建索引；這裡則是在
@@ -490,6 +546,8 @@ def _scan_project_custom_types(python_project_path: str) -> dict[str, str]:
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 index[node.name] = rel_path
+        for name in _table_assignment_names(tree):
+            index[name] = rel_path
     return index
 
 

@@ -1,139 +1,27 @@
 # design_agent/type_mapping.py
 """③ 架構設計 Agent：Java→Python 型別對應、openapi_spec 覆寫，對應
 05a 五章全節。
+
+`map_java_type()`／`camel_to_snake()` 已搬到 `common/java_type_mapping.py`
+（見 00 六章「Java 型別／命名對應（共用工具）」、08a_scaffold_agent_
+architecture.md 五章）——④ 骨架實作 Agent 對 JPA entity 欄位需要同一套
+轉換，不是恰好想法一致，因此跟 `common/openapi_ref_resolver.py` 同一種
+先例，這裡改為 import，行為逐字不變，呼叫端（`design.py`／`layout.py`）
+透過 `type_mapping.map_java_type` / `type_mapping.camel_to_snake` 的既有
+呼叫方式不需要任何改動。
 """
 from __future__ import annotations
 
 import logging
-import re
 
+from common.java_type_mapping import camel_to_snake, map_java_type
 from common.openapi_ref_resolver import resolve_refs
 from design_agent.types import JavaMethodSignature, JavaParam, UncoveredParam
 from graph.state import ParamSpec
 
 logger = logging.getLogger(__name__)
 
-_CAMEL_RE_1 = re.compile(r"(.)([A-Z][a-z]+)")
-_CAMEL_RE_2 = re.compile(r"([a-z0-9])([A-Z])")
-
-
-def camel_to_snake(name: str) -> str:
-    """Java 慣例的 camelCase 轉 Python 慣例的 snake_case（如 `userId`
-    → `user_id`、`getHTTPStatus` → `get_http_status`），供 requestBody
-    參數命名（見 `resolve_api_boundary_signature()`）與 design.py 的
-    方法名稱轉換共用，不各自重寫一份。連續大寫（縮寫，如 `HTTP`）視為
-    單一詞界，不逐字元插入底線。
-    """
-    s1 = _CAMEL_RE_1.sub(r"\1_\2", name)
-    return _CAMEL_RE_2.sub(r"\1_\2", s1).lower()
-
-
-# 05a 五章「基礎型別對應表（機械，非 LLM）」，純字串對應。
-# BigDecimal 刻意獨立映射到 Decimal，不跟 double／float 共用——Java 生態
-# 系統選 BigDecimal 通常就是為了避開 IEEE 754 浮點誤差（金額、需要精確
-# 小數運算的場景），對到 Python float 會直接把這個精度保證丟掉。
-# decimal.Decimal 是 Pydantic 原生支援的型別，語意對應才正確。
-_SIMPLE_JAVA_TYPES = {
-    "int": "int", "Integer": "int", "short": "int", "Short": "int",
-    "long": "int", "Long": "int",
-    "String": "str",
-    "boolean": "bool", "Boolean": "bool",
-    "double": "float", "Double": "float", "float": "float", "Float": "float",
-    "BigDecimal": "Decimal",
-    "void": "None",
-}
-# 單一型別參數容器：解開一層取內層型別。Map 需要兩個型別參數，另外處理。
-_UNWRAP_SINGLE_PARAM = {"List": "list[{0}]", "Set": "list[{0}]", "Collection": "list[{0}]", "Optional": "{0} | None"}
-_GENERIC_RE = re.compile(r"^(\w+)<(.+)>$")
-
-# java.util.function 常見 functional interface，有唯一、明確的 Python
-# 對應（Callable 的各種形式），屬於機械規則能決定的範疇，不需要交給
-# LLM 判斷（00 二章）——回應 07a 十四章「建議修正 05a 型別對應表」的
-# 根因修正（見 map_java_type() docstring）。value 是
-# `(預期型別引數個數, 組出 Callable 字串的函式)`；型別引數個數對不上
-# 時視為理論上不該發生的情況（Java 編譯器本來就會擋掉數量錯誤的
-# 泛型引數），不硬套模板，退回下面的未知泛型 fallback。
-_FUNCTIONAL_INTERFACE_TEMPLATES = {
-    "Supplier": (1, lambda ts: f"Callable[[], {ts[0]}]"),
-    "Consumer": (1, lambda ts: f"Callable[[{ts[0]}], None]"),
-    "BiConsumer": (2, lambda ts: f"Callable[[{ts[0]}, {ts[1]}], None]"),
-    "Function": (2, lambda ts: f"Callable[[{ts[0]}], {ts[1]}]"),
-    "BiFunction": (3, lambda ts: f"Callable[[{ts[0]}, {ts[1]}], {ts[2]}]"),
-    "Predicate": (1, lambda ts: f"Callable[[{ts[0]}], bool]"),
-    "BiPredicate": (2, lambda ts: f"Callable[[{ts[0]}, {ts[1]}], bool]"),
-}
-
-
-def map_java_type(java_type: str, known_classes: frozenset[str] = frozenset()) -> str:
-    """05a 五章基礎型別對應表的程式化版本，遞迴處理泛型容器。
-    `known_classes`：專案內自訂 class 名稱集合，命中時原樣沿用（假設
-    同名 Python 類別存在，見 05a 五章表格最後一列）。
-
-    **`BigDecimal` → `Decimal` 只在這個函式的路徑上生效**，API 邊界方法
-    改走 `resolve_api_boundary_signature()`、覆蓋不到（理由見 05a 五章
-    「型別對應」）。
-
-    **未知泛型包裝類別的處理**（回應 07a 十四章「建議修正 05a 型別對應
-    表（根因）」）：不在 `_UNWRAP_SINGLE_PARAM`／`_FUNCTIONAL_INTERFACE_
-    TEMPLATES` 裡的泛型外層類別（專案自訂泛型如 `ResponseResult<T>`，
-    或其他框架型別如 `Specification<T>`）——遞迴正規化內層型別參數，
-    外層符號轉換 `Foo<Bar>` → `Foo[Bar]`，不猜測外層類別本身的語意（是
-    否該用 `Generic[T]`、該不該整個從簽名拿掉，這些判斷不是型別字串
-    層級能決定的事，留給更上游的職責範圍，見 05a 十三章「型別對應根因
-    修正：為什麼不做 LLM 判斷」）。這保證回傳的字串永遠是合法 Python
-    泛型 subscript 語法，07a 四章「型別字串正規化」的符號轉換防線因此
-    對這個函式的輸出而言恆為 no-op（純防禦，不再是實際承接轉換工作的
-    那一層）。
-    """
-    java_type = java_type.strip()
-    if java_type in _SIMPLE_JAVA_TYPES:
-        return _SIMPLE_JAVA_TYPES[java_type]
-
-    match = _GENERIC_RE.match(java_type)
-    if match:
-        outer, inner = match.group(1), match.group(2)
-        if outer == "Map":
-            parts = _split_top_level_commas(inner)
-            if len(parts) != 2:
-                raise ValueError(f"無法解析 Map 泛型參數（預期 2 個型別參數，實際 {len(parts)} 個）: {inner}")
-            key_type, value_type = parts
-            return f"dict[{map_java_type(key_type, known_classes)}, {map_java_type(value_type, known_classes)}]"
-        if outer in _UNWRAP_SINGLE_PARAM:
-            return _UNWRAP_SINGLE_PARAM[outer].format(map_java_type(inner, known_classes))
-        if outer in _FUNCTIONAL_INTERFACE_TEMPLATES:
-            arity, render = _FUNCTIONAL_INTERFACE_TEMPLATES[outer]
-            type_args = _split_top_level_commas(inner)
-            if len(type_args) == arity:
-                return render([map_java_type(t, known_classes) for t in type_args])
-        # 未知的泛型包裝類別：遞迴正規化內層型別參數＋符號轉換
-        # <...> -> [...]，不猜測外層類別本身的語意（見 docstring）。
-        mapped_args = [map_java_type(t, known_classes) for t in _split_top_level_commas(inner)]
-        return f"{outer}[{', '.join(mapped_args)}]"
-
-    return java_type  # 命中 known_classes 或無法辨識的純量型別，原樣沿用（見 docstring）
-
-
-def _split_top_level_commas(inner: str) -> list[str]:
-    """依最外層逗號切分泛型型別引數列（不在巢狀 `<...>` 內的逗號才算數，
-    如 `Map<String, List<Order>>` 的 `inner` 是 `"String, List<Order>"`，
-    只切最外層那個逗號）。沒有頂層逗號時回傳單一元素清單（單一型別
-    引數的泛型，如 `Optional<T>`）。供 Map（固定 2 個引數）、JDK
-    functional interface（依各自 arity）、未知泛型 fallback（引數個數
-    不定）共用同一份切分邏輯，不再各自維護。
-    """
-    depth = 0
-    parts: list[str] = []
-    start = 0
-    for i, ch in enumerate(inner):
-        if ch == "<":
-            depth += 1
-        elif ch == ">":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            parts.append(inner[start:i].strip())
-            start = i + 1
-    parts.append(inner[start:].strip())
-    return parts
+__all__ = ["camel_to_snake", "map_java_type"]  # 供 `type_mapping.xxx` 既有呼叫方式沿用，見上方 module docstring
 
 
 _OPENAPI_SCALAR_TYPE = {"integer": "int", "number": "float", "string": "str", "boolean": "bool"}

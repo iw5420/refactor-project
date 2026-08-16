@@ -374,7 +374,14 @@ def build_graph():
 ### Retry 迴圈（Conditional Edge）
 
 ```python
-    builder.add_edge("implement", "run_tests")
+    builder.add_conditional_edges(
+        "implement",
+        implement_node.should_run_tests_or_give_up,
+        {
+            "run_tests": "run_tests",
+            "give_up": "give_up",
+        },
+    )
 
     builder.add_conditional_edges(
         "run_tests",
@@ -392,6 +399,26 @@ def build_graph():
 ```
 
 `should_debug_or_done`（定義在 `02b_harness_code.md` 的 `test_nodes.py`）依 `test_results.status` 與 `retry_count` 三分流：全過結束、失敗但未超重試上限進 `debug`、超過上限進 `give_up`。`give_up` 不是 END 本身，而是一個獨立節點——保留這個節點是為了讓「通知人工」這個動作有明確落點（Slack/email，見 02a 十六待實作清單），而不是讓圖靜默結束。
+
+`implement` 之後的邊也是 conditional edge，不是單純的 `add_edge`——原因見下一小節「scaffold 失敗時的收尾路徑」。
+
+### scaffold 失敗時的收尾路徑（Conditional Edge）
+
+`scaffold`（④）呼叫 `generate_scaffold()` 若失敗（`result["success"] = False`，例如 git working tree 不乾淨、非 git repo，見 07a 十三章），這個 pipeline run 底下不會有任何一個 `target_file` 真的存在。若放任 `implement` 之後無條件接 `run_tests`，`run_tests`（⑥）打的是一個從未被正確產出程式碼的 Python 服務——02a 五章「Newman 共用執行器」明訂服務沒起來時 newman 執行器會直接拋出例外，不是回傳一筆失敗的比對結果，這個例外會讓整條 `graph.ainvoke()` 崩潰，根本走不到 `should_debug_or_done()`。
+
+**不能動的邊界**：`scaffold → implement` 是上一節描述的 fan-in 合流點（`plan`／`scaffold` 都是 `implement` 的前驅），改成 conditional edge 會破壞「兩者都完成才觸發一次」的既有語意，因此這裡不碰。改在 `implement → run_tests` 之間插入判斷——`implement` 只有單一前驅，沒有 fan-in 風險：
+
+```python
+# graph/nodes/implement_node.py
+def should_run_tests_or_give_up(state: RefactorState) -> str:
+    return "give_up" if state.get("scaffold_done") is False else "run_tests"
+```
+
+`implement.run()` 本身也在最前面短路：`scaffold_done is False` 時直接跳過整個排程器（`ModuleScheduler`／`translator_cli.fill_function()`），把 `module_list` 全部標成 `failed_modules`（不是 `blocked_modules`——`blocked_modules` 不消耗 `retry_count`，見六章 `should_debug_or_done` 下方說明，這裡誤用會讓 `debug ↔ implement` 永遠原地打轉），`completed_tasks`／`failed_tasks`／`partial_reports` 回傳空陣列。
+
+路由直接跳 `give_up`、不進 `debug` 重試迴圈：07a 十三章明訂 `generate_scaffold()` 的失敗（working tree 不乾淨等）「需要人工介入核對，不是可以自動化解的暫時性錯誤」，`debug → implement` 的重試對這類失敗無能為力，進 `debug` 只會浪費重試次數在注定不會改變結果的迴圈上。`give_up_node.py` 依 `scaffold_done` 是否為 `False` 印不同的診斷訊息，避免跟「`retry_count` 用盡」這個既有路徑的訊息混淆。
+
+對應實作：`graph/nodes/implement_node.py`、`graph/builder.py`、`graph/nodes/give_up_node.py`；測試：`tests/graph/test_implement_node.py`（短路邏輯）、`tests/graph/test_manual_fill_gate.py::TestGraphBuild`（`implement`/`give_up` 的邊結構）。
 
 ### 人工填值關卡（Conditional Edge，兩道）
 
