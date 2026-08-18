@@ -195,3 +195,66 @@ def test_stateless_controller_with_real_methods_is_not_treated_as_orphan(tmp_pat
     assert any(iface["function_name"] == "ping" for iface in result.interfaces)
     assert not any("FileController" in record.message for record in caplog.records)
     assert result.directory_tree_fragment is None
+
+
+def test_response_entity_boundary_method_gets_response_return_type_and_skips_schema(tmp_path):
+    """對應 docs/09b_bug_trace.md #30：API 邊界方法若用 ResponseEntity<T>
+    顯式控制 HTTP status（真實案例 FileController.voice），InterfaceSpec
+    的 return_type 要被覆寫成 "Response"，且不該為它渲染任何 schema
+    class（openapi 的 response schema 對這種方法沒有代表性，見
+    resolve_api_boundary_signature() docstring）。
+    """
+    (tmp_path / "FileController.java").write_text(
+        """
+        package com.example;
+        import org.springframework.web.bind.annotation.RestController;
+        import org.springframework.web.bind.annotation.GetMapping;
+        import org.springframework.http.ResponseEntity;
+        @RestController
+        public class FileController {
+            @GetMapping("/voice")
+            public ResponseEntity<FileRs> voice(String location) {
+                return null;
+            }
+        }
+        """,
+        encoding="utf-8",
+    )
+    module = {
+        "module": "file", "summary": "", "java_files": ["FileController.java"], "depends_on": [],
+        "methods": [
+            {"java_method": "voice", "class_name": "FileController", "description": "取得語音檔", "complexity": "low"}
+        ],
+    }
+    api_to_python_target = [
+        {"endpoint": "/voice", "http_method": "GET", "java_controller": "FileController.voice", "module": "file"}
+    ]
+    from design_agent.design import _build_boundary_index
+
+    boundary_index = _build_boundary_index(api_to_python_target)
+    openapi_spec = {
+        "paths": {
+            "/voice": {
+                "get": {
+                    "parameters": [{"name": "location", "schema": {"type": "string"}}],
+                    "responses": {
+                        "200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/FileRs"}}}}
+                    },
+                }
+            }
+        }
+    }
+
+    from unittest.mock import patch
+
+    with patch("design_agent.design._call_design_llm", return_value=({}, {}, {"FileController::voice(String)": False})):
+        result = _design_module(
+            module=module, boundary_index=boundary_index, openapi_spec=openapi_spec,
+            java_project_path=str(tmp_path), interfaces_by_module={},
+        )
+
+    assert len(result.interfaces) == 1
+    iface = result.interfaces[0]
+    assert iface["return_type"] == "Response"
+    assert iface["file_path"] == "app/routers/file_router.py"
+    assert result.directory_tree_fragment is None

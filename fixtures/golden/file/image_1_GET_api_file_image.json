@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-18T03:32:42.989738Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "GET",
+    "path": [
+      "api",
+      "file",
+      "image"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 503,
+      "msg": "伺服器內部錯誤",
+      "data": null
+    }
+  }
+}

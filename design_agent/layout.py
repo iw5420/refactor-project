@@ -45,6 +45,13 @@ def model_file_path(module: str) -> str:
     return f"app/models/{module}.py"
 
 
+# 全域例外處理（`_global` 保留模組，見 design.py「全域生效類別」處理）
+# 固定輸出的檔案路徑——這批方法不屬於任何 module 分層慣例
+# （`_STEREOTYPE_LAYER`／`file_path_for_layer()`），對應
+# docs/09b_bug_trace.md #11/#12。
+EXCEPTION_HANDLERS_FILE = "app/core/exception_handlers.py"
+
+
 def build_waves(module_list: list[ModuleInfo]) -> list[list[ModuleInfo]]:
     """對 `module_list` 依 `depends_on` 建拓樸順序、分波，對應 05a 六章
     「處理單位：依模組取代整包 Map-Reduce」步驟 1。第一波是沒有
@@ -148,6 +155,17 @@ def render_main_py(interfaces: list[InterfaceSpec]) -> str:
     router 層檔案的 module（例如整個 module 只有 service/repository）
     不會出現在這份清單裡——純粹檢查 `interfaces` 的 `file_path` 是否落
     在 `app/routers/` 底下，不需要 LLM 介入。
+
+    **全域例外處理註冊（見 `EXCEPTION_HANDLERS_FILE`、
+    `docs/09b_bug_trace.md` #11/#12）**：`interfaces` 裡若有
+    `file_path == EXCEPTION_HANDLERS_FILE` 的項目（`design.py` 的
+    `_design_global_advice_module()` 產生，範圍刻意收斂只涵蓋
+    `@ExceptionHandler(Exception.class)` 這種全域 catch-all case，見該
+    函式），為每一個這樣的函式機械產生 import＋
+    `app.add_exception_handler(Exception, ...)` 註冊行——只註冊 Python
+    內建 `Exception`，不嘗試處理更細的例外型別（範圍限制同上）。純粹
+    檢查 `file_path`，不需要 LLM 介入，跟上面 router 的機械判斷同一種
+    精神。
     """
     router_files = sorted(
         {iface["file_path"] for iface in interfaces if iface["file_path"].startswith("app/routers/")}
@@ -162,7 +180,20 @@ def render_main_py(interfaces: list[InterfaceSpec]) -> str:
         imports.append(f"from {module_path} import router as {var_name}")
         includes.append(f"app.include_router({var_name})")
 
-    lines = ["from fastapi import FastAPI", "", *imports, "", "app = FastAPI()", *includes]
+    exception_handler_module_path = EXCEPTION_HANDLERS_FILE.removesuffix(".py").replace("/", ".")
+    handler_imports: list[str] = []
+    handler_registrations: list[str] = []
+    for iface in interfaces:
+        if iface["file_path"] != EXCEPTION_HANDLERS_FILE:
+            continue
+        fn = iface["function_name"]
+        handler_imports.append(f"from {exception_handler_module_path} import {fn}")
+        handler_registrations.append(f"app.add_exception_handler(Exception, {fn})")
+
+    lines = [
+        "from fastapi import FastAPI", "", *imports, *handler_imports,
+        "", "app = FastAPI()", *includes, *handler_registrations,
+    ]
     return "\n".join(lines) + "\n"
 
 

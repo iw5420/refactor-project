@@ -9,3 +9,10 @@ deepdiff>=8.0.0
 pytest>=8.0.0
 javalang>=0.13.0
 ruff>=0.8.0
+
+# 測試用依賴，驗證 python_service/（09a/09b 熱重載同步屏障）對一個真正
+# 在跑的 ASGI 服務有效——不是 Orchestrator 執行期依賴，見
+# tests/python_service/test_reload_probe_integration.py 模組 docstring。
+fastapi>=0.115
+uvicorn[standard]>=0.32
+starlette>=0.40

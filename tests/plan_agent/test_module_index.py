@@ -22,6 +22,13 @@ def test_classify_router_layer():
     assert module_index.classify("app/routers/order_router.py", _MODULE_NAMES) == ("order", "routers")
 
 
+def test_classify_exception_handlers_file_maps_to_global_module():
+    # 對應 docs/09b_bug_trace.md #11/#12：真實端對端測試發現
+    # app/core/exception_handlers.py（_global 保留模組固定輸出）不符合
+    # {module}_{layer}.py 命名慣例，會被一般規則誤判成中止。
+    assert module_index.classify("app/core/exception_handlers.py", frozenset({"_global"})) == ("_global", "routers")
+
+
 def test_classify_unknown_suffix_raises():
     """檔名不符合 `{module}_{layer}.py` 三種固定後綴之一（05a 三章「檔名
     規則」），代表③輸出違反自己的格式承諾，見 06a 四章「找不到對應後綴

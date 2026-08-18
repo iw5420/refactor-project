@@ -195,6 +195,7 @@ Content-Type 是 JSON 但 body 為空（如 `204 No Content` 或部分 DELETE �
 主要職責：
 - 呼叫 `newman run`，輸出 JSON 格式報告
 - 檢查 return code：若 newman 失敗（服務沒起來、collection 路徑錯誤）立即拋出明確例外，不讓錯誤靜默流入後續比對
+- 提供共用的 `extract_response_body()`，從 newman 單一 execution 的 `response` 物件取出原始 body 文字——**真實 newman（6.2.2）的 JSON reporter 沒有 `response["body"]` 這個欄位**，內容序列化在 `response["stream"]`（Node.js Buffer 的 JSON 表示），這是端對端驗證才發現的既有缺陷，見 `09b_bug_trace.md` #20、`02b_harness_code.md` 該函式的完整說明。Recorder／Verifier 兩端都必須透過這個共用函式讀 body，不能各自直接存取 `response["body"]`，理由跟這裡「兩端共用同一份執行入口」是同一種精神——任一端漂移就會重演這個 bug。
 
 → 實作見：`core/postman_runner.py`（`02b_harness_code.md`）
 
@@ -350,6 +351,7 @@ Agent ⑦（Debug Agent）的輸入是結構化的 JSON report，格式設計讓
   ]
   passed_cases: [case_id, ...]
   excluded_folders: [folder_name, ...]   ← 見「excluded_folders 欄位」一節，預設空陣列
+  excluded_cases: [case_id, ...]         ← 見「excluded_cases 欄位」一節，預設空陣列
 }
 ```
 
@@ -375,6 +377,14 @@ Agent ⑦（Debug Agent）的輸入是結構化的 JSON report，格式設計讓
 Report 頂層另有一個 `excluded_folders` 欄位（預設空陣列），列出因三章「Mutation 錄製異常偵測」被判定為 tainted、整個 folder 未參與這次驗證的情境（見四章「排除已知異常的 folder」）。這些 case **不計入** `summary` 的統計，也不出現在 `failures`——它們既不是通過也不是失敗，是「這次沒測」。`excluded_folders` 非空時代表 [B] 的填值邏輯有 case 需要人工複查，通常應優先處理，而不是放著等它自己消失。
 
 → 實作見：`core/reporter.py`（`02b_harness_code.md`）
+
+### excluded_cases 欄位
+
+**這是端對端驗證（見 `09b_bug_trace.md` #21）才發現、原設計沒有涵蓋的缺口，這裡補上定案**：三章「非 JSON Response 與空 Body 的處理」已經定案 Recorder 只錄製 `Content-Type: application/json` 的 response，非 JSON（如 `/version` 這類回傳 `text/plain` 的端點）一律跳過、記進 `_metadata.json` 的 `skipped` 清單，不寫入 golden——但原設計沒有交代**驗證端**該怎麼處理這批端點：這些端點仍然在 Postman Collection 裡，Newman 照樣會打，`GoldenVerifier` 找不到對應 golden 檔案，若不特殊處理，會被 `_process_executions()` 判定成 `golden_not_found` 失敗——但那不是「golden 遺失」或「route_to_file_mapping 設定錯誤」，是這個端點從一開始就不在 JSON body diff 這種比對契約的適用範圍內，不該算失敗。
+
+**解法**：`GoldenVerifier` 初始化時讀取 `_metadata.json` 的 `skipped` 清單（跟 `MutationVerifier` 讀 `tainted_folders` 是同一種機制、同一份檔案），比對時命中這份清單的 case 直接排除，不產生 `golden_not_found` 結果，改記進 report 頂層新增的 `excluded_cases` 欄位（預設空陣列）——跟 `excluded_folders` 是同一種精神（"這次沒測"，不是失敗，也不計入 `summary`），差別只在 `excluded_folders` 是 mutation 端以「整個頂層 folder」為單位排除，`excluded_cases` 是 readonly 端以「單一 case」為單位排除。
+
+→ 實作見：`verifier/comparator.py`、`core/reporter.py`（`02b_harness_code.md`）
 
 ---
 
@@ -506,7 +516,7 @@ run_tests（Agent ⑥，對應 run_postman_tests，全量驗證）
   apply_seed → GoldenVerifier.verify_raw(collection_readonly.json)
   MutationVerifier.verify_all_raw()                        ← 內部逐頂層 folder apply_seed，自動排除 tainted_folders（見四、九）
   build_report(readonly_raw + mutation_raw, excluded=mutation_verifier 的排除清單)
-  → state["test_results"]（含 excluded_folders 欄位）
+  → state["test_results"]（含 excluded_folders／excluded_cases 欄位）
 ```
 
 > `record_golden_output`／`run_postman_tests` 是 01 四章沿用的 node 名稱（`record_tests`／`run_tests`）；module 級局部驗證不是獨立 node，是 `implement` node 內部依排程觸發的呼叫，不出現在圖的節點清單中。
@@ -677,10 +687,9 @@ PostgreSQL Server
 - [ ] 安裝 `openapi-to-postmanv2`（npm），確認能將 openapi.json 轉成 Postman Collection
 - [ ] 確認 collection_readonly.json 和 collection_mutation.json 都能被 newman 正常執行
 
-> [A]/[B] 產生 Collection 的完整流程、LLM 填值與失敗處理、鏈式依賴偵測與注入，這些項目原本列在這裡，現在都在 `03a_spec_collection_agent_architecture.md`，不在本文件重複列。
+> [A]/[B] 產生 Collection 的完整流程、LLM 填值與失敗處理、鏈式依賴偵測與注入，詳見 `03a_spec_collection_agent_architecture.md`，本文件不重複列。
 
 **測試 DB 建立**
-- [x] ~~確認 Java 專案的 `ddl-auto` 設定，決定是否需要手動 dump schema~~——已確認手動 SQL 建表、非 `ddl-auto`，固定走 `pg_dump --schema-only` 這條路徑，見十四章「Schema 來源」
 - [ ] 執行 `createdb MOC_MATSUEXAM_TEST` 建立測試用 DB
 - [ ] 若非 `ddl-auto`：執行 `pg_dump --schema-only MOC_MATSUEXAM | psql MOC_MATSUEXAM_TEST` 複製 schema
 - [ ] 確認 Java 服務可以用 `SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:5432/MOC_MATSUEXAM_TEST` 正常啟動
@@ -689,32 +698,24 @@ PostgreSQL Server
 
 **Harness 核心**
 - [ ] mask_rules.yaml 初版：把 Java 回傳格式中所有動態欄位列出來（只列純量欄位；`id` 系主鍵欄位放 `masked_fields_mutation_only`，不放通用 `masked_fields`，見七）
-- [x] ~~fixtures/seed.sql~~：由你直接提供 PostgreSQL 初始資料
 - [ ] newman 安裝與 collection 執行驗證：確認 newman run 可正常輸出 JSON report
 
 **Mutation 錄製異常偵測（見三章、四章、九章）**
-- [x] ~~`golden_writer.py`：`record_mutation()` 對非預期 status code 判定、folder 級 tainted 標記、`_metadata.json` 寫入 `tainted_folders`~~（見 02b，並有 `tests/refactor_harness/test_golden_writer.py` 覆蓋）
-- [x] ~~`mutation_verifier.py`：讀取 `_metadata.json` 的 `tainted_folders`，`verify_all_raw()` 自動排除、`verify_one()` 不排除~~（見 02b，並有 `tests/refactor_harness/test_mutation_verifier.py` 覆蓋）
-- [x] ~~`reporter.py`／`test_nodes.py`：`excluded_folders` 欄位串接進最終 report~~（見 02b）
 - [ ] （優先度較低）更精準的預期 status 判斷基準：需 [B] 在 Postman item 標註 openapi 宣告的成功 response code，屬 `03a`/`03b` 與本文件的介面擴充，待評估
 
 **Collection 分組（狀態污染防護）**
 - [ ] 確認 Agent B 正確拆分 readonly / mutation 兩份 collection
 - [ ] 確認 Agent B 遵守「頂層 folder ＝ 一條自洽鏈式情境」的約定（見六）：有鏈式依賴的 request 在同一頂層 folder 內、跨 folder 不引用任何動態變數
 - [ ] 確認 readonly collection 跑完後 DB 狀態不變
-- [x] ~~Agent ② 的錄製流程補上對 collection_mutation.json 的 golden 錄製~~（`GoldenRecorder.record_mutation()`，見 02b）
-- [x] ~~確認 mutation 驗證已接入全量驗證~~（`MutationVerifier.verify_all_raw()` 已接入 `run_postman_tests`，見 02b）
 
 **Route Mapping（Agent ③ 自動產生）**
 - [ ] 確認 Agent ③ 輸出的 route_to_file_mapping 已正確寫入 config/harness.yaml
 - [ ] key 格式確認為 `{METHOD}_{path_normalized}`，動態段用 `{id}` 佔位
 - [ ] 確認巢狀資源路由有獨立 key，不會被父路由假匹配
 - [ ] 確認沒有 API 對應到空的 related_files
-- [x] ~~`MutationVerifier` 補上 `route_to_file_mapping` 解析~~（已抽出至 `core/route_mapper.py` 的 `RouteMapper`，兩個 Verifier 共用，見九）
 - [ ] 確認 Agent ③ 同一次呼叫還輸出了 `route_to_module_mapping`（見十一章、`05a_design_agent_architecture.md` 八章），key 格式與 `route_to_file_mapping` 完全一致
 
 **Module 詞彙一致性**
-- [x] ~~由 Agent ③ 在 harness.yaml 產出 route → module 對應表，get_module() 改查表、URL 推斷降為 fallback~~（`route_to_module_mapping`，見十一章、十三章、`05a_design_agent_architecture.md` 八章——`task.module` 因此逐字等於 `ModuleInfo.module`，不再是「兩邊各自保證一致」的人工約定）
 - [ ] 確認 `get_module()` 優先查 `route_to_module_mapping`，只有查不到時才 fallback 回 URL 推斷（見十三章）
 - [ ] 檢查專案是否存在①③解析範圍外、因此不會出現在 `route_to_module_mapping` 裡的殘餘路由（如 04a 十一章列出的已知限制、或 skip 呼叫鏈已排除的端點）：若有，確認這些路由走 fallback 時的 `get_module()` 推斷結果與 warning log 符合預期，不需要再要求 Plan Agent 手動對齊——`task.module` 一律逐字沿用 `ModuleInfo.module`（見 `06a_plan_agent_architecture.md` 四章），沒有例外情況需要特別處理
 
@@ -722,7 +723,6 @@ PostgreSQL Server
 - [ ] 確認 Python 服務的 Alembic migration 可以直接套用到 `MOC_MATSUEXAM_TEST`，或改用 `db.sync_schema()` 手動同步
 
 **流程整合**
-- [x] ~~MAX_RETRY 設定~~：已定案為 3，常數定義在 `refactor_harness/langgraph_nodes/test_nodes.py` 的 `MAX_RETRY`（`01_langgraph_architecture.md` 三章只定義 `RefactorState.retry_count` 的型別，實際數值以這裡的常數為準），需調整直接改這個常數
 - [ ] give_up 通知機制：超過重試次數時，Slack / email 通知人工介入
 
 ---

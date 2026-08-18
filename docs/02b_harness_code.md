@@ -159,11 +159,15 @@ masked_patterns:
 
 ## core/postman_runner.py
 
+> **這個模組在 09b 端對端驗證中發現並修正了三個既有缺陷**（`shutil.which()` 路徑解析、`baseUrl` 變數名稱、`extract_response_body()` 讀對 newman 真實欄位），完整重現方式與影響範圍見 `09b_bug_trace.md` #1／#3／#20。以下是修正後的權威版本。
+
 ```python
 import json
 import re
+import shutil
 import subprocess
 import tempfile
+
 
 def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
     """
@@ -172,13 +176,37 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
 
     若 newman 失敗（服務沒起來、collection 路徑錯誤）立即拋出明確例外，
     不讓錯誤靜默流入後續比對邏輯。
+
+    **`shutil.which()` 解析完整路徑，不是直接傳字面字串 "newman"**：
+    Windows 上全域 npm 套件的執行檔是 `newman.cmd`（batch wrapper），
+    `subprocess.run(["newman", ...], shell=False)` 不會自動嘗試附加
+    `.cmd`／`.exe` 等副檔名去 PATH 上找，會直接 `FileNotFoundError`，
+    即使 `newman` 明明能在命令列打字執行——命令列底下是 shell 自己做了
+    這層副檔名比對，`subprocess.run(shell=False)` 沒有這層行為。
+    `shutil.which()` 內部用 `os.environ["PATHEXT"]`（Windows）逐一嘗試
+    副檔名，回傳真正可執行的完整路徑，兩平台行為一致，不需要引入
+    `shell=True`（避免字串注入風險）。找不到就在這裡直接拋出明確錯誤。
     """
+    newman_path = shutil.which("newman")
+    if newman_path is None:
+        raise RuntimeError(
+            "找不到 newman 執行檔（PATH 上沒有 newman／newman.cmd）："
+            "請先 `npm install -g newman`，見 00 五章「環境建立」"
+        )
+
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         output_path = tmp.name
 
     cmd = [
-        "newman", "run", collection_path,
-        "--env-var", f"base_url={base_url}",
+        newman_path, "run", collection_path,
+        # collection 裡實際的變數名稱是 "baseUrl"（駝峰式，[B] Collection
+        # Agent 產生 collection 時內建的變數，見 postman/collection_*.json
+        # 頂層 "variable" 陣列），不是 "base_url"（底線）。舊寫法傳錯變數
+        # 名稱，newman 永遠不會覆寫，一律 fallback 回 collection 內建的
+        # 預設值——這個預設值恰好等於 Java 的網址，導致這個 bug 長期被
+        # 掩蓋（錄製對 Java「碰巧」正確，驗證對 Python 則從未真正命中過
+        # Python 服務），見 09b_bug_trace.md #3。
+        "--env-var", f"baseUrl={base_url}",
         "--reporters", "json",
         "--reporter-json-export", output_path
     ]
@@ -197,6 +225,35 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
 
     with open(output_path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def extract_response_body(response: dict) -> str | None:
+    """
+    從 newman 單一 execution 的 `response` 物件取出原始 body 文字。
+
+    真實 newman（6.2.2）的 JSON reporter **沒有** `response["body"]` 這個
+    欄位——`response.keys()` 只有 `['id', 'status', 'code', 'header',
+    'stream', 'cookie', 'responseTime', 'responseSize']`。實際內容序列化
+    在 `response["stream"]`，是 Node.js Buffer 的 JSON 表示
+    （`{"type": "Buffer", "data": [位元組陣列]}`），要自己組回位元組再解碼。
+
+    舊寫法 `response.get("body")` 永遠回傳 `None`（鍵不存在），即使實際
+    回應內容非空——這個 bug 修好之前，Recorder／Verifier 錄到、比對到的
+    body 全部都是空的，body diff 從未真正比對過任何內容，見
+    `09b_bug_trace.md` #20。
+
+    回傳 `None` 代表這個 response 真的沒有 body（如 204 No Content，
+    `stream` 缺席或 `data` 是空陣列）；`stream` 存在但形狀不符預期則讓
+    例外往外拋，不吞——這跟後續 JSON parse 失敗走 `response_not_json`
+    分類是不同層級的錯誤。
+    """
+    stream = response.get("stream")
+    if stream is None:
+        return None
+    data = stream["data"]
+    if not data:
+        return None
+    return bytes(data).decode("utf-8")
 
 
 def list_top_level_folders(collection_path: str) -> list[str]:
@@ -535,15 +592,32 @@ class RouteMapper:
 
 ## core/reporter.py
 
+> 09b 端對端驗證新增 `excluded_cases` 參數／欄位（見 `09b_bug_trace.md` #21），設計面對應說明見 02a 九章「Report 結構」。
+
 ```python
 class HarnessReporter:
-    def build_report(self, results: list[dict], excluded_folders: list[str] | None = None) -> dict:
+    def build_report(
+        self,
+        results: list[dict],
+        excluded_folders: list[str] | None = None,
+        excluded_cases: list[str] | None = None,
+    ) -> dict:
         """
         excluded_folders：因 Recorder 錄製時判定為 tainted 而整個 folder 未參與
         這次驗證的情境（見 02a 三章「Mutation 錄製異常偵測」、四章「排除已知
-        異常的 folder」、九章「excluded_folders 欄位」）。這些 case 不計入
-        summary／failures／passed_cases 既有的計算邏輯——本方法其餘分類行為
-        完全不變，excluded_folders 只是額外附加的頂層欄位。
+        異常的 folder」、九章「excluded_folders 欄位」）。
+
+        excluded_cases：readonly 情境下，Recorder 錄製時就判定為非 JSON（如
+        text/plain 的 /version 端點）而主動跳過、從未寫入 golden 的
+        case_id 清單（見 verifier/comparator.py GoldenVerifier._load_
+        skipped_case_ids()）——這些 case 不是「golden 遺失」或
+        「route_to_file_mapping 設定錯誤」，是這個端點本來就不在 JSON body
+        diff 這種比對契約的適用範圍內。跟 excluded_folders 是同一種精神
+        （呼叫端已經在傳進來的 results 裡排除掉了，這裡只是把排除掉的
+        識別碼原樣附加成頂層欄位）。
+
+        兩者都不計入 summary／failures／passed_cases 既有的計算邏輯——本
+        方法其餘分類行為完全不變，只是額外附加兩個頂層欄位。
         """
         passed = [r for r in results if r["passed"]]
         failed = [r for r in results if not r["passed"]]
@@ -570,7 +644,8 @@ class HarnessReporter:
                 for f in failed
             ],
             "passed_cases": [p["case_id"] for p in passed],
-            "excluded_folders": excluded_folders or []
+            "excluded_folders": excluded_folders or [],
+            "excluded_cases": excluded_cases or []
         }
 
     def _classify_failure(self, result: dict) -> str:
@@ -733,7 +808,7 @@ from datetime import datetime
 from pathlib import Path
 # 套件內部一律用帶 refactor_harness. 前綴的絕對匯入（見 02a 二章「匯入慣例」）
 from refactor_harness.core.masker import ResponseMasker
-from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id
+from refactor_harness.core.postman_runner import extract_response_body, run_newman, list_top_level_folders, make_case_id
 from refactor_harness.core.route_mapper import RouteMapper
 from refactor_harness.fixtures.db_env import DbEnvironment
 
@@ -882,8 +957,7 @@ class GoldenRecorder:
         建構整批 execution 的 golden 內容並分類，**不寫入磁碟**——是否真的落地
         由呼叫端（record()／record_mutation()）決定：record_mutation() 需要先看
         過整個 folder 有沒有異常，才能決定該 folder 要不要整批捨棄（見上方
-        record_mutation() docstring、02a 三章）。取代舊版直接寫檔的
-        _record_executions()。
+        record_mutation() docstring、02a 三章）。
 
         回傳 (built, skipped, anomalies)：
         - built：[(case_id, golden_dict), ...]，正常應寫入的
@@ -910,7 +984,7 @@ class GoldenRecorder:
                 anomalies.append({
                     "case_id": case_id,
                     "status_code": response.get("code"),
-                    "body_preview": (response.get("body") or "")[:500],
+                    "body_preview": (extract_response_body(response) or "")[:500],
                 })
             else:
                 skipped.append(case_id)  # 非 JSON response，記錄但跳過
@@ -937,14 +1011,17 @@ class GoldenRecorder:
         masked_fields_mutation_only 說明）——record() 呼叫時用預設值 "readonly"，
         record_mutation() 呼叫時明確傳入 "mutation"。
         """
-        headers = {h["key"].lower(): h["value"]
-                   for h in (response.get("headers", {}).get("members", []))}
+        # newman JSON reporter 的實際欄位是 "header"（單數），值是純陣列
+        # [{"key": ..., "value": ...}, ...]，不是 "headers": {"members": [...]}
+        # 這種包一層物件的形狀——已用真實 newman 6.2.2 輸出核對過，見
+        # 09b_bug_trace.md（golden_writer.py 一節）。
+        headers = {h["key"].lower(): h["value"] for h in (response.get("header") or [])}
         content_type = headers.get("content-type", "")
 
         if "application/json" not in content_type:
             return None, "non_json_response"
 
-        raw_body = response.get("body")
+        raw_body = extract_response_body(response)
         if raw_body is None or raw_body.strip() == "":
             body = None
         else:
@@ -991,6 +1068,8 @@ class GoldenRecorder:
 
 ## verifier/comparator.py
 
+> 09b 端對端驗證新增 `excluded_cases` 機制（`_load_skipped_case_ids()`／`get_excluded_cases()`），對應 `09b_bug_trace.md` #21：`GoldenVerifier` 原本不區分「Recorder 錄製時就判定非 JSON 而主動跳過」與「golden 真的遺失」，把前者也誤判成 `golden_not_found` 失敗。同時修正 `actual_response.get("body")` 讀錯欄位的問題（改用 `extract_response_body()`，見 core/postman_runner.py 一節、`09b_bug_trace.md` #20）。
+
 ```python
 import json
 from pathlib import Path
@@ -998,7 +1077,7 @@ from pathlib import Path
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
-from refactor_harness.core.postman_runner import run_newman, make_case_id
+from refactor_harness.core.postman_runner import extract_response_body, run_newman, make_case_id
 from refactor_harness.core.route_mapper import RouteMapper
 
 class GoldenVerifier:
@@ -1011,10 +1090,39 @@ class GoldenVerifier:
         self.reporter = HarnessReporter()
         # route 解析用共用的 RouteMapper，與 MutationVerifier 共用同一套邏輯
         self.route_mapper = RouteMapper(config_path)
+        # Recorder 錄製時主動判定為非 JSON（如 text/plain 的 /version 端點）
+        # 而跳過、從未寫入 golden 的 case_id 清單
+        self._skipped_case_ids = self._load_skipped_case_ids()
+        self._last_excluded_cases: list[str] = []
+
+    def _load_skipped_case_ids(self) -> set[str]:
+        """讀取 {golden_dir}/_metadata.json 的 skipped 清單（見 02a 三章
+        「非 JSON Response 與空 Body 的處理」）。沒有這份清單時，
+        _process_executions() 會把這些 case 誤判成 golden_not_found
+        失敗，即使 Python 端回傳的內容其實跟 Java 一致（如 /version
+        端點兩邊都回傳同一種 text/plain 版本字串）。_metadata.json
+        不存在時（例如尚未跑過 record_golden_output）視為沒有任何已知
+        跳過的 case，不拋例外——比照 MutationVerifier 對 tainted_folders
+        的既有處理方式。
+        """
+        metadata_path = self.golden_dir / "_metadata.json"
+        if not metadata_path.exists():
+            return set()
+        with open(metadata_path, encoding="utf-8") as f:
+            metadata = json.load(f)
+        return set(metadata.get("skipped", []))
+
+    def get_excluded_cases(self) -> list[str]:
+        """上一次 verify()／verify_raw()／verify_module() 呼叫中，因命中
+        _skipped_case_ids 而被排除、沒有計入 summary／failures 的
+        case_id 清單。"""
+        return self._last_excluded_cases
 
     def verify(self, collection_path: str) -> dict:
         """執行 newman 並與 golden output 比對（全量）"""
-        return self.reporter.build_report(self.verify_raw(collection_path))
+        return self.reporter.build_report(
+            self.verify_raw(collection_path), excluded_cases=self.get_excluded_cases()
+        )
 
     def verify_raw(self, collection_path: str) -> list[dict]:
         """
@@ -1036,7 +1144,9 @@ class GoldenVerifier:
                 ex["item"]["request"]["method"], ex["item"]["request"]["url"]["path"]
             ) == module_filter
         ]
-        return self.reporter.build_report(self._process_executions(filtered))
+        return self.reporter.build_report(
+            self._process_executions(filtered), excluded_cases=self.get_excluded_cases()
+        )
 
     def _get_module(self, method: str, url_parts: list[str]) -> str:
         # 委派給共用的 RouteMapper.resolve_module()（module 詞彙表唯一權威
@@ -1044,8 +1154,11 @@ class GoldenVerifier:
         return self.route_mapper.resolve_module(method, url_parts)
 
     def _process_executions(self, executions: list[dict]) -> list[dict]:
-        """回傳尚未分類（未呼叫 build_report）的原始 case 結果清單。"""
+        """回傳尚未分類（未呼叫 build_report）的原始 case 結果清單。每次
+        呼叫重新計算 self._last_excluded_cases（覆蓋，不累加）。
+        """
         results = []
+        excluded: list[str] = []
         for execution in executions:
             item = execution["item"]
             actual_response = execution["response"]
@@ -1057,6 +1170,12 @@ class GoldenVerifier:
 
             golden = self._load_golden(case_id, module)
             if golden is None:
+                if case_id in self._skipped_case_ids:
+                    # Recorder 錄製時就判定這個 case 是非 JSON 而主動跳過，
+                    # 不是 golden 遺失或 route_to_file_mapping 設定錯誤——
+                    # 不算失敗，直接排除，不計入 summary／failures。
+                    excluded.append(case_id)
+                    continue
                 results.append({
                     "case_id": case_id,
                     "passed": False,
@@ -1064,7 +1183,7 @@ class GoldenVerifier:
                 })
                 continue
 
-            raw_body = actual_response.get("body")
+            raw_body = extract_response_body(actual_response)
             if raw_body is None or raw_body.strip() == "":
                 actual_body = None
             else:
@@ -1101,6 +1220,7 @@ class GoldenVerifier:
                 "related_files": self.route_mapper.resolve_related_files(method, url_parts)
             })
 
+        self._last_excluded_cases = excluded
         return results
 
     def _load_golden(self, case_id: str, module: str) -> dict | None:
@@ -1115,12 +1235,14 @@ class GoldenVerifier:
 
 ## verifier/mutation_verifier.py
 
+> 09b 端對端驗證修正 `actual_response.get("body")` 讀錯欄位的問題（改用 `extract_response_body()`，見 core/postman_runner.py 一節、`09b_bug_trace.md` #20）——這條路徑目前只完成程式碼修正，尚未實際重跑驗證過，見 `09b_bug_trace.md`「待決定事項」。
+
 ```python
 import json
 import yaml
 from pathlib import Path
 # 套件內部一律用帶 refactor_harness. 前綴的絕對匯入（見 02a 二章「匯入慣例」）
-from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id
+from refactor_harness.core.postman_runner import extract_response_body, run_newman, list_top_level_folders, make_case_id
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
@@ -1265,7 +1387,7 @@ class MutationVerifier:
                 expected_status = golden["response"]["status_code"]
                 status_match = actual_response["code"] == expected_status
 
-                raw_body = actual_response.get("body")
+                raw_body = extract_response_body(actual_response)
                 try:
                     actual_body = None if (raw_body is None or raw_body.strip() == "") else json.loads(raw_body)
                     # mutation 情境：額外遮罩 masked_fields_mutation_only（id/order_id/user_id），

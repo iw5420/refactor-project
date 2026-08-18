@@ -98,6 +98,13 @@ _LAYER_SUFFIX = {"routers": "_router", "services": "_service", "repositories": "
 # 06a 六章「防環規則」固定全序第一層：repositories < services < routers。
 LAYER_RANK = {"repositories": 0, "services": 1, "routers": 2}
 
+# `_global` 保留模組（見 04a 十一章、05a 十四章）固定輸出
+# `app/core/exception_handlers.py`，不符合 `{module}_{layer}.py` 命名
+# 慣例——09b 端對端整合測試才發現這個缺口（見 06a 四章「例外」、
+# docs/09b_bug_trace.md #11/#12）。
+_GLOBAL_MODULE_NAME = "_global"
+_EXCEPTION_HANDLERS_FILE = "app/core/exception_handlers.py"
+
 
 def classify(file_path: str, module_names: frozenset[str]) -> tuple[str, str]:
     """回傳 `(module, layer)`。對應 06a 四章「演算法」：取 `file_path`
@@ -107,7 +114,13 @@ def classify(file_path: str, module_names: frozenset[str]) -> tuple[str, str]:
     命中。找不到對應後綴、或比對不到任何 module（不應發生，代表③輸出
     違反自己承諾的檔名格式）→ 直接中止，交由人工核對③的輸出（見 06a
     四章、十一章）。
+
+    `app/core/exception_handlers.py`（見上方）是唯一的例外，在一般規則
+    之前直接回傳固定值。
     """
+    if file_path == _EXCEPTION_HANDLERS_FILE:
+        return _GLOBAL_MODULE_NAME, "routers"
+
     stem = file_path.rsplit("/", 1)[-1].removesuffix(".py")
     for layer, suffix in _LAYER_SUFFIX.items():
         if stem.endswith(suffix):

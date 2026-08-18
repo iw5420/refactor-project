@@ -255,3 +255,21 @@ refactor-project/
 尚待定案：
 
 - [ ] `findAllBy`／`findFirstBy` 這類修飾詞退回寬鬆說明時，訊息文字寫死引用「`Top`／`Distinct`／`OrderBy` 等複雜關鍵字」，但實際觸發原因可能只是動詞與 `By` 之間有修飾詞、不一定真的含這些關鍵字——訊息本身沒有講錯事實（仍然是誠實的「無法逐一拆解」），只是引用的原因不夠精確，待評估是否要把這類修飾詞也收進嚴格解析規則
+
+---
+
+## 十一、全域生效類別收集（`_global` 保留模組）
+
+**背景**：09b 端對端整合測試發現（見 `docs/09b_bug_trace.md` #11/#12），Java 端 `@RestControllerAdvice`（全域例外處理，透過 Spring component-scan 自動生效、不被任何 Controller 用欄位注入）結構上永遠進不了四章 Map-Reduce 分組演算法——`controller_dependency_closure()` 只從 `RestController`／`Controller` 出發做欄位依賴 BFS，這類全域生效的類別不是任何 Controller 的依賴，也不是 BFS 起點，兩層都碰不到。
+
+**決策**：新增完全獨立於四章 BFS 分組之外的第二收集路徑：
+
+1. `parse_agent/grouping.py::collect_global_advice_classes(project)`：直接掃 `project.classes` 比對 `@RestControllerAdvice`／`@ControllerAdvice` 這兩個 annotation，不透過 BFS。
+2. 找到的類別方法仍送四章的 Map 階段做語意摘要（沿用既有 Claude API 呼叫與重試機制，維持 [P] 消費描述的品質），但**不送進 Reduce 做模組歸屬判斷**——這批方法的歸屬是確定性的（本來就不屬於任何業務模組），不需要再問一次 LLM，呼應 00 二章「能用程式判斷的，就不要交給 LLM」。
+3. `parse_agent/summarize.py::_assemble_global_advice_draft()` 機械組成一筆保留模組 `module="_global"`（`depends_on=[]`），沿用既有 `ModuleInfo`／`MethodInfo` schema，不新增型別，附加進 `run_map_reduce()` 最終回傳的 `module_list`。
+
+**下游影響**：③ 架構設計 Agent 需要對 `module="_global"` 走專屬渲染路徑（見 `05a_design_agent_architecture.md` 十四章）；[P] Plan Agent 的檔名反查規則需要認得 `app/core/exception_handlers.py` 這個固定路徑（見 `06a_plan_agent_architecture.md` 四章）；④ translator-cli 骨架生成同樣需要認得這個檔案（見 `07a_translator_cli_architecture.md` 十五章）。
+
+**真實環境驗證**：已對真實 `../lang-exam-api-refactor` 跑過完整 ①③[P]④⑤⑥，`module_list` 正確產出 `_global` 模組（`java_files=["src/main/java/com/teachLanguage/exception/GlobalExceptionHandler.java"]`），且下游一路串到⑤翻譯、⑥容器內實際觸發（Starlette 例外處理中介層確實呼叫到 ⑤ 產出的 `handle_all`），見 `09b_bug_trace.md`。
+
+程式碼實作見 `04b_parse_agent_code.md` 對應章節；單元測試見 `tests/parse_agent/test_grouping.py`。

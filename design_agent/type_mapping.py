@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from common.java_type_mapping import camel_to_snake, map_java_type
+from common.java_type_mapping import _GENERIC_RE, camel_to_snake, map_java_type
 from common.openapi_ref_resolver import resolve_refs
 from design_agent.types import JavaMethodSignature, JavaParam, UncoveredParam
 from graph.state import ParamSpec
@@ -178,6 +178,16 @@ def _first_media_schema(content: dict) -> dict:
     return {}
 
 
+def is_response_entity_return_type(java_type: str | None) -> bool:
+    """判斷 Java 方法簽名**原始**回傳型別字面字串是不是
+    `ResponseEntity<...>`（可能依情境動態控制 HTTP status／header，見
+    `docs/09b_bug_trace.md` #30）。用字面字串前綴判斷，不透過
+    `map_java_type()`——那個函式已經把它轉成 `"Response"`，這裡要問的是
+    「轉換之前的原始型別是不是它」，轉換後的結果反而看不出來。
+    """
+    return bool(java_type) and java_type.strip().startswith("ResponseEntity")
+
+
 def resolve_api_boundary_signature(
     method: JavaMethodSignature, operation: dict, openapi_spec: dict
 ) -> tuple[list[ParamSpec], str]:
@@ -195,9 +205,19 @@ def resolve_api_boundary_signature(
     `openapi_type_to_python()`——展開後 `$ref` 字面字串已經被替換成完整
     物件，具名類別的名稱資訊就跟著消失了（同 `collect_named_schemas()`
     「為什麼不用遞迴展開後的版本」）。
+
+    **`ResponseEntity<T>` 覆寫（見 `docs/09b_bug_trace.md` #30）**：這種
+    情況下不查 openapi 的 response schema——openapi_spec 只能表達一個
+    代表性 status 的 body 形狀，無法完整表達「依情境動態回傳不同
+    status」這個語意，一律直接覆寫成 `"Response"`（跟
+    `common/java_type_mapping.py::map_java_type()` 對同一個型別的轉換
+    規則一致），交給函式本體自行用 `JSONResponse(...)` 動態組裝。
     """
     covered, _ = _classify_params(method, operation, openapi_spec)
     params = [param_spec for _, param_spec in covered]
+
+    if is_response_entity_return_type(method.return_type):
+        return params, "Response"
 
     responses = operation.get("responses", {})
     status = next((s for s in sorted(responses) if s.startswith("2")), next(iter(responses), None))
@@ -218,9 +238,30 @@ def _raw_named_schema(schema_name: str, openapi_spec: dict) -> dict:
     return ((openapi_spec.get("components") or {}).get("schemas") or {}).get(schema_name, {})
 
 
+def _nested_schema_refs(raw_schema: dict) -> list[str]:
+    """從一個具名 schema 的 `properties` 裡找出所有直接／陣列包裝的
+    `$ref` 具名 schema 引用，回傳類別名稱清單（可能重複，呼叫端自行
+    去重）。只處理 `properties` 這一層，不處理 `allOf`／`oneOf`／
+    `anyOf`（同 05a 五章既定範圍），供 `collect_named_schemas()` 遞迴
+    收集用（見 `docs/09b_bug_trace.md` #28）。
+    """
+    refs: list[str] = []
+    for prop_schema in (raw_schema.get("properties") or {}).values():
+        ref = prop_schema.get("$ref")
+        if isinstance(ref, str):
+            refs.append(ref.rsplit("/", 1)[-1])
+            continue
+        if prop_schema.get("type") == "array":
+            item_ref = (prop_schema.get("items") or {}).get("$ref")
+            if isinstance(item_ref, str):
+                refs.append(item_ref.rsplit("/", 1)[-1])
+    return refs
+
+
 def collect_named_schemas(operation: dict, openapi_spec: dict) -> list[tuple[str, dict]]:
     """回傳這個 operation 用到的具名 schema（requestBody + 第一個 2xx
-    response），每個是 `(schema_name, raw_schema)`，供
+    response，**遞迴展開巢狀具名 schema，見下方**），每個是
+    `(schema_name, raw_schema)`，供
     `design_agent.layout.render_schema_section()` 渲染 directory_tree
     的 Schema 定義段用（見 05a 五章「型別命名」：具名 schema 直接沿用
     這個名稱作為 Pydantic 類別名稱，欄位機械渲染成文字）。inline
@@ -240,19 +281,53 @@ def collect_named_schemas(operation: dict, openapi_spec: dict) -> list[tuple[str
     本身若是靠 `allOf` 組合出來的（不是本次任務要處理的組合語法，見
     05a 五章「$ref 展開」既定範圍），仍然拿不到 `properties`——這點跟
     改用這份未展開版本前的既有限制一致，沒有變得更差。
+
+    **遞迴收集巢狀具名 schema（見 `docs/09b_bug_trace.md` #28）**：頂層
+    收集到的 requestBody／response schema，若欄位本身指向另一個具名
+    schema（直接 `$ref` 或陣列包裝的 `$ref`），這個巢狀 schema 也要
+    一併收進來、遞迴展開到底（`visited` 集合防止 `A`↔`B` 互相引用
+    造成無窮迴圈）——真實案例：`registration` 模組某方法的頂層回應
+    schema 有一個欄位指向 `GetAllGradeRs`，但這個具名 schema 過去只有
+    在**另一個** module（`school`）剛好也把它當頂層 response schema時
+    才會被渲染出來，導致 `registration.py` 引用了一個只存在於別的
+    module 檔案裡的 class（`PydanticUserError`）。
+
+    **決策：每個 module 的 schema 檔案自我完備（self-contained），不
+    建立跨模組的 schema 擁有權登記表**——任何一個 module 只要引用了
+    某個具名 schema 的欄位型別，就一定也在自己的
+    `schemas/{module}.py` 渲染出這個 class 的定義，不需要跨檔案
+    import。這代表同一個具名 schema 可能在多個 module 的 schema 檔案
+    裡各自渲染一份同名 class——這是刻意接受的重複，不是缺陷：Pydantic
+    model 只在各自檔案內部使用，不會跨模組傳遞同一個實例，重複定義不
+    影響正確性，只是多一點產出檔案體積。比起「先做全域第一遍掃描決定
+    唯一擁有者、再讓其他模組 import」，這個做法從結構上直接消除「缺
+    import」這整類 bug，不需要额外的跨波次資料流（見 05a 六章「處理
+    單位」逐波處理，下游 module 看得到上游已完成的 `InterfaceSpec`，
+    但看不到上游已經渲染過的 schema class 清單）。
     """
     results: list[tuple[str, dict]] = []
+    visited: set[str] = set()
+
+    def _collect(name: str) -> None:
+        if name in visited:
+            return
+        visited.add(name)
+        raw_schema = _raw_named_schema(name, openapi_spec)
+        results.append((name, raw_schema))
+        for nested_name in _nested_schema_refs(raw_schema):
+            _collect(nested_name)
 
     body_name = schema_name_for(operation, part="requestBody")
     if body_name:
-        results.append((body_name, _raw_named_schema(body_name, openapi_spec)))
+        _collect(body_name)
 
     responses = operation.get("responses", {})
     status = next((s for s in sorted(responses) if s.startswith("2")), None)
     if status:
         response_name = schema_name_for(operation, part=status)
         if response_name:
-            results.append((response_name, _raw_named_schema(response_name, openapi_spec)))
+            _collect(response_name)
+
     return results
 
 

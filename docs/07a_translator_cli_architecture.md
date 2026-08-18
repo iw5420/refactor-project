@@ -216,6 +216,10 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
 
 **兩層都比對不到時保守不加、不猜**：可能是 Python 內建型別（`int`／`str`／`bool`，本來就不需要 import），也可能是 ③ 的 LLM 步驟自由產生的複合寫法（如 `Annotated[User, Depends(get_current_user)]`，`User` 部分理論上會被第二層抓到，但更複雜的巢狀寫法可能抓不全）。這裡延續 04a／05a 反覆出現的「機械規則解決不了的部分不強行猜測」精神，但方向相反——那邊是「多連少排除」（保守多連結），這裡刻意選「少加不亂猜」，因為錯誤 import 一個不存在的名稱會讓整個檔案在 `import` 階段就炸掉（比缺 import 導致的 `NameError` 更早爆、更難定位、牽連同一個 `app/main.py` 底下的其他 router）。剩餘的 import 缺口交給 Harness 的 module 局部驗證（服務起不來會直接反映在驗證失敗）與 ⑦ Debug Agent 處理，不在骨架階段窮舉。
 
+**決策：自訂型別索引命中要再排除「正在組裝的這個檔案自己的 class」，否則會產生自我 import**：這是端對端驗證才暴露的既有缺陷，不是設計初期就預見的——真實案例 `exam-platform-api` 的 `app/services/common_service.py` 裡，`ResponseResult.error_4(self, code: ErrorCode)` 這個方法簽名引用了**同一個檔案裡稍後才定義**的另一個 class `ErrorCode`。上方「自訂型別索引」的三個來源都是全專案掃描，本來就會收錄「這個檔案自己定義的 class」，比對時若不排除，會產生一行 `from app.services.common_service import ErrorCode` 寫進 `common_service.py` 自己——這行 import 恆為 True（`ErrorCode` 確實在這個模組裡定義），語法完全合法，`ast.parse()` 抓不出來，但 Python 執行期 import 這個模組時會直接觸發自我引用的 `ImportError`，Harness 啟動服務階段才會炸。這類「同檔案跨 class 互相引用方法簽名」在 Java 靜態工具類（如 `ResponseResult` 這種集中定義多個工廠方法、內部引用同檔案其他 class 的樣式）很常見，不是邊角案例。修法：比對命中之餘，額外排除「正在組裝的這個檔案自己的全部 class 名稱」（`_render_interface_files()` 這一輪 `file_path` 分組下的 class 集合）——這批類別就在同一個檔案裡，本來就不需要 import。
+
+**填空階段（⑤）有同一個問題的獨立實作，需要各自排除**：`fill_function()` 填入的函式本體是 qwen 自由生成的內容，可能引用簽名以外的名稱，因此有另一段「填空模式：本體 import 解析」（見下方）在骨架階段的兩層規則之外，針對填入的本體重新掃一次遺漏的 import——這段獨立邏輯一樣是全專案自訂型別掃描，一樣需要排除「正在解析的這個檔案自己的頂層符號」，否則重演同一種自我 import。兩處各自維護排除邏輯，是因為兩者的比對時機、資料來源（骨架階段用記憶體中的結構化資料；填空階段用已寫入磁碟的完整檔案 AST）都不同，沒有共用的中間狀態可以合併成一份實作。
+
 ### 語法驗證與寫入：逐 `InterfaceSpec` 隔離失敗，不是全域 all-or-nothing
 
 **決策：逐 `InterfaceSpec` 隔離失敗，不是全域 all-or-nothing**：型別字串即使經過正規化，仍可能有殘留的不合法情況（見上方「已知殘留限制」，如萬用字元泛型）。若採全域 all-or-nothing，**任何一個介面的型別字串有問題，會拖累其餘所有正常的介面全部無法產出骨架**，讓 `generate_scaffold()` 對整個專案直接失敗——這不是可以接受的失敗模式，`generate_scaffold()` 一旦失敗，[P]／④／⑤ 全部卡住，風險遠高於「有幾個函式沒骨架」。
@@ -304,6 +308,8 @@ class FillResult:
 4. 兩層都比對不到的名稱，維持四章「保守不加、不猜」的既有原則——不主動修正，留給 Harness 的 module 局部驗證與 ⑦ Debug Agent 處理
 
 這是接上真實 qwen2.5-coder:32b、對真實 Java 專案跑過完整 pipeline 才發現的缺口，不是設計初期就預見的——已對真實案例驗證修正有效（router 層函式呼叫 `UserRepository`／拋出 `HTTPException`，兩者都正確補上 import，語法驗證通過）。記錄在這裡是因為它改變了 `fill_function()` 的既有流程（骨架階段的 import 解析只跑一次，填空階段現在還會再跑一次），不只是實作細節。
+
+**決策：候選名稱要再排除「正在解析的這個檔案自己的頂層符號」，理由跟四章「自訂型別索引命中要再排除同檔案 class」同一種問題**：真實端對端驗證發現，qwen 生成的本體同樣可能引用「同一個檔案裡稍後才定義的另一個 class 或函式」——磁碟掃描出的自訂型別索引一樣涵蓋全專案，一樣會收錄這個檔案自己定義的符號，不排除會產生 `from X import X` 這種恆為 True 的自我 import，一樣導致 `ImportError`。這裡的排除範圍比四章的骨架階段更廣：除了頂層 `class`／`def`（含 `async def`），還額外排除頂層變數賦值（`x = ...` 這種 `ast.Assign`）——填空階段是對已寫入磁碟的完整檔案操作，檔案裡本來就可能有骨架階段就存在、或先前 task 已填入的模組層級變數，範圍比骨架階段（當時檔案裡只有函式簽名與 `pass`，不會有頂層變數賦值）更廣。跟四章的 `same_file_class_names` 排除是同一個問題、兩個不同時機點的獨立實作，因為兩者的比對時機與資料來源不同（見四章末段說明），沒有共用的中間狀態可以合併。
 
 ---
 
@@ -536,6 +542,18 @@ translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼�
 ## 十四、待決定事項
 
 - [ ] **`MultipartFile`（Java 型別）沒有被 `map_java_type()` 轉換成 `UploadFile`，導致四章「已知關鍵字表」比對不到**：真實 Java 專案（93 個檔案、70 個 interfaces）實測時發現，其餘型別關鍵字表命中正常（`skipped_interfaces` 全部為空）；這是 05a 型別對應範圍的缺口，不是這裡的關鍵字表本身缺項，留給 05a 之後處理
+
+---
+
+## 十五、`app/core/exception_handlers.py`（`_global` 保留模組）的骨架生成
+
+**背景**：09b 端對端整合測試發現（見 `docs/09b_bug_trace.md` #11/#12），四章「interfaces：函式簽名渲染」原本假設 `interfaces` 的 `file_path` 只會落在 `app/routers/`／`app/services/`／`app/repositories/` 三層目錄底下——`_global` 保留模組（見 04a 十一章、05a 十四章）固定輸出的 `app/core/exception_handlers.py` 不符合這個假設，會被判定成 unknown layer，整個 `InterfaceSpec` 被跳過、記進 `skipped_interfaces`，這個檔案因此從未被 `generate_scaffold()` 建立。連鎖後果：③正確輸出的 `app/main.py` 仍然會 import 這個從未存在的模組，Python 服務在 import 階段直接 `ModuleNotFoundError` 掛掉（容器啟動時的行為，因為 import 錯誤發生在啟動當下，不是某次 API 呼叫才觸發）。
+
+**決策**：`app/core/exception_handlers.py` 用精確比對（不是前綴），獨立於三層目錄的前綴判斷之外處理。渲染規則比照 routers 層（`class_name=None` 自由函式），但**不**包 `APIRouter` 樣板（`from fastapi import APIRouter`／`router = APIRouter()`）——這不是真正的路由檔案，函式不會被 `@router.xxx` 裝飾（`http_method` 恆為 `None`，這批函式本來就不是 API 端點）。
+
+實作細節見 `07b_translator_cli_code.md` 七章。單元測試見 `tests/translator_cli/test_scaffold.py::test_build_files_renders_global_advice_file_without_api_router_boilerplate`。
+
+**真實環境驗證**：對真實 `../lang-exam-api-refactor` 完整跑過 ①③[P]④⑤⑥，`app/core/exception_handlers.py` 正確產生（不再進 `skipped_interfaces`），容器內確認 Python 服務能正常 import 啟動，且 Starlette 的例外處理中介層確實會呼叫到這個檔案裡⑤翻譯出的函式。
 
 ---
 

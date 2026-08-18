@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 # 套件內部一律用帶 refactor_harness. 前綴的絕對匯入（見 02a 二章「匯入慣例」）
 from refactor_harness.core.masker import ResponseMasker
-from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id
+from refactor_harness.core.postman_runner import extract_response_body, run_newman, list_top_level_folders, make_case_id
 from refactor_harness.core.route_mapper import RouteMapper
 from refactor_harness.fixtures.db_env import DbEnvironment
 
@@ -153,8 +153,7 @@ class GoldenRecorder:
         建構整批 execution 的 golden 內容並分類，**不寫入磁碟**——是否真的落地
         由呼叫端（record()／record_mutation()）決定：record_mutation() 需要先看
         過整個 folder 有沒有異常，才能決定該 folder 要不要整批捨棄（見上方
-        record_mutation() docstring、02a 三章）。取代舊版直接寫檔的
-        _record_executions()。
+        record_mutation() docstring、02a 三章）。
 
         回傳 (built, skipped, anomalies)：
         - built：[(case_id, golden_dict), ...]，正常應寫入的
@@ -181,7 +180,7 @@ class GoldenRecorder:
                 anomalies.append({
                     "case_id": case_id,
                     "status_code": response.get("code"),
-                    "body_preview": (response.get("body") or "")[:500],
+                    "body_preview": (extract_response_body(response) or "")[:500],
                 })
             else:
                 skipped.append(case_id)  # 非 JSON response，記錄但跳過
@@ -208,14 +207,19 @@ class GoldenRecorder:
         masked_fields_mutation_only 說明）——record() 呼叫時用預設值 "readonly"，
         record_mutation() 呼叫時明確傳入 "mutation"。
         """
-        headers = {h["key"].lower(): h["value"]
-                   for h in (response.get("headers", {}).get("members", []))}
+        # newman JSON reporter 的實際欄位是 "header"（單數），值是純陣列
+        # [{"key": ..., "value": ...}, ...]，不是 "headers": {"members": [...]}
+        # 這種包一層物件的形狀——已用真實 newman 6.2.2 輸出核對過。舊寫法
+        # 讀錯欄位名稱＋錯誤形狀，永遠拿到空 dict，導致 content_type 恆為
+        # 空字串，每一筆 response 都被誤判成非 JSON 而跳過（見
+        # 09b_implement_agent_code.md 十章「已知限制」的完整重現記錄）。
+        headers = {h["key"].lower(): h["value"] for h in (response.get("header") or [])}
         content_type = headers.get("content-type", "")
 
         if "application/json" not in content_type:
             return None, "non_json_response"
 
-        raw_body = response.get("body")
+        raw_body = extract_response_body(response)
         if raw_body is None or raw_body.strip() == "":
             body = None
         else:

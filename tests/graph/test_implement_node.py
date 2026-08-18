@@ -1,9 +1,12 @@
 """⑤ 功能改寫 Agent node 的 scaffold 失敗短路邏輯，對應
-docs/01_langgraph_architecture.md 五章「scaffold 失敗時的收尾路徑」。
+docs/01_langgraph_architecture.md 五章「scaffold 失敗時的收尾路徑」；
+`blocked_reasons` 診斷欄位（純附加、不改排程放行邏輯）見
+docs/09b_bug_trace.md #29。
 """
 import asyncio
 
 from graph.nodes.implement_node import run, should_run_tests_or_give_up
+from translator_cli.types import FillResult
 
 
 class TestShouldRunTestsOrGiveUp:
@@ -55,17 +58,115 @@ class TestImplementRunScaffoldFailureShortCircuit:
         # scaffold_done=True（或缺席）時維持既有排程器行為——這裡只驗證
         # 短路分支沒有被誤觸發（module_list 為空，排程器自然 all_done()
         # 立刻結束，不需要真的呼叫 translator_cli）。
+        #
+        # 09a 三章：run() 開頭在「真正第一次進入 implement」時會呼叫
+        # _ensure_python_service_started() 啟動容器化的 Python 服務——
+        # 這裡 mock 掉，避免單元測試依賴 Docker。
+        import graph.nodes.implement_node as implement_node
+
+        async def _skip_start(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(implement_node, "_ensure_python_service_started", _skip_start)
+
         state = {
             "scaffold_done": True,
             "module_list": [],
             "task_list": [],
             "completed_tasks": [],
             "failed_tasks": [],
+            "task_failures": [],
+            "skipped_interfaces": [],
             "partial_reports": [],
             "python_project_path": "/unused",
+            "test_dsn": "postgresql://unused",
+            "python_base_url": "http://unused",
         }
 
         result = asyncio.run(run(state))
 
         assert result["failed_modules"] == []
         assert result["blocked_modules"] == []
+
+
+class TestBlockedReasons:
+    def test_blocked_module_reports_which_upstream_is_not_verified(self, monkeypatch):
+        # 對應 docs/09b_bug_trace.md #29：registration 這類下游 module
+        # 被上游卡住時，blocked_reasons 要能直接指出是哪個上游、不需要
+        # 人工反查 module_list.depends_on。這裡構造一個最小案例：
+        # upstream 的唯一 task 翻譯失敗 → upstream 標記 "failed"；
+        # downstream 的 task 因為 _module_deps_satisfied() 過不了，
+        # 永遠不會被排入就緒佇列，停留在 "pending" → blocked_modules。
+        import graph.nodes.implement_node as implement_node
+
+        async def _skip_start(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(implement_node, "_ensure_python_service_started", _skip_start)
+
+        async def _fake_fill_function(**kwargs):
+            return FillResult(success=False, error="翻譯失敗（測試用假失敗）", diff="")
+
+        monkeypatch.setattr(implement_node.translator_cli, "fill_function", _fake_fill_function)
+
+        module_list = [
+            {"module": "upstream", "java_files": [], "depends_on": [], "methods": [], "summary": ""},
+            {"module": "downstream", "java_files": [], "depends_on": ["upstream"], "methods": [], "summary": ""},
+        ]
+        task_list = [
+            {
+                "id": "task_000", "module": "upstream", "description": "d",
+                "target_files": ["app/services/upstream_service.py"], "context": "",
+                "depends_on": [], "class_name": "UpstreamService", "function_name": "do_it",
+            },
+            {
+                "id": "task_001", "module": "downstream", "description": "d",
+                "target_files": ["app/services/downstream_service.py"], "context": "",
+                "depends_on": [], "class_name": "DownstreamService", "function_name": "do_it",
+            },
+        ]
+        state = {
+            "scaffold_done": True,
+            "module_list": module_list,
+            "task_list": task_list,
+            "completed_tasks": [],
+            "failed_tasks": [],
+            "task_failures": [],
+            "skipped_interfaces": [],
+            "partial_reports": [],
+            "python_project_path": "/unused",
+            "test_dsn": "postgresql://unused",
+            "python_base_url": "http://unused",
+        }
+
+        result = asyncio.run(run(state))
+
+        assert result["failed_modules"] == ["upstream"]
+        assert result["blocked_modules"] == ["downstream"]
+        assert result["blocked_reasons"] == {"downstream": ["upstream"]}
+
+    def test_no_blocked_modules_yields_empty_blocked_reasons(self, monkeypatch):
+        import graph.nodes.implement_node as implement_node
+
+        async def _skip_start(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(implement_node, "_ensure_python_service_started", _skip_start)
+
+        state = {
+            "scaffold_done": True,
+            "module_list": [],
+            "task_list": [],
+            "completed_tasks": [],
+            "failed_tasks": [],
+            "task_failures": [],
+            "skipped_interfaces": [],
+            "partial_reports": [],
+            "python_project_path": "/unused",
+            "test_dsn": "postgresql://unused",
+            "python_base_url": "http://unused",
+        }
+
+        result = asyncio.run(run(state))
+
+        assert result["blocked_reasons"] == {}

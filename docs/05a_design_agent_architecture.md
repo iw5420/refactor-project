@@ -418,4 +418,38 @@ refactor-project/
 
 ---
 
+## 十四、真實端對端測試發現並修正的三項缺口
+
+以下三項是 09b 端對端整合測試才發現、原始 05a 六章版本沒有涵蓋的缺口（見 `docs/09b_bug_trace.md` #11/#12/#28/#30），已在 05b 落地並用真實環境驗證：
+
+### 全域基礎設施檔案新增第三種：全域例外處理（對應 #11/#12）
+
+三章「全域基礎設施檔案」原本只涵蓋 `app/core/database.py`／`app/main.py` 兩種機械組裝、不需 LLM 的檔案。`_global` 保留模組（見 `04a_parse_agent_architecture.md` 十一章）承接的 `@RestControllerAdvice` 全域例外處理，需要第三種處理路徑，但**不完全比照前兩者**——這批方法的實際邏輯（哪個例外對應什麼 code/msg）帶有業務語意，不是純樣板：
+
+- `module["module"] == "_global"` 走完全獨立的專屬處理路徑，**不查 `_STEREOTYPE_LAYER`**，固定輸出 `app/core/exception_handlers.py`、`class_name=None`（自由函式，比照 routers 層無 class 的既有渲染慣例）、不產生 `http_method`／`route_path`。
+- 函式簽名比照 FastAPI `@app.exception_handler(...)` 呼叫慣例固定為 `(request: Request, exc: Exception) -> Response`，不是 Java 原始簽名的機械轉換——FastAPI 的例外處理器協定本來就要求這個固定形狀。
+- **範圍刻意收斂**：只處理 `@ExceptionHandler(Exception.class)` 這種全域 catch-all case（真實案例裡唯一有 golden output 佐證的情況）。若同一個 advice class 還有 `@ExceptionHandler(SomeSpecificException.class)` 這類更細的例外處理方法（真實案例確實存在 `handleBaseException(BaseException e)`），只記警告、不產生對應 `InterfaceSpec`——這些方法不會被 [P] 排進 task list，不會被實作，是刻意接受的限制，不是遺漏。
+- `app/main.py` 新增一段：偵測到 `app/core/exception_handlers.py` 的 interface 時，機械產生 `app.add_exception_handler(Exception, {function_name})` 註冊行。
+- 函式本體不在③機械產生——比照一般 service/repository 方法，經 [P] 產生 task、走⑤既有的 `fill_function()` 流程翻譯 Java handler 方法本體，維持「③只做機械骨架決策、業務邏輯留給既有 task pipeline」的既有分工邊界。
+
+**真實環境驗證**：容器內實測確認 Starlette 的例外處理中介層確實會呼叫到⑤翻譯出的 `handle_all`（從未攔截例外時的 500 錯誤 traceback 直接看到呼叫鏈）——證實「這個方法會不會被框架呼叫到」這個架構層面的問題已解決；⑤實際翻譯出的函式本體品質（qwen 是否正確理解業務邏輯）另計，屬於翻譯品質範疇。
+
+### 五章型別對應新增 `ResponseEntity<T>`（對應 #30）
+
+`common/java_type_mapping.py::map_java_type()` 新增：`outer == "ResponseEntity"` 時直接回傳 `"Response"`，丟棄內層泛型參數，不落入「未知的泛型包裝類別」fallback（原本會產生不合法的 `ResponseEntity[?]`）。`design_agent/type_mapping.py` 新增 `is_response_entity_return_type()`，`resolve_api_boundary_signature()` 偵測到 Java 原始簽名以 `ResponseEntity` 開頭時，直接覆寫 `return_type="Response"`、不查 openapi 的 response schema——openapi_spec 只能表達一個代表性 status 的 body 形狀，對這種方法沒有代表性，這個資訊損失是刻意接受的，具體要回什麼交給⑤翻譯 Java 原始邏輯決定。對應地跳過 `collect_named_schemas()`，不為這類方法產生任何多餘的 Pydantic class。
+
+**真實環境驗證**：對真實 `FileController.voice`／`image`（`ResponseEntity<FileRs>`）跑過完整 pipeline，兩者都正確標成 `return_type="Response"` 並產出可執行程式碼，不只是自建測試案例。
+
+### `collect_named_schemas()` 遞迴收集巢狀具名 schema（對應 #28）
+
+五章「API 邊界方法」原本的 `collect_named_schemas()` 只收集 requestBody + 第一個 2xx response 兩個**頂層**具名 schema，不遞迴走訪欄位內的巢狀 `$ref`。真實案例：`registration` 模組某方法的回應 schema 有一個欄位指向 `GetAllGradeRs`，但這個具名 schema 只有在**另一個**模組（`school`）剛好也把它當頂層 response schema 時才會被渲染出來，導致 `registration.py` 引用了一個只存在於別的模組檔案裡的 class（`PydanticUserError`）。
+
+**決策（採簡化方案，非跨模組全域註冊表）**：讓每個 module 的 schema 檔案**自我完備**（self-contained）——`collect_named_schemas()` 新增遞迴邏輯，把巢狀 `$ref`（含陣列包裝）指向的具名 schema 一併收進來，一路收到底（`visited` 集合防止互相引用造成無窮遞迴）。**不建立跨模組的 schema 擁有權登記表**：同一個具名 schema 可能在多個 module 各自渲染一份同名 class，因為 Pydantic model 只在各自檔案內部使用，重複定義不影響正確性，換取結構上直接消除「缺 import」這整類 bug。
+
+**真實環境驗證**：直接讀真實生成的 `app/schemas/registration.py`，確認 `GetAllGradeRs`／`GetAllClassesRs`／`GetAllSchoolRs` 全部自我完備定義在檔案內，不再需要跨檔案 import。
+
+程式碼實作見 `05b_design_agent_code.md` 對應章節；單元測試見 `tests/design_agent/test_global_advice_module.py`、`tests/design_agent/test_type_mapping.py`（`TestResponseEntity`／`TestIsResponseEntityReturnType`／`TestResolveApiBoundarySignatureResponseEntity`／`TestCollectNamedSchemasRecursion`）。
+
+---
+
 *各 Agent 的實作細節、演算法、程式碼一律留在對應細節文件，避免重複維護；本文件隨實作推進持續更新。*

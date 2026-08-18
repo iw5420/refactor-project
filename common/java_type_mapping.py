@@ -145,6 +145,14 @@ def map_java_type(java_type: str, known_classes: frozenset[str] = frozenset()) -
             type_args = _split_top_level_commas(inner)
             if len(type_args) == arity:
                 return render([map_java_type(t, known_classes) for t in type_args])
+        if outer == "ResponseEntity":
+            # ResponseEntity<T> 代表這個方法可能依情境動態控制 HTTP
+            # status／header（見 09b_bug_trace.md #30），不是單純的資料
+            # 包裝容器——丟棄內層型別參數 T，統一對到 fastapi.Response，
+            # 函式本體自行用 JSONResponse(content=..., status_code=...)
+            # 動態組裝，不嘗試在型別系統層面窮舉每個 status 各自的 body
+            # schema（openapi_spec 本來就只能表達一個代表性 status）。
+            return "Response"
         # 未知的泛型包裝類別：遞迴正規化內層型別參數＋符號轉換
         # <...> -> [...]，不猜測外層類別本身的語意（見 docstring）。
         mapped_args = [map_java_type(t, known_classes) for t in _split_top_level_commas(inner)]

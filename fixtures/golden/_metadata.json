@@ -1,0 +1,19 @@
+{
+  "recorded_at": "2026-08-18T03:32:42.992817Z",
+  "total_cases": 9,
+  "cases": [
+    "test_exception_GET_api_grading_test-exception",
+    "locals_GET_api_general_localtions",
+    "language_GET_api_general_language",
+    "grades_1_GET_api_general_grades",
+    "voice_1_GET_api_file_voice",
+    "image_1_GET_api_file_image",
+    "schools_1_GET_api_registration_exam_schools",
+    "grades_GET_api_registration_exam_grades",
+    "classes_GET_api_registration_exam_classes"
+  ],
+  "skipped": [
+    "get_version_GET_api_general_version"
+  ],
+  "tainted_folders": []
+}

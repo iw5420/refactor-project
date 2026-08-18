@@ -14,6 +14,7 @@ from refactor_harness.recorder.golden_writer import GoldenRecorder
 
 
 def _execution(name: str, method: str, url_parts: list[str], status: int, body: dict) -> dict:
+    body_bytes = json.dumps(body).encode("utf-8")
     return {
         "item": {
             "name": name,
@@ -24,8 +25,16 @@ def _execution(name: str, method: str, url_parts: list[str], status: int, body: 
         },
         "response": {
             "code": status,
-            "headers": {"members": [{"key": "Content-Type", "value": "application/json"}]},
-            "body": json.dumps(body),
+            # 真實 newman 6.2.2 JSON reporter 的欄位是 "header"（單數），
+            # 值是純陣列，不是 "headers": {"members": [...]}——已用真實
+            # Java 服務＋newman 核對過，見
+            # docs/09b_implement_agent_code.md 十章「已知限制」。
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            # 真實 newman 6.2.2 沒有 response["body"] 這個欄位，內容序列化
+            # 在 response["stream"]（Node.js Buffer 的 JSON 表示：
+            # {"type": "Buffer", "data": [位元組陣列]}）——已用真實 Java
+            # 服務＋newman 核對過，見 docs/09b_bug_trace.md。
+            "stream": {"type": "Buffer", "data": list(body_bytes)},
         },
     }
 
@@ -127,3 +136,7 @@ def test_record_readonly_writes_golden_even_on_4xx(tmp_path, monkeypatch):
     with open(golden_path, encoding="utf-8") as f:
         golden = json.load(f)
     assert golden["response"]["status_code"] == 404
+    # 回歸測試：body 內容必須真的從 response["stream"]（Buffer）解碼出來，
+    # 不能只驗證 status_code 就滿足——這正是原本的 bug（response.get("body")
+    # 讀錯欄位、永遠回傳 None）沒有被既有測試發現的原因，見 docs/09b_bug_trace.md。
+    assert golden["response"]["body"] == {"error": "not found"}

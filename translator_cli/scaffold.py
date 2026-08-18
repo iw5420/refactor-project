@@ -26,12 +26,28 @@ _INFRA_FILES = {"app/main.py", "app/core/database.py"}
 # 慣例的既有先例（見該檔案 docstring），這裡不 import design_agent。
 _LAYER_PREFIX = {"app/routers/": "routers", "app/services/": "services", "app/repositories/": "repositories"}
 
+# `_global` 保留模組固定輸出的全域例外處理檔案（見 design_agent/design.py
+# `_design_global_advice_module()`、docs/09b_bug_trace.md #11/#12）——
+# 單一固定檔案，不是像三層那樣的目錄前綴，因此用精確比對、獨立於
+# `_LAYER_PREFIX` 之外判斷。渲染規則比照 routers 層（`class_name=None`
+# 自由函式），但**不**包 `APIRouter` 樣板（這不是真正的路由檔案，見
+# `_assemble_file_text()`）——這是真實端對端測試才發現的缺口：
+# `_render_interface_files()` 原本假設 interfaces 的 file_path 只會落在
+# 三層目錄底下，全域例外處理的檔案會被誤判成 unknown layer 整個跳過。
+_GLOBAL_ADVICE_FILE = "app/core/exception_handlers.py"
+_GLOBAL_ADVICE_LAYER = "global_advice"
+
 # 四章「已知關鍵字表」，子字串比對，一個檔案內出現多次只加一次。
 _KNOWN_KEYWORD_IMPORTS: list[tuple[str, str]] = [
     ("Session", "from sqlalchemy.orm import Session"),
     ("Depends(", "from fastapi import Depends"),
     ("get_db", "from app.core.database import get_db"),
     ("Request", "from fastapi import Request"),
+    # ResponseEntity<T> 型別對應（見 common/java_type_mapping.py
+    # map_java_type()）與全域例外處理（見 design_agent/design.py
+    # _design_global_advice_module()）都用這個做為 return_type，
+    # 對應 docs/09b_bug_trace.md #11/#12/#30。
+    ("Response", "from fastapi import Response"),
     ("UploadFile", "from fastapi import UploadFile"),
     ("HTTPException", "from fastapi import HTTPException"),
     ("Decimal", "from decimal import Decimal"),
@@ -265,7 +281,9 @@ def _keyword_hits(keyword: str, combined: str) -> bool:
     return keyword in combined
 
 
-def _resolve_imports(type_strings: list[str], custom_type_index: dict[str, str]) -> list[str]:
+def _resolve_imports(
+    type_strings: list[str], custom_type_index: dict[str, str], same_file_class_names: frozenset[str] = frozenset()
+) -> list[str]:
     """對應四章「import 解析：兩層機制」：已知關鍵字表（子字串比對，見
     `_keyword_hits()`）＋自訂型別索引（AST `ast.Name` 節點比對，不用
     字串裁切／正則，理由見四章「用 AST 而非字串裁切是必要的」）。兩層
@@ -275,6 +293,19 @@ def _resolve_imports(type_strings: list[str], custom_type_index: dict[str, str])
     型別字串保證是裸名稱（`design_agent.map_java_type()` 對自訂類別
     只產出裸名稱，見 05a 五章型別對應表），不會出現 `models.User` 這種
     帶命名空間前綴的寫法，因此不需要對 `ast.Attribute` 額外排除。
+
+    `same_file_class_names` 是正在組裝的這個檔案自己（`_render_interface_
+    files()` 這一輪 `file_path` 分組下）的全部 class 名稱——這批類別即使
+    命中 `custom_type_index`（該索引涵蓋全專案，本來就會收錄這個檔案
+    自己定義的 class），也不需要 import，因為它們就在同一個檔案裡。
+    這批 Java 靜態工具類常見「方法簽名引用同檔案另一個 class」（如
+    `ResponseResult.error_4(self, code: ErrorCode)`，`ErrorCode` 是同一個
+    檔案稍後才定義的另一個 class）——不排除的話會產生一行恆為 True 的
+    循環 import，讓這個模組 import 階段直接 ImportError（已用真實案例
+    重現：exam-platform-api 的 app/services/common_service.py，見
+    09b_implement_agent_code.md 十章「已知限制」）。填空階段的對應
+    排除見 `resolve_body_imports()`——這裡是骨架生成階段的簽名層級
+    版本，同一個問題、兩個不同時機點的兩份獨立實作，各自要排除。
     """
     combined = "\n".join(type_strings)
     lines = [import_line for keyword, import_line in _KNOWN_KEYWORD_IMPORTS if _keyword_hits(keyword, combined)]
@@ -286,7 +317,7 @@ def _resolve_imports(type_strings: list[str], custom_type_index: dict[str, str])
         except SyntaxError:
             continue  # 型別字串已在渲染前個別驗證過，這裡理論上不會發生
         for node in ast.walk(expr):
-            if isinstance(node, ast.Name) and node.id in custom_type_index:
+            if isinstance(node, ast.Name) and node.id in custom_type_index and node.id not in same_file_class_names:
                 module_path = custom_type_index[node.id].removesuffix(".py").replace("/", ".")
                 names = custom_imports.setdefault(module_path, [])
                 if node.id not in names:
@@ -337,6 +368,13 @@ def _assemble_file_text(
         body = "\n".join(snippet for _, snippet in valid)
         return "\n".join(header) + "\n" + body
 
+    if layer == _GLOBAL_ADVICE_LAYER:
+        # class_name=None 自由函式（跟 routers 層同一種形狀），但不是
+        # 真正的路由檔案，不需要 APIRouter 樣板。
+        header = ["from __future__ import annotations", "", *import_lines, ""]
+        body = "\n".join(snippet for _, snippet in valid)
+        return "\n".join(header) + "\n" + body
+
     by_class: dict[str, list[str]] = {}
     for iface, snippet in valid:
         by_class.setdefault(iface["class_name"], []).append(snippet)
@@ -369,14 +407,18 @@ def _render_interface_files(
     skipped: list[dict] = []
 
     for file_path, ifaces in by_file.items():
-        layer = next((v for prefix, v in _LAYER_PREFIX.items() if file_path.startswith(prefix)), None)
+        if file_path == _GLOBAL_ADVICE_FILE:
+            layer = _GLOBAL_ADVICE_LAYER
+        else:
+            layer = next((v for prefix, v in _LAYER_PREFIX.items() if file_path.startswith(prefix)), None)
         if layer is None:
             # 按照 05a／07a 契約，interfaces 的 file_path 只會落在
-            # routers／services／repositories 三層，理論上不會觸發——
-            # 但比照本函式其餘失敗路徑（語法錯誤、組裝驗證失敗）一律
-            # 顯式記錄成 skipped_interfaces，不靜默丟棄，避免上游一旦
-            # 出現非預期 file_path，這批 InterfaceSpec 人不知鬼不覺地
-            # 從骨架裡消失、不會被人工發現。
+            # routers／services／repositories 三層（或上面明確處理過的
+            # _GLOBAL_ADVICE_FILE），理論上不會再觸發這裡——但比照本函式
+            # 其餘失敗路徑（語法錯誤、組裝驗證失敗）一律顯式記錄成
+            # skipped_interfaces，不靜默丟棄，避免上游一旦出現非預期
+            # file_path，這批 InterfaceSpec 人不知鬼不覺地從骨架裡消失、
+            # 不會被人工發現。
             for iface in ifaces:
                 skipped.append(
                     {
@@ -390,7 +432,7 @@ def _render_interface_files(
 
         valid: list[tuple[InterfaceSpec, str]] = []
         for iface in ifaces:
-            snippet = _render_function_snippet(iface, is_class_method=(layer != "routers"))
+            snippet = _render_function_snippet(iface, is_class_method=(layer not in ("routers", _GLOBAL_ADVICE_LAYER)))
             try:
                 ast.parse(snippet)
             except SyntaxError as exc:
@@ -406,14 +448,14 @@ def _render_interface_files(
             valid.append((iface, snippet))
 
         all_class_names: list[str] = []
-        if layer != "routers":
+        if layer not in ("routers", _GLOBAL_ADVICE_LAYER):
             for iface in ifaces:
                 if iface["class_name"] not in all_class_names:
                     all_class_names.append(iface["class_name"])
 
         type_strings = [_normalize_type(p["type"]) for iface, _ in valid for p in iface["params"]]
         type_strings += [_normalize_type(iface["return_type"]) for iface, _ in valid]
-        import_lines = _resolve_imports(type_strings, custom_type_index)
+        import_lines = _resolve_imports(type_strings, custom_type_index, frozenset(all_class_names))
 
         raw_text = _assemble_file_text(layer, import_lines, valid, all_class_names)
         try:
@@ -594,6 +636,27 @@ def resolve_body_imports(
             candidates -= {alias.asname or alias.name for alias in stmt.names}
         elif isinstance(stmt, ast.Import):
             candidates -= {alias.asname or alias.name.split(".")[0] for alias in stmt.names}
+
+    # 這個名稱若本來就是「這個檔案自己」頂層定義的 class／函式／模組
+    # 層級變數，同一模組內引用不需要 import——這裡的 candidates 只知道
+    # 「在函式本體被引用、且不是參數/區域變數」，無法分辨它是跨檔案的
+    # 自訂型別，還是同檔案另一個頂層符號（常見於這批 Java 靜態工具類
+    # 翻譯結果：class 自己的方法回傳自己的型別，如
+    # `ResponseResult.error() -> ResponseResult(...)`）。`_scan_project_
+    # custom_types()` 掃描整個 app/ 目錄（含這個檔案自己），若不排除，
+    # 會誤判成「要從自己匯入自己」，產生一行恆為 True 的循環 import，
+    # `import` 這個模組時直接 ImportError（已用真實案例重現：
+    # exam-platform-api 的 app/services/common_service.py 曾因此整個
+    # 服務起不來，見 09b_implement_agent_code.md 十章「已知限制」）。
+    same_file_top_level = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            same_file_top_level |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    candidates -= same_file_top_level
 
     if not candidates:
         return []

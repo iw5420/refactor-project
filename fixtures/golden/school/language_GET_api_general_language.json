@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-18T03:32:42.989682Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "GET",
+    "path": [
+      "api",
+      "general",
+      "language"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": {
+        "code": "macuhau",
+        "displayName": "馬祖語"
+      }
+    }
+  }
+}

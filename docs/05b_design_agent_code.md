@@ -2348,8 +2348,38 @@ async def run(state: RefactorState) -> dict:
 - **`X | None` 語法要求目標 Python 服務 ≥ 3.10**：`extract_schema_fields()`／`map_java_type()` 的 `Optional` 對應都用 PEP 604 union 語法。這項前提已經明訂進 `00_refactor_architecture.md` 三章「Python 目標技術棧」，不再是隱含假設；若這個前提未來改變，`extract_schema_fields()` 跟 `map_java_type()` 都需要一併改成 `typing.Optional[T]`，不是只改其中一處（見 `type_mapping.py` 相關函式 docstring「環境前提」）。
 - **`BigDecimal` → `Decimal` 只在非 API 邊界方法生效**：API 邊界方法改用 openapi_spec 決定型別，springdoc 對 `BigDecimal` 欄位通常序列化成通用 `number` type，沒有訊號能標示「這原本是 BigDecimal」，這個欄位的 API 邊界型別仍是 `float`，是既有設計原則（openapi_spec 為邊界方法唯一權威來源）下的既知落差（見 `type_mapping.map_java_type()` docstring）。
 - **`from __future__ import annotations` 只解決同檔案內的循環參照**：跨 `schemas/{module}.py` 檔案的循環 import（`user.py` 直接 `import` `order.py`、反之亦然）不會被這一行解決，需要 `TYPE_CHECKING` guard＋`model_rebuild()`，屬於④如何實際生成、串接檔案間 import 的問題，留給 07a／08a（皆待建立）處理（見 `layout.render_schema_section()` docstring）。
-- **巢狀具名 schema 只保證型別字串正確，不保證一定有對應的 class 定義**：`extract_schema_fields()` 對巢狀 `$ref`（如 `User` 的某個欄位是 `List[Order]`）能正確產出 `Order` 這個型別名稱（見 `type_mapping.openapi_type_to_python()` docstring「`$ref` 一律優先於其他判斷」），但 `collect_named_schemas()` 只收集 requestBody／2xx response 這兩個**頂層**具名 schema，不遞迴收集巢狀關聯到的 schema——若 `Order` 從未自己是任何 operation 的頂層 requestBody/response，`directory_tree` 的 Schema 定義段就不會有 `class Order(BaseModel):`，④只能看著一個沒有定義的型別名稱。刻意不做遞迴收集的原因：巢狀關聯到的 schema 可能屬於**另一個 module**（如 `Order` 屬於 order module、被 user module 的 `User` 引用），遞迴收集會把 `class Order` 錯誤地渲染進 user module 的 `schemas/user.py`，造成跨 module 定義重複或位置錯誤——這需要先決定「巢狀具名 schema 該歸哪個 module」（05a 沒有規範這件事），不是單純的機械收集問題，留待接上真實專案輸出、確認是否真的出現跨 module 巢狀引用後再設計。
+- ~~**巢狀具名 schema 只保證型別字串正確，不保證一定有對應的 class 定義**~~——已解決（見 05a 十四章、`docs/09b_bug_trace.md` #28）：`collect_named_schemas()` 新增遞迴邏輯，把巢狀 `$ref`（含陣列包裝）收到底，`visited` 集合防止互相引用無窮遞迴。原本擱置的理由（巢狀 schema 可能屬於另一個 module，遞迴會造成跨 module 定義重複或位置錯誤）改用「刻意接受重複」的簡化方案化解：不建立跨模組擁有權登記表，每個 module 的 schema 檔案自我完備，允許多個 module 各自渲染一份同名 class——Pydantic model 只在各自檔案內部使用，重複定義不影響正確性。已用真實 `registration`/`school` 模組驗證：`registration.py` 現在自我完備定義 `GetAllGradeRs`，不再依賴 `school.py`。
 - **三處 LLM 判斷點的 prompt 品質未經真實專案校準**：無 stereotype 類別的層級歸屬、框架注入物件轉換、`db: Session` 慣例注入，這三個 `prompts.py` 裡的判斷點目前只用合成範例驗證過契約可以正確跑通（見七章「已驗證」），實際判斷品質待接上真實 `lang-exam-api-refactor` 輸出後校準（延續 05a 十三章）。
+
+---
+
+## 十二、真實端對端測試發現並修正的三項缺口（對應 05a 十四章）
+
+### `design.py`：`_global` 模組專屬處理路徑
+
+新增常數 `_GLOBAL_MODULE_NAME = "_global"`（跟 `parse_agent/summarize.py` 同一個字面值，各自維護不 import，理由同本檔其餘「各自維護命名慣例」既有先例）。新增：
+
+- `_exception_handler_targets(java_files, java_project_path) -> dict[str, str]`：獨立於 `signature_scan.scan_java_files()` 之外的小型專用 javalang 掃描，逐 method 找 `@ExceptionHandler(X.class)` 的目標例外類別名稱（javalang 把 `X.class` 解析成 `ClassReference(type=ReferenceType(name="X"))`）。
+- `_design_global_advice_module(module, java_project_path) -> ModuleDesignResult`：對 `module["methods"]` 逐一比對 `_exception_handler_targets()` 的結果，`target != "Exception"` 一律記警告略過；命中的產生固定簽名的 `InterfaceSpec`（`file_path=layout.EXCEPTION_HANDLERS_FILE`、`class_name=None`、`params=[request: Request, exc: Exception]`、`return_type="Response"`）。
+- `_design_module()` 開頭新增 `if module["module"] == _GLOBAL_MODULE_NAME: return _design_global_advice_module(...)`，完全繞過一般模組的 `_build_method_contexts()`／`_call_design_llm()`。
+
+### `layout.py`：`EXCEPTION_HANDLERS_FILE` 常數與 `render_main_py()` 擴充
+
+新增 `EXCEPTION_HANDLERS_FILE = "app/core/exception_handlers.py"`。`render_main_py()` 除了既有的 router include 邏輯，新增：偵測 `interfaces` 裡 `file_path == EXCEPTION_HANDLERS_FILE` 的項目，為每個這樣的函式產生 `from app.core.exception_handlers import {fn}` 與 `app.add_exception_handler(Exception, {fn})`。
+
+### `type_mapping.py`：`ResponseEntity` 覆寫與 `collect_named_schemas()` 遞迴
+
+新增 `is_response_entity_return_type(java_type) -> bool`（字面字串前綴判斷）。`resolve_api_boundary_signature()` 開頭新增：命中時直接 `return params, "Response"`，跳過 openapi response 查找。`design.py::_build_method_contexts()` 對應在 `boundary_schemas` 賦值處新增條件，命中時給空清單、跳過 `collect_named_schemas()`。
+
+`collect_named_schemas()` 新增內部函式 `_collect(name)`（遞迴＋`visited` 集合防護）取代原本的兩次直接 append；新增 `_nested_schema_refs(raw_schema) -> list[str]`，從 `properties` 取出直接／陣列包裝的巢狀 `$ref` 名稱。
+
+### `common/java_type_mapping.py`：`map_java_type()` 新增 `ResponseEntity` 分支
+
+在 `_FUNCTIONAL_INTERFACE_TEMPLATES` 判斷之後、未知泛型 fallback 之前，新增 `if outer == "ResponseEntity": return "Response"`。
+
+單元測試見 `tests/design_agent/test_global_advice_module.py`、`tests/design_agent/test_type_mapping.py`（`TestResponseEntity`／`TestIsResponseEntityReturnType`／`TestResolveApiBoundarySignatureResponseEntity`／`TestCollectNamedSchemasRecursion`／`TestResolveApiBoundarySignatureRequestBody`）、`tests/design_agent/test_design.py`（`test_response_entity_boundary_method_gets_response_return_type_and_skips_schema`）。
+
+**真實環境驗證**：對 `../lang-exam-api-refactor` 完整跑過 ①③[P]④⑤⑥，`app/core/exception_handlers.py::handle_all` 正確產生並被容器內 Starlette 例外處理中介層實際呼叫到；`file_router.py` 的 `voice_2`／`image_2`（真實 `ResponseEntity<FileRs>` 方法）正確標成 `Response` 並成功產出可執行程式碼；`registration.py` 自我完備定義 `GetAllGradeRs`，不再需要跨檔案 import。詳見 `docs/09b_bug_trace.md`。
 
 ---
 

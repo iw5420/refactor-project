@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-18T03:32:42.989796Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "GET",
+    "path": [
+      "api",
+      "registration",
+      "exam",
+      "classes"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": {
+        "classes": [
+          "甲班",
+          "1"
+        ]
+      }
+    }
+  }
+}

@@ -243,6 +243,11 @@ class RefactorState(TypedDict):
     # Agent ⑤：每次呼叫重新計算的「當下完整快照」，不是累加事件，故不掛 reducer
     blocked_modules: list[str]    # 因上游 module 未驗證通過而從未進入就緒佇列的 module
     failed_modules: list[str]     # 確實執行過、驗證過、但沒通過的 module（含 regression 造成的失敗）
+    # 純附加診斷資訊，不是排程判斷依據：blocked_modules 裡每個 module
+    # 對回它 depends_on 裡狀態還不是 "verified" 的直接上游 module 名稱
+    # 清單，供人工／未來 ⑦ Debug Agent 不需要反查 module_list.depends_on
+    # 就能直接讀出「這個 module 被誰卡住」。見 docs/09b_bug_trace.md #29。
+    blocked_reasons: dict[str, list[str]]
 
     # Agent ⑥
     test_results: dict
@@ -251,7 +256,7 @@ class RefactorState(TypedDict):
     retry_count: int
 ```
 
-> `partial_reports`／`blocked_modules`／`failed_modules` 是排程實作（見六）新增的內部欄位，00 的流程圖層級不會細到列出這幾個欄位（00 九章已不重複列 State 欄位，見一）。`partial_reports` 是逐次累加的事件記錄，掛 reducer 正確；`blocked_modules`／`failed_modules` 是每次結束當下的狀態快照，不掛 reducer、由 `implement_node.run()` 整包覆蓋。兩者讓 `run_tests`／`debug` 能區分「程式碼根本沒被排到」和「程式碼確實跑過但驗證沒過」，決定要不要消耗 `retry_count`（見六）。
+> `partial_reports`／`blocked_modules`／`failed_modules`／`blocked_reasons` 是排程實作（見六）新增的內部欄位，00 的流程圖層級不會細到列出這幾個欄位（00 九章已不重複列 State 欄位，見一）。`partial_reports` 是逐次累加的事件記錄，掛 reducer 正確；`blocked_modules`／`failed_modules`／`blocked_reasons` 是每次結束當下的狀態快照，不掛 reducer、由 `implement_node.run()` 整包覆蓋。前兩者讓 `run_tests`／`debug` 能區分「程式碼根本沒被排到」和「程式碼確實跑過但驗證沒過」，決定要不要消耗 `retry_count`（見六）；`blocked_reasons` 純粹是診斷用途，不影響任何排程或路由邏輯，已用真實環境驗證：`registration`／`grading` 兩個模組被 `exam` 卡住時，`blocked_reasons` 正確回報 `{"registration": ["exam"], "grading": ["exam"]}`（見 `docs/09b_bug_trace.md`）。
 
 ---
 
@@ -691,12 +696,19 @@ async def run(state: RefactorState) -> RefactorState:
     # - failed：曾經驗證過但沒過（不論是原生失敗還是 regression 造成的失敗，屬於「程式碼寫錯」）
     blocked_modules = [m for m, s in scheduler.module_status.items() if s == "pending"]
     failed_modules = [m for m, s in scheduler.module_status.items() if s == "failed"]
+    # 純附加診斷（09a/09b 落地新增，見上方 State 定義說明）：不影響任何
+    # 排程或路由邏輯，只是把 blocked_modules 卡住的直接原因攤開。
+    blocked_reasons = {
+        m: [d for d in scheduler.modules[m]["depends_on"] if scheduler.module_status.get(d) != "verified"]
+        for m in blocked_modules
+    }
 
     # ⚠️ 回傳時兩種語意不能混：completed_tasks/failed_tasks/partial_reports 掛了
     # operator.add reducer，只能回傳這次新增的 delta（函式最上面就是從空陣列收集的）；
-    # blocked_modules/failed_modules 沒掛 reducer，必須回傳這次結束當下的完整快照
-    # （上面兩行本來就是對 module_status 全量重算的結果，直接回傳即可）。
-    # `**state` 放最前面、後面五個 key 放後面——dict literal 後面的 key 會覆蓋前面的。
+    # blocked_modules/failed_modules/blocked_reasons 沒掛 reducer，必須回傳這次
+    # 結束當下的完整快照（上面幾行本來就是對 module_status 全量重算的結果，
+    # 直接回傳即可）。
+    # `**state` 放最前面、後面幾個 key 放後面——dict literal 後面的 key 會覆蓋前面的。
     return {
         **state,
         "completed_tasks": completed,
@@ -704,6 +716,7 @@ async def run(state: RefactorState) -> RefactorState:
         "partial_reports": partial_reports,
         "blocked_modules": blocked_modules,
         "failed_modules": failed_modules,
+        "blocked_reasons": blocked_reasons,
     }
 ```
 
@@ -833,6 +846,7 @@ async def main():
         "partial_reports": [],
         "blocked_modules": [],
         "failed_modules": [],
+        "blocked_reasons": {},
         "test_results": {},
         "retry_count": 0,
     }

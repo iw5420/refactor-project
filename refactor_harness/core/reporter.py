@@ -1,11 +1,27 @@
 class HarnessReporter:
-    def build_report(self, results: list[dict], excluded_folders: list[str] | None = None) -> dict:
+    def build_report(
+        self,
+        results: list[dict],
+        excluded_folders: list[str] | None = None,
+        excluded_cases: list[str] | None = None,
+    ) -> dict:
         """
         excluded_folders：因 Recorder 錄製時判定為 tainted 而整個 folder 未參與
         這次驗證的情境（見 02a 三章「Mutation 錄製異常偵測」、四章「排除已知
-        異常的 folder」、九章「excluded_folders 欄位」）。這些 case 不計入
-        summary／failures／passed_cases 既有的計算邏輯——本方法其餘分類行為
-        完全不變，excluded_folders 只是額外附加的頂層欄位。
+        異常的 folder」、九章「excluded_folders 欄位」）。
+
+        excluded_cases：readonly 情境下，Recorder 錄製時就判定為非 JSON（如
+        text/plain 的 /version 端點）而主動跳過、從未寫入 golden 的
+        case_id 清單（見 GoldenVerifier._load_skipped_case_ids()）——這些
+        case 不是「golden 遺失」或「route_to_file_mapping 設定錯誤」，是
+        這個端點本來就不在 JSON body diff 這種比對契約的適用範圍內。跟
+        excluded_folders 是同一種精神（呼叫端已經在傳進來的 results 裡
+        排除掉了，這裡只是把排除掉的識別碼原樣附加成頂層欄位，供人工
+        或 ⑦ Debug Agent 事後知道「這些 case 不是沒被驗證到，是刻意跳過」，
+        不是本方法自己做排除判斷）。
+
+        兩者都不計入 summary／failures／passed_cases 既有的計算邏輯——本
+        方法其餘分類行為完全不變，只是額外附加兩個頂層欄位。
         """
         passed = [r for r in results if r["passed"]]
         failed = [r for r in results if not r["passed"]]
@@ -32,7 +48,8 @@ class HarnessReporter:
                 for f in failed
             ],
             "passed_cases": [p["case_id"] for p in passed],
-            "excluded_folders": excluded_folders or []
+            "excluded_folders": excluded_folders or [],
+            "excluded_cases": excluded_cases or []
         }
 
     def _classify_failure(self, result: dict) -> str:

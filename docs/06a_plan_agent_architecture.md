@@ -17,7 +17,7 @@
 
 **本文件不涵蓋**：
 - 實際程式碼——見 06b
-- ⑤ 如何消費 `task_list`、`ModuleScheduler` 排程細節——見 `01_langgraph_architecture.md` 六章、`09a_implement_agent_architecture.md`（待建立）
+- ⑤ 如何消費 `task_list`、`ModuleScheduler` 排程細節——見 `01_langgraph_architecture.md` 六章、`09a_implement_agent_architecture.md`
 - `route_to_file_mapping`——由③產出並直接寫入 `config/harness.yaml`，見 `05a_design_agent_architecture.md` 八章，[P] 不重複這件事
 
 ---
@@ -57,6 +57,8 @@
 **與 02a 十三章「module 詞彙一致性」的關係**：這裡反查出的字串就是 `ModuleInfo.module` 本身，[P] 沒有發明新字串，這是**唯一正確的做法**，不是權宜之計——`task.module` 必須逐字等於 `ModuleInfo.module`，這是 `01_langgraph_architecture.md` 六章 `ModuleScheduler` 用 `module` 當 dict key 分組任務、比對 `module_list.depends_on` 的結構性前提：`self.modules`／`self.module_status` 都以 `ModuleInfo.module` 為 key，若 `task.module` 改用其他來源（例如 Harness 的 `get_module()` URL 推斷），這個 module 的所有 task 會被塞進排程器永遠不會查詢的 key 底下，`get_ready_tasks()` 永遠找不到它們，整個 module 卡在 `pending` 且無法診斷——這比「局部驗證漏測」嚴重得多，是結構性錯誤，不是覆蓋率風險。
 
 Harness 端 `get_module()` 與 `ModuleInfo.module` 之間過去確實存在既知落差（深層路由如 `/api/v1/admin/orders/audit` 可能被 `get_module()` 誤判成 `admin`），但這個問題已在 02a 十三章、十一章、02b `core/route_mapper.py` 一併解決：③在計算 `route_to_file_mapping` 的同一次迴圈裡，額外輸出 `route_to_module_mapping`（見 05a 八章），`get_module()` 改為優先查這份表（`RouteMapper.resolve_module()`），只有真正落在①③解析範圍外的殘餘情況才 fallback 回 URL 推斷。因此 [P] 這裡逐字沿用 `ModuleInfo.module`，Harness 端的模組分區也會查到同一個值，兩邊天生一致，不再是「[P] 不負責解決的既有風險」——問題已經在更上游被消掉了。
+
+**例外：`app/core/exception_handlers.py`（`_global` 保留模組，見 04a 十一章、05a 十四章）**——09b 端對端整合測試發現這個檔案不符合 `{module}_{layer}.py` 命名慣例，會被上面的一般規則誤判成中止（見 `docs/09b_bug_trace.md` #11/#12）。`classify()` 在一般規則之前新增精確比對：命中這個固定路徑直接回傳 `("_global", "routers")`——`layer` 選 `"routers"` 純粹是語意上最接近（`class_name=None` 自由函式、在 `main.py` 被機械註冊），`_global` 目前只有一個 task、模組內無 `depends_on`，選哪個 layer 對六章防環規則的排序沒有實質差異。
 
 ---
 

@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -11,13 +12,40 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
 
     若 newman 失敗（服務沒起來、collection 路徑錯誤）立即拋出明確例外，
     不讓錯誤靜默流入後續比對邏輯。
+
+    **`shutil.which()` 解析完整路徑，不是直接傳字面字串 "newman"**：
+    Windows 上全域 npm 套件的執行檔是 `newman.cmd`（batch wrapper），
+    `subprocess.run(["newman", ...], shell=False)` 不會自動嘗試附加
+    `.cmd`／`.exe` 等副檔名去 PATH 上找，會直接 `FileNotFoundError`，
+    即使 `newman` 明明能在命令列打字執行——命令列底下是 shell 自己做了
+    這層副檔名比對，`subprocess.run(shell=False)` 沒有這層行為。
+    `shutil.which()` 內部用 `os.environ["PATHEXT"]`（Windows）逐一嘗試
+    副檔名，回傳真正可執行的完整路徑，兩平台行為一致，不需要引入
+    `shell=True`（避免字串注入風險）。找不到就在這裡直接拋出明確錯誤，
+    不要留給 `subprocess.run` 丟一個「檔案或路徑無效」這種難以第一眼
+    看懂根因的原生例外。
     """
+    newman_path = shutil.which("newman")
+    if newman_path is None:
+        raise RuntimeError(
+            "找不到 newman 執行檔（PATH 上沒有 newman／newman.cmd）："
+            "請先 `npm install -g newman`，見 00 五章「環境建立」"
+        )
+
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         output_path = tmp.name
 
     cmd = [
-        "newman", "run", collection_path,
-        "--env-var", f"base_url={base_url}",
+        newman_path, "run", collection_path,
+        # collection 裡實際的變數名稱是 "baseUrl"（駝峰式，[B] Collection
+        # Agent 產生 collection 時內建的變數，見 postman/collection_*.json
+        # 的頂層 "variable" 陣列），不是 "base_url"（底線）。舊寫法傳錯
+        # 變數名稱，newman 永遠不會覆寫，一律 fallback 回 collection 內建
+        # 的預設值——已用真實 Java／Python 服務核對過：這個預設值恰好等於
+        # Java 的網址，導致這個 bug 長期被掩蓋（錄製對 Java 「碰巧」正確，
+        # 驗證對 Python 則從未真正命中過 Python 服務，永遠連到 Java／或
+        # 連線被拒），見 09b_implement_agent_code.md 十章「已知限制」。
+        "--env-var", f"baseUrl={base_url}",
         "--reporters", "json",
         "--reporter-json-export", output_path
     ]
@@ -36,6 +64,40 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
 
     with open(output_path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def extract_response_body(response: dict) -> str | None:
+    """
+    從 newman 單一 execution 的 `response` 物件取出原始 body 文字。
+
+    真實 newman（6.2.2）的 JSON reporter **沒有** `response["body"]` 這個
+    欄位——已用真實 Java 服務重現過：`response.keys()` 只有
+    `['id', 'status', 'code', 'header', 'stream', 'cookie', 'responseTime',
+    'responseSize']`，不含 `body`。實際內容序列化在 `response["stream"]`，
+    是 Node.js Buffer 的 JSON 表示（`{"type": "Buffer", "data": [位元組
+    陣列]}`），要自己組回位元組再解碼。
+
+    舊寫法 `response.get("body")` 永遠回傳 `None`（鍵不存在，`.get()`
+    無預設值），即使實際回應內容非空——這代表這個 bug 修好之前，錄製端
+    （`golden_writer.py`）錄到的每一筆 golden output body 都是空的，
+    驗證端（`comparator.py`／`mutation_verifier.py`）比對到的 actual
+    body 也一樣永遠是空的，body diff 從未真正比對過任何內容，只有
+    status code 比對還有意義（見 09b_bug_trace.md）。
+
+    回傳 `None` 代表這個 response 真的沒有 body（如 204 No Content，
+    `stream` 缺席或 `data` 是空陣列）；`stream` 存在但形狀不符預期
+    （不是 `{"type": "Buffer", "data": [...]}`）視為程式碼對 newman
+    輸出格式的假設有誤，讓例外往外拋，不吞——這跟後續 JSON parse 失敗
+    走 `response_not_json` 分類是不同層級的錯誤，不應該混在一起被
+    這裡的容錯吞掉。
+    """
+    stream = response.get("stream")
+    if stream is None:
+        return None
+    data = stream["data"]
+    if not data:
+        return None
+    return bytes(data).decode("utf-8")
 
 
 def list_top_level_folders(collection_path: str) -> list[str]:

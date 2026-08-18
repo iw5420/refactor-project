@@ -50,6 +50,17 @@ class PythonStructure(TypedDict):
     interfaces: list[InterfaceSpec] # [P] target_files 與 ④ 骨架簽名的唯一權威來源
 
 
+# ── Agent ⑤ 輸出：task 失敗根因（見 09a 六章）──
+class TaskFailure(TypedDict):
+    task_id: str
+    module: str
+    file_path: str
+    class_name: str | None
+    function_name: str
+    reason: Literal["scaffold_skipped", "fill_failed"]
+    error: str
+
+
 # ── [P] Plan Agent 輸出：task list ────────────────────
 class TaskSpec(TypedDict):
     id: str
@@ -127,10 +138,21 @@ class RefactorState(TypedDict):
     completed_tasks: Annotated[list[str], operator.add]
     failed_tasks: Annotated[list[str], operator.add]
     partial_reports: Annotated[list[dict], operator.add]   # 每個 module 局部驗證結果（含 regression 重驗），逐次累加供 ⑦ 回溯
+    # task 失敗時的錯誤訊息與根因分類（"scaffold_skipped" vs "fill_failed"），
+    # 供 ⑦ Debug Agent（10a，待建立）不需要重新比對 skipped_interfaces 就能
+    # 分辨兩種失敗。歷史累積，不因後續重試成功而移除——一筆 task 若第一次
+    # 失敗、重試後成功，這筆記錄仍保留（同時 task_id 也會出現在
+    # completed_tasks），供除錯追溯。見 09a 六章。
+    task_failures: Annotated[list[TaskFailure], operator.add]
 
     # Agent ⑤：每次呼叫重新計算的「當下完整快照」，不是累加事件，故不掛 reducer
     blocked_modules: list[str]    # 因上游 module 未驗證通過而從未進入就緒佇列的 module
     failed_modules: list[str]     # 確實執行過、驗證過、但沒通過的 module（含 regression 造成的失敗）
+    # 純附加診斷資訊，不是排程判斷依據：blocked_modules 裡每個 module
+    # 對回它 depends_on 裡狀態還不是 "verified" 的直接上游 module 名稱
+    # 清單，供人工／未來 ⑦ Debug Agent 不需要反查 module_list.depends_on
+    # 就能直接讀出「這個 module 被誰卡住」。見 docs/09b_bug_trace.md #29。
+    blocked_reasons: dict[str, list[str]]
 
     # Agent ⑥
     test_results: dict

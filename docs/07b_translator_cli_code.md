@@ -878,6 +878,18 @@ async def get_function_body(
 
 對應 07a 四章全節。
 
+> 09b 端對端驗證發現並修正一個既有缺陷：`exam-platform-api` 的
+> `app/services/common_service.py` 裡 `ResponseResult.error_4(self, code:
+> ErrorCode)` 這個方法簽名引用了同一個檔案裡稍後才定義的另一個 class
+> `ErrorCode`，`_resolve_imports()`／`resolve_body_imports()` 原本都沒有
+> 排除「正在組裝／掃描的這個檔案自己的 class／函式」，於是各自產生一行
+> 恆為 True 的自我 import（`from X import X`），讓該模組 import 階段直接
+> `ImportError`。骨架階段（`_resolve_imports()`）新增 `same_file_class_names`
+> 參數；填空階段（`resolve_body_imports()`）新增 `same_file_top_level`
+> 排除集合（額外涵蓋函式與頂層變數賦值）——同一個問題、兩個不同時機點
+> 的獨立實作，各自要排除。見 `09b_bug_trace.md`、`09b_implement_agent_code.md`
+> 十章「已知限制」。
+
 ```python
 # translator_cli/scaffold.py
 """④ 骨架生成模式，對應 07a 四章全節。同步、確定性，不呼叫本地模型
@@ -907,12 +919,22 @@ _INFRA_FILES = {"app/main.py", "app/core/database.py"}
 # 慣例的既有先例（見該檔案 docstring），這裡不 import design_agent。
 _LAYER_PREFIX = {"app/routers/": "routers", "app/services/": "services", "app/repositories/": "repositories"}
 
+# `_global` 保留模組（見 04a 十一章、05a 十四章）固定輸出的全域例外
+# 處理檔案（見本章十五節、docs/09b_bug_trace.md #11/#12）——單一固定
+# 檔案，不是像三層那樣的目錄前綴，因此用精確比對、獨立於 _LAYER_PREFIX
+# 之外判斷。
+_GLOBAL_ADVICE_FILE = "app/core/exception_handlers.py"
+_GLOBAL_ADVICE_LAYER = "global_advice"
+
 # 四章「已知關鍵字表」，子字串比對，一個檔案內出現多次只加一次。
 _KNOWN_KEYWORD_IMPORTS: list[tuple[str, str]] = [
     ("Session", "from sqlalchemy.orm import Session"),
     ("Depends(", "from fastapi import Depends"),
     ("get_db", "from app.core.database import get_db"),
     ("Request", "from fastapi import Request"),
+    # ResponseEntity<T> 型別對應（見 05a 十四章）與全域例外處理都用
+    # "Response" 當 return_type，對應 docs/09b_bug_trace.md #11/#12/#30。
+    ("Response", "from fastapi import Response"),
     ("UploadFile", "from fastapi import UploadFile"),
     ("HTTPException", "from fastapi import HTTPException"),
     ("Decimal", "from decimal import Decimal"),
@@ -1146,7 +1168,9 @@ def _keyword_hits(keyword: str, combined: str) -> bool:
     return keyword in combined
 
 
-def _resolve_imports(type_strings: list[str], custom_type_index: dict[str, str]) -> list[str]:
+def _resolve_imports(
+    type_strings: list[str], custom_type_index: dict[str, str], same_file_class_names: frozenset[str] = frozenset()
+) -> list[str]:
     """對應四章「import 解析：兩層機制」：已知關鍵字表（子字串比對，見
     `_keyword_hits()`）＋自訂型別索引（AST `ast.Name` 節點比對，不用
     字串裁切／正則，理由見四章「用 AST 而非字串裁切是必要的」）。兩層
@@ -1156,6 +1180,11 @@ def _resolve_imports(type_strings: list[str], custom_type_index: dict[str, str])
     型別字串保證是裸名稱（`design_agent.map_java_type()` 對自訂類別
     只產出裸名稱，見 05a 五章型別對應表），不會出現 `models.User` 這種
     帶命名空間前綴的寫法，因此不需要對 `ast.Attribute` 額外排除。
+
+    `same_file_class_names` 是正在組裝的這個檔案自己（`_render_interface_
+    files()` 這一輪 `file_path` 分組下）的全部 class 名稱——這批類別即使
+    命中 `custom_type_index`，也不需要 import，因為它們就在同一個檔案裡；
+    不排除會產生循環 import（見上方說明）。
     """
     combined = "\n".join(type_strings)
     lines = [import_line for keyword, import_line in _KNOWN_KEYWORD_IMPORTS if _keyword_hits(keyword, combined)]
@@ -1167,7 +1196,7 @@ def _resolve_imports(type_strings: list[str], custom_type_index: dict[str, str])
         except SyntaxError:
             continue  # 型別字串已在渲染前個別驗證過，這裡理論上不會發生
         for node in ast.walk(expr):
-            if isinstance(node, ast.Name) and node.id in custom_type_index:
+            if isinstance(node, ast.Name) and node.id in custom_type_index and node.id not in same_file_class_names:
                 module_path = custom_type_index[node.id].removesuffix(".py").replace("/", ".")
                 names = custom_imports.setdefault(module_path, [])
                 if node.id not in names:
@@ -1218,6 +1247,13 @@ def _assemble_file_text(
         body = "\n".join(snippet for _, snippet in valid)
         return "\n".join(header) + "\n" + body
 
+    if layer == _GLOBAL_ADVICE_LAYER:
+        # class_name=None 自由函式（跟 routers 層同一種形狀），但不是
+        # 真正的路由檔案，不需要 APIRouter 樣板。
+        header = ["from __future__ import annotations", "", *import_lines, ""]
+        body = "\n".join(snippet for _, snippet in valid)
+        return "\n".join(header) + "\n" + body
+
     by_class: dict[str, list[str]] = {}
     for iface, snippet in valid:
         by_class.setdefault(iface["class_name"], []).append(snippet)
@@ -1250,14 +1286,18 @@ def _render_interface_files(
     skipped: list[dict] = []
 
     for file_path, ifaces in by_file.items():
-        layer = next((v for prefix, v in _LAYER_PREFIX.items() if file_path.startswith(prefix)), None)
+        if file_path == _GLOBAL_ADVICE_FILE:
+            layer = _GLOBAL_ADVICE_LAYER
+        else:
+            layer = next((v for prefix, v in _LAYER_PREFIX.items() if file_path.startswith(prefix)), None)
         if layer is None:
             # 按照 05a／07a 契約，interfaces 的 file_path 只會落在
-            # routers／services／repositories 三層，理論上不會觸發——
-            # 但比照本函式其餘失敗路徑（語法錯誤、組裝驗證失敗）一律
-            # 顯式記錄成 skipped_interfaces，不靜默丟棄，避免上游一旦
-            # 出現非預期 file_path，這批 InterfaceSpec 人不知鬼不覺地
-            # 從骨架裡消失、不會被人工發現。
+            # routers／services／repositories 三層（或上面明確處理過的
+            # _GLOBAL_ADVICE_FILE），理論上不會再觸發這裡——但比照本函式
+            # 其餘失敗路徑（語法錯誤、組裝驗證失敗）一律顯式記錄成
+            # skipped_interfaces，不靜默丟棄，避免上游一旦出現非預期
+            # file_path，這批 InterfaceSpec 人不知鬼不覺地從骨架裡消失、
+            # 不會被人工發現。
             for iface in ifaces:
                 skipped.append(
                     {
@@ -1271,7 +1311,7 @@ def _render_interface_files(
 
         valid: list[tuple[InterfaceSpec, str]] = []
         for iface in ifaces:
-            snippet = _render_function_snippet(iface, is_class_method=(layer != "routers"))
+            snippet = _render_function_snippet(iface, is_class_method=(layer not in ("routers", _GLOBAL_ADVICE_LAYER)))
             try:
                 ast.parse(snippet)
             except SyntaxError as exc:
@@ -1287,14 +1327,14 @@ def _render_interface_files(
             valid.append((iface, snippet))
 
         all_class_names: list[str] = []
-        if layer != "routers":
+        if layer not in ("routers", _GLOBAL_ADVICE_LAYER):
             for iface in ifaces:
                 if iface["class_name"] not in all_class_names:
                     all_class_names.append(iface["class_name"])
 
         type_strings = [_normalize_type(p["type"]) for iface, _ in valid for p in iface["params"]]
         type_strings += [_normalize_type(iface["return_type"]) for iface, _ in valid]
-        import_lines = _resolve_imports(type_strings, custom_type_index)
+        import_lines = _resolve_imports(type_strings, custom_type_index, frozenset(all_class_names))
 
         raw_text = _assemble_file_text(layer, import_lines, valid, all_class_names)
         try:
@@ -1479,6 +1519,27 @@ def resolve_body_imports(
     if not candidates:
         return []
 
+    # 09b 端對端驗證發現：qwen 生成的本體常引用「同一個檔案裡稍後才定義
+    # 的另一個 class／函式」（跟 `_resolve_imports()` docstring 描述的
+    # exam-platform-api common_service.py 是同一種問題），這裡若不排除
+    # 會產生 `from X import X` 這種恆為 True 的自我 import，一樣導致
+    # ImportError。跟骨架階段的 `same_file_class_names` 是同一個問題、
+    # 兩個不同時機點的獨立實作，這裡額外涵蓋函式與頂層變數賦值（骨架
+    # 階段還沒有頂層變數賦值可比對，填空階段是對已寫入磁碟的完整檔案
+    # 操作，範圍更廣）。
+    same_file_top_level = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            same_file_top_level |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    candidates -= same_file_top_level
+
+    if not candidates:
+        return []
+
     # 已知關鍵字表比對用精確集合成員判斷，不是子字串／單字邊界比對
     # （見 `_keyword_hits()`）——這裡的 candidates 已經是逐一拆開的裸
     # 識別字（AST Name 節點），不是要在一段文字裡搜尋子字串，不會有
@@ -1526,7 +1587,7 @@ def insert_import_lines(tree: ast.Module, import_lines: list[str]) -> None:
     tree.body[insert_at:insert_at] = new_nodes
 ```
 
-**已驗證**（`tests/translator_cli/test_scaffold.py`，37 個測試）：涵蓋型別正規化、code block 擷取、Schema 定義段合併（import 去重、機械註解不被 `ast.unparse()` 弄丟）、函式片段渲染、兩層 import 解析（已知關鍵字表含 `Callable`／`UUID`／`date`／`datetime`／`time`，AST 自訂型別索引，都比對不到時不加）、`build_files()` 端對端（正常情況、單一介面隔離失敗、Schema 定義段損毀時中止）、`write_files()` 自動建目錄。`_table_assignment_names()`（08a 八章 `@ManyToMany` 中介表支援）認得 `Table(...)`／`sqlalchemy.Table(...)` 兩種匯入風格且不誤收一般賦值；`resolve_body_imports()`／`insert_import_lines()`（填空模式本體 import 解析）涵蓋跨層掃描、已知關鍵字與跨檔案自訂類別解析、函式參數與 builtin 不誤判、兩層都比對不到時保守不加。
+**已驗證**（`tests/translator_cli/test_scaffold.py`，41 個測試）：涵蓋型別正規化、code block 擷取、Schema 定義段合併（import 去重、機械註解不被 `ast.unparse()` 弄丟）、函式片段渲染、兩層 import 解析（已知關鍵字表含 `Callable`／`UUID`／`date`／`datetime`／`time`，AST 自訂型別索引，都比對不到時不加）、`build_files()` 端對端（正常情況、單一介面隔離失敗、Schema 定義段損毀時中止）、`write_files()` 自動建目錄。`_table_assignment_names()`（08a 八章 `@ManyToMany` 中介表支援）認得 `Table(...)`／`sqlalchemy.Table(...)` 兩種匯入風格且不誤收一般賦值；`resolve_body_imports()`／`insert_import_lines()`（填空模式本體 import 解析）涵蓋跨層掃描、已知關鍵字與跨檔案自訂類別解析、函式參數與 builtin 不誤判、兩層都比對不到時保守不加。新增 4 個測試涵蓋上方「同檔案自我 import」排除：`test_resolve_body_imports_excludes_class_defined_in_same_file`、`test_resolve_body_imports_excludes_function_defined_in_same_file`、`test_resolve_imports_excludes_same_file_class_names`、`test_build_files_same_file_class_signature_reference_not_self_imported`。
 
 ---
 
@@ -2034,6 +2095,7 @@ refactor-project/
 
 ## 十一、已知限制與待驗證事項
 
+- ~~**`app/core/exception_handlers.py`（`_global` 保留模組）被誤判成 unknown layer、整個跳過**~~——已解決（見 07a 十五章、`docs/09b_bug_trace.md` #11/#12）：`_render_interface_files()` 新增精確比對 `_GLOBAL_ADVICE_FILE`，`_assemble_file_text()` 新增對應分支（渲染成自由函式、不包 `APIRouter` 樣板）。已用真實 `../lang-exam-api-refactor` 完整跑過 ①③[P]④⑤⑥ 驗證：`skipped_interfaces=0`，`app/core/exception_handlers.py::handle_all` 正確生成且容器內確認能被 Starlette 例外處理中介層正確呼叫到。單元測試見 `tests/translator_cli/test_scaffold.py::test_build_files_renders_global_advice_file_without_api_router_boilerplate`。
 - **已接上真實 ollama／nginx 環境＋真實 Java 專案（93 個檔案）跑過端對端測試**：真實 pipeline（① 解析 → ③ 設計 → [P] 規劃 → ④ 骨架 → ⑤ 實作）70 個 task 中 69 個成功，delimiter 修正重試、網路層重試都真實觸發並驗證過。`_FORMAT_RETRY_COUNT` 依實測結果從 1 調整為 2（見七章）；`TRANSLATOR_CLI_TIMEOUT_SECONDS`（300 秒）依實測判斷足夠（簡單任務單次生成 15～19 秒）；`TRANSLATOR_CLI_NETWORK_RETRIES` 維持 2 不調整，理由見 07a 十四章。唯一失敗的真實案例（複雜查詢邏輯、6 個 target_files）已定位根因：qwen 對這個複雜度的任務，第一次回應違反 delimiter 格式的機率偏高，不是偶發——這超出 translator-cli 自己重試機制能保證解決的範圍，屬於 09a（⑤ Agent 詳細設計，待建立）該補的「task 永久失敗後如何交給 ⑦ Debug Agent 重試」機制，07a 十四章已記錄這個分工。
 - **填空模式本體 import 解析（`resolve_body_imports()`）已對真實案例驗證**：真實 pipeline 執行中發現 qwen 生成的函式本體確實會引用簽名以外的名稱（如呼叫 `UserRepository`、拋出 `HTTPException`），已實作修正並對同一個真實案例重新對真實 ollama 驗證，import 正確補上、寫入內容語法合法，見七章。
 - **（已由 08a／08b 解決）`db_models` 曾經固定傳 `None`**：07b 落地當下 `scaffold_node.py` 還沒有能力從 DB 或 Java entity 取得 `db_models` 字典。08a／08b 已補上 `scaffold_agent.build_db_models()`，`scaffold_node.py` 現在傳的是真正的字典，`app/models/{module}.py` 會正常產出，`build_files()`／`write_files()` 一如當初預期不需要改動，見 08b 六、八章。

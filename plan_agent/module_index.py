@@ -18,6 +18,20 @@ _LAYER_SUFFIX = {"routers": "_router", "services": "_service", "repositories": "
 # 06a 六章「防環規則」固定全序第一層：repositories < services < routers。
 LAYER_RANK = {"repositories": 0, "services": 1, "routers": 2}
 
+# `_global` 保留模組（見 parse_agent/summarize.py／design_agent/design.py
+# 同一組字面值，這裡比照本檔開頭「各自維護、不 import 其他 Agent 套件」
+# 的既有原則自己重複定義，不新增跨套件依賴）固定輸出
+# `app/core/exception_handlers.py`，不符合 `{module}_{layer}.py` 命名
+# 慣例——真實端對端測試才發現這個缺口（見 docs/09b_bug_trace.md
+# #11/#12）：一般規則找不到任何固定後綴，會直接中止整個 [P] 呼叫。
+# 這裡在一般規則之前特殊處理；layer 歸類為 "routers"（rank 最高、不影響
+# 任何排序正確性——`_global` 目前只有一個 task、模組內無 depends_on，
+# 選哪個 layer 對防環規則沒有實質差異，選 "routers" 只是語意上最接近：
+# 這批函式跟 routers 層一樣是 class_name=None 的自由函式、在 main.py
+# 被機械註冊，不是真正需要區分 service/repository 順序的情況）。
+_GLOBAL_MODULE_NAME = "_global"
+_EXCEPTION_HANDLERS_FILE = "app/core/exception_handlers.py"
+
 
 def classify(file_path: str, module_names: frozenset[str]) -> tuple[str, str]:
     """回傳 `(module, layer)`。對應 06a 四章「演算法」：取 `file_path`
@@ -27,7 +41,13 @@ def classify(file_path: str, module_names: frozenset[str]) -> tuple[str, str]:
     命中。找不到對應後綴、或比對不到任何 module（不應發生，代表③輸出
     違反自己承諾的檔名格式）→ 直接中止，交由人工核對③的輸出（見 06a
     四章、十一章）。
+
+    `app/core/exception_handlers.py`（見上方）是唯一的例外，在一般規則
+    之前直接回傳固定值。
     """
+    if file_path == _EXCEPTION_HANDLERS_FILE:
+        return _GLOBAL_MODULE_NAME, "routers"
+
     stem = file_path.rsplit("/", 1)[-1].removesuffix(".py")
     for layer, suffix in _LAYER_SUFFIX.items():
         if stem.endswith(suffix):

@@ -97,6 +97,14 @@ def test_resolve_imports_known_keyword():
     assert "from sqlalchemy.orm import Session" in lines
 
 
+def test_resolve_imports_response_keyword():
+    # ResponseEntity<T> 型別對應（common/java_type_mapping.py）與全域
+    # 例外處理（design_agent/design.py _design_global_advice_module()）
+    # 都用 "Response" 當 return_type，見 docs/09b_bug_trace.md #11/#12/#30。
+    lines = _resolve_imports(["Response"], {})
+    assert "from fastapi import Response" in lines
+
+
 def test_resolve_imports_custom_type_via_ast():
     lines = _resolve_imports(["ResponseResult[User]"], {"User": "app/models/user.py", "ResponseResult": "app/services/common_service.py"})
     assert "from app.models.user import User" in lines
@@ -106,6 +114,25 @@ def test_resolve_imports_custom_type_via_ast():
 def test_resolve_imports_unknown_type_not_added():
     lines = _resolve_imports(["int"], {})
     assert lines == []
+
+
+def test_resolve_imports_excludes_same_file_class_names():
+    # 對應真實案例：exam-platform-api 的 app/services/common_service.py，
+    # ResponseResult.error_4(self, code: ErrorCode) 的簽名引用 ErrorCode——
+    # ErrorCode 是同一個檔案稍後才定義的另一個 class，不是跨檔案自訂型別。
+    # custom_type_index 涵蓋全專案（本來就會收錄這個檔案自己的 class），
+    # 若不排除 same_file_class_names，會產生一行恆為 True 的循環 import。
+    custom_type_index = {
+        "ErrorCode": "app/services/common_service.py",
+        "ResponseResult": "app/services/common_service.py",
+        "User": "app/models/user.py",
+    }
+    lines = _resolve_imports(
+        ["ErrorCode", "ResponseResult[User]"],
+        custom_type_index,
+        same_file_class_names=frozenset({"ErrorCode", "ResponseResult"}),
+    )
+    assert lines == ["from app.models.user import User"]
 
 
 def test_resolve_imports_custom_type_containing_keyword_substring_not_falsely_matched():
@@ -268,6 +295,42 @@ def test_build_files_end_to_end_produces_valid_python(tmp_path):
     assert "from app.models.user import User" in repo_source  # 來源三：db_models
 
 
+def test_build_files_same_file_class_signature_reference_not_self_imported():
+    # 對應真實案例：exam-platform-api 的 app/services/common_service.py，
+    # 同一個檔案兩個 class，其中一個 class 的方法簽名引用另一個同檔案
+    # 稍後才定義的 class（如 ResponseResult.error_4(self, code: ErrorCode)）。
+    # 骨架生成階段若不排除同檔案自己的 class，會產生一行恆為 True 的
+    # 循環 import，讓這個模組 import 階段直接 ImportError。
+    structure = {
+        "directory_tree": "app/\n  app/services/common_service.py\n",
+        "interfaces": [
+            {
+                "file_path": "app/services/common_service.py",
+                "class_name": "ResponseResult",
+                "function_name": "error_4",
+                "params": [{"name": "code", "type": "ErrorCode"}],
+                "return_type": "ResponseResult",
+            },
+            {
+                "file_path": "app/services/common_service.py",
+                "class_name": "ErrorCode",
+                "function_name": "value",
+                "params": [],
+                "return_type": "int",
+            },
+        ],
+    }
+    files, skipped_interfaces, _ = build_files(structure, {})
+
+    assert skipped_interfaces == []
+    source = files["app/services/common_service.py"]
+    assert "import" not in "\n".join(
+        line for line in source.splitlines() if "common_service" in line
+    )
+    assert "class ResponseResult:" in source
+    assert "class ErrorCode:" in source
+
+
 def test_build_files_isolates_invalid_interface(tmp_path):
     structure = _minimal_python_structure()
     # 注入一個型別字串仍殘留非法字元的介面（見 07a 四章「已知殘留限制」：萬用字元泛型）
@@ -307,6 +370,34 @@ def test_build_files_records_skipped_interface_for_unknown_layer(tmp_path):
     assert len(skipped_interfaces) == 1
     assert skipped_interfaces[0]["function_name"] == "unexpected"
     assert "unknown layer" in skipped_interfaces[0]["error"]
+    # 其餘介面不受影響，正常產出
+    assert "app/routers/user_router.py" in files
+
+
+def test_build_files_renders_global_advice_file_without_api_router_boilerplate():
+    # 對應 docs/09b_bug_trace.md #11/#12：真實端對端測試發現
+    # app/core/exception_handlers.py（_global 保留模組固定輸出）原本會
+    # 被判定成 unknown layer 整個跳過，導致 generate_scaffold() 從未
+    # 建立這個檔案。修正後應正常渲染，且不像 routers 層那樣包
+    # APIRouter 樣板（這不是真正的路由檔案）。
+    structure = _minimal_python_structure()
+    structure["interfaces"].append(
+        {
+            "file_path": "app/core/exception_handlers.py",
+            "class_name": None,
+            "function_name": "handle_all",
+            "params": [{"name": "request", "type": "Request"}, {"name": "exc", "type": "Exception"}],
+            "return_type": "Response",
+            "http_method": None,
+            "route_path": None,
+        }
+    )
+    files, skipped_interfaces, _ = build_files(structure, {})
+    assert skipped_interfaces == []
+    source = files["app/core/exception_handlers.py"]
+    assert "def handle_all(request: Request, exc: Exception) -> Response:" in source
+    assert "APIRouter" not in source
+    assert "router = " not in source
     # 其餘介面不受影響，正常產出
     assert "app/routers/user_router.py" in files
 
@@ -428,6 +519,41 @@ def test_resolve_body_imports_finds_known_keyword_and_custom_type(tmp_path):
     lines = resolve_body_imports(str(tmp_path), tree, body, bound_names={"db", "user_id"})
     assert "from fastapi import HTTPException" in lines
     assert "from app.repositories.user_repository import UserRepository" in lines
+
+
+def test_resolve_body_imports_excludes_class_defined_in_same_file(tmp_path):
+    # 對應真實案例：exam-platform-api 的 app/services/common_service.py，
+    # ResponseResult 這個 class 的方法回傳自己（如
+    # error() -> ResponseResult(...)）——這個 class 本身就在同一個檔案
+    # 的 tree.body 裡，同檔案內引用不需要 import。若 _scan_project_
+    # custom_types() 掃描到磁碟上這個檔案自己也定義了同名 class，會誤判
+    # 成「要從自己匯入自己」，產生一行永遠成立的循環 import，讓這個
+    # 模組 import 階段直接 ImportError（已用真實案例重現，見
+    # docs/09b_implement_agent_code.md 十章「已知限制」）。
+    (tmp_path / "app" / "services").mkdir(parents=True)
+    # 磁碟上另一個檔案剛好也叫這個名字的情況也要一併確認不會誤命中，
+    # 但這裡先驗證最直接的案例：正在處理的這個檔案自己。
+    (tmp_path / "app" / "services" / "common_service.py").write_text(
+        "class ResponseResult:\n    pass\n", encoding="utf-8"
+    )
+
+    tree = ast.parse(
+        "from __future__ import annotations\n\n\nclass ResponseResult:\n    pass\n"
+    )
+    body = ast.parse("return ResponseResult(success=False, data=None, code=code, message=msg)\n").body
+
+    lines = resolve_body_imports(str(tmp_path), tree, body, bound_names={"code", "msg"})
+    assert lines == []
+
+
+def test_resolve_body_imports_excludes_function_defined_in_same_file(tmp_path):
+    tree = ast.parse(
+        "from __future__ import annotations\n\n\ndef helper():\n    return 1\n"
+    )
+    body = ast.parse("return helper()\n").body
+
+    lines = resolve_body_imports(str(tmp_path), tree, body, bound_names=set())
+    assert lines == []
 
 
 def test_resolve_body_imports_excludes_bound_names_and_builtins(tmp_path):

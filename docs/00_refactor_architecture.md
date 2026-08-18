@@ -50,7 +50,7 @@
 | ③ 架構設計 Agent | 輸出 Python 專案結構、模組 interface、route_to_file_mapping | `05a_design_agent_architecture.md` / `05b_design_agent_code.md` |
 | [P] Plan Agent | 產出 Agent ⑤ 的 task list | `06a_plan_agent_architecture.md` / `06b_plan_agent_code.md` |
 | ④ 骨架實作 Agent | 建立目錄與骨架（呼叫 translator-cli「骨架生成模式」），並從 Java entity 原始碼組出 `db_models` | `08a_scaffold_agent_architecture.md` / `08b_scaffold_agent_code.md` |
-| ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md`（待建立，介面定義見 `07a_translator_cli_architecture.md`） |
+| ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md` |
 | ⑥ 測試執行 Agent（Harness 驗證端） | 對 Python 服務執行 Postman，比對 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
 | ⑦ Debug Agent | 分析 diff、定位問題，回饋給 ⑤ | `10a_debug_agent_architecture.md` / `10b_debug_agent_code.md`（待建立） |
 

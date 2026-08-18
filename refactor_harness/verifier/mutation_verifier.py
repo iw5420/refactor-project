@@ -2,7 +2,7 @@ import json
 import yaml
 from pathlib import Path
 # 套件內部一律用帶 refactor_harness. 前綴的絕對匯入
-from refactor_harness.core.postman_runner import run_newman, list_top_level_folders, make_case_id
+from refactor_harness.core.postman_runner import extract_response_body, run_newman, list_top_level_folders, make_case_id
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
@@ -148,7 +148,7 @@ class MutationVerifier:
                 expected_status = golden["response"]["status_code"]
                 status_match = actual_response["code"] == expected_status
 
-                raw_body = actual_response.get("body")
+                raw_body = extract_response_body(actual_response)
                 try:
                     actual_body = None if (raw_body is None or raw_body.strip() == "") else json.loads(raw_body)
                     # mutation 情境：額外遮罩 masked_fields_mutation_only（id/order_id/user_id），

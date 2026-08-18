@@ -4,7 +4,7 @@ from pathlib import Path
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
-from refactor_harness.core.postman_runner import run_newman, make_case_id
+from refactor_harness.core.postman_runner import extract_response_body, run_newman, make_case_id
 from refactor_harness.core.route_mapper import RouteMapper
 
 
@@ -18,10 +18,41 @@ class GoldenVerifier:
         self.reporter = HarnessReporter()
         # route 解析用共用的 RouteMapper，與 MutationVerifier 共用同一套邏輯
         self.route_mapper = RouteMapper(config_path)
+        # Recorder 錄製時主動判定為非 JSON（如 text/plain 的 /version 端點）
+        # 而跳過、從未寫入 golden 的 case_id 清單——見 _load_skipped_case_ids()。
+        self._skipped_case_ids = self._load_skipped_case_ids()
+        self._last_excluded_cases: list[str] = []
+
+    def _load_skipped_case_ids(self) -> set[str]:
+        """讀取 {golden_dir}/_metadata.json 的 skipped 清單（見 02a 三章
+        「非 JSON Response 與空 Body 的處理」）——這些 case 在錄製當下就
+        被 Recorder 主動判定成非 JSON 而跳過，不是 golden 遺失或
+        route_to_file_mapping 設定錯誤。沒有這份清單時，_process_
+        executions() 會把它們誤判成 golden_not_found 失敗，即使 Python
+        端回傳的內容其實跟 Java 一致（如 /version 端點兩邊都回傳同一種
+        text/plain 版本字串）。_metadata.json 不存在時（例如尚未跑過
+        record_golden_output）視為沒有任何已知跳過的 case，不拋例外——
+        這是正常的初次執行情境，比照 MutationVerifier 對
+        tainted_folders 的既有處理方式。
+        """
+        metadata_path = self.golden_dir / "_metadata.json"
+        if not metadata_path.exists():
+            return set()
+        with open(metadata_path, encoding="utf-8") as f:
+            metadata = json.load(f)
+        return set(metadata.get("skipped", []))
+
+    def get_excluded_cases(self) -> list[str]:
+        """上一次 verify()／verify_raw()／verify_module() 呼叫中，因命中
+        _skipped_case_ids 而被排除、沒有計入 summary／failures 的
+        case_id 清單。"""
+        return self._last_excluded_cases
 
     def verify(self, collection_path: str) -> dict:
         """執行 newman 並與 golden output 比對（全量）"""
-        return self.reporter.build_report(self.verify_raw(collection_path))
+        return self.reporter.build_report(
+            self.verify_raw(collection_path), excluded_cases=self.get_excluded_cases()
+        )
 
     def verify_raw(self, collection_path: str) -> list[dict]:
         """
@@ -42,15 +73,22 @@ class GoldenVerifier:
                 ex["item"]["request"]["method"], ex["item"]["request"]["url"]["path"]
             ) == module_filter
         ]
-        return self.reporter.build_report(self._process_executions(filtered))
+        return self.reporter.build_report(
+            self._process_executions(filtered), excluded_cases=self.get_excluded_cases()
+        )
 
     def _get_module(self, method: str, url_parts: list[str]) -> str:
         # 委派給共用的 RouteMapper.resolve_module()（見 02a 十三章）
         return self.route_mapper.resolve_module(method, url_parts)
 
     def _process_executions(self, executions: list[dict]) -> list[dict]:
-        """回傳尚未分類的原始 case 結果清單。"""
+        """回傳尚未分類的原始 case 結果清單。每次呼叫重新計算
+        self._last_excluded_cases（覆蓋，不累加）——跟 MutationVerifier
+        的 _last_excluded_folders 是同一種「每次呼叫都是一份新快照」
+        的既有慣例。
+        """
         results = []
+        excluded: list[str] = []
         for execution in executions:
             item = execution["item"]
             actual_response = execution["response"]
@@ -62,6 +100,13 @@ class GoldenVerifier:
 
             golden = self._load_golden(case_id, module)
             if golden is None:
+                if case_id in self._skipped_case_ids:
+                    # Recorder 錄製時就判定這個 case 是非 JSON 而主動跳過
+                    # （見 __init__ 的 _load_skipped_case_ids()），不是
+                    # golden 遺失或 route_to_file_mapping 設定錯誤——不算
+                    # 失敗，直接排除，不計入 summary／failures。
+                    excluded.append(case_id)
+                    continue
                 results.append({
                     "case_id": case_id,
                     "passed": False,
@@ -69,7 +114,7 @@ class GoldenVerifier:
                 })
                 continue
 
-            raw_body = actual_response.get("body")
+            raw_body = extract_response_body(actual_response)
             if raw_body is None or raw_body.strip() == "":
                 actual_body = None
             else:
@@ -102,6 +147,7 @@ class GoldenVerifier:
                 "related_files": self.route_mapper.resolve_related_files(method, url_parts)
             })
 
+        self._last_excluded_cases = excluded
         return results
 
     def _load_golden(self, case_id: str, module: str) -> dict | None:

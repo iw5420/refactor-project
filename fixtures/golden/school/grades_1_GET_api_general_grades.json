@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-18T03:32:42.989706Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "GET",
+    "path": [
+      "api",
+      "general",
+      "grades"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": {
+        "grade": [
+          "高中",
+          "國小",
+          "國中"
+        ]
+      }
+    }
+  }
+}

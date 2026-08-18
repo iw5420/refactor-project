@@ -15,6 +15,10 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import javalang
+import javalang.tree
 
 from common.concurrency import default_concurrency
 from common.java_annotations import DATA_CLASS_ANNOTATIONS, JPA_ENTITY_ANNOTATIONS
@@ -334,7 +338,17 @@ def _build_method_contexts(
             if sig is selected_overload:
                 params, return_type = type_mapping.resolve_api_boundary_signature(sig, operation, openapi_spec)
                 uncovered = type_mapping.find_uncovered_framework_params(sig, operation, openapi_spec)
-                boundary_schemas = type_mapping.collect_named_schemas(operation, openapi_spec)
+                # ResponseEntity<T> 方法的 return_type 已被覆寫成
+                # "Response"（見 resolve_api_boundary_signature()「見
+                # 09b_bug_trace.md #30」），不需要、也不該為它收集 response
+                # schema——這種情況下 openapi 的 response schema 不代表
+                # 這個方法真正的回傳形狀，硬收集只會產生一個永遠不會被
+                # 引用的多餘 Pydantic class。
+                boundary_schemas = (
+                    []
+                    if type_mapping.is_response_entity_return_type(sig.return_type)
+                    else type_mapping.collect_named_schemas(operation, openapi_spec)
+                )
                 # 05a 五章「router 層 API 邊界方法額外帶 http_method／route_path」：
                 # 只有真正被選中對應這個 endpoint 的多載才帶這兩個值，其餘多載
                 # （下面 else 分支）維持 None，跟 params/return_type 的處理方式一致。
@@ -409,6 +423,97 @@ def _reorder_params_defaults_last(params: list[ParamSpec]) -> list[ParamSpec]:
     return no_default + with_default
 
 
+# 保留模組名稱，承接 parse_agent/summarize.py `_assemble_global_advice_
+# draft()` 產出的全域生效類別（`@RestControllerAdvice`／
+# `@ControllerAdvice`，見 09b_bug_trace.md #11/#12）。跟 summarize.py 那
+# 邊的 `_GLOBAL_MODULE_NAME` 是同一個字面值，兩邊各自定義常數而不共用
+# 匯入——`parse_agent`／`design_agent` 是各自獨立套件，不互相 import
+# （01 二章「設計原則」），這個字面值本身極不可能變動，重複定義的維護
+# 成本遠低於為了共用一個常數在兩個套件之間建立耦合。
+_GLOBAL_MODULE_NAME = "_global"
+
+
+def _exception_handler_targets(java_files: list[str], java_project_path: str) -> dict[str, str]:
+    """重新掃 `_global` module 的 `java_files`，逐 method 找
+    `@ExceptionHandler(X.class)` 的目標例外類別名稱，回傳
+    `{method_name: exception_class_name}`。**只收「單一 class-literal」
+    形式**（javalang 把 `X.class`解析成 `ClassReference(type=
+    ReferenceType(name="X"))`）——`@ExceptionHandler({A.class, B.class})`
+    這種陣列形式的 `element` 不是 `ClassReference`，不會被收進這份
+    對照表，呼叫端（`_design_global_advice_module()`）對查不到的方法
+    一律記警告略過，不嘗試處理（見 09b_bug_trace.md #11/#12「範圍刻意
+    收斂」）。這是獨立於 `signature_scan.scan_java_files()` 之外的小型
+    專用掃描——一般業務 module 不需要 annotation 的字面值，只有這個
+    特殊模組需要，不值得為了這一種用途替 `JavaMethodSignature` 加欄位。
+    """
+    targets: dict[str, str] = {}
+    for rel_path in java_files:
+        source = Path(java_project_path, rel_path).read_text(encoding="utf-8")
+        tree = javalang.parse.parse(source)
+        for decl in tree.types:
+            if not isinstance(decl, javalang.tree.ClassDeclaration):
+                continue
+            for method_decl in decl.methods:
+                for ann in method_decl.annotations:
+                    if ann.name != "ExceptionHandler":
+                        continue
+                    element = ann.element
+                    if isinstance(element, javalang.tree.ClassReference):
+                        targets[method_decl.name] = element.type.name
+    return targets
+
+
+def _design_global_advice_module(module: ModuleInfo, java_project_path: str) -> ModuleDesignResult:
+    """`_global` 保留模組的專屬處理路徑，完全繞過一般模組的
+    `_build_method_contexts()`／`_call_design_llm()`（不查
+    `_STEREOTYPE_LAYER`，這批方法不屬於 routers/services/repositories
+    任何一層的既有分層慣例）。固定輸出 `layout.EXCEPTION_HANDLERS_FILE`、
+    `class_name=None` 自由函式，簽名比照 FastAPI `@app.exception_
+    handler(...)` 的呼叫慣例（`request: Request, exc: Exception) ->
+    Response`），不是 Java 原始簽名的機械轉換——FastAPI 的例外處理器
+    協定本來就要求這個固定形狀，跟 Java 端的方法簽名無關。
+
+    **範圍刻意收斂**：只處理 `@ExceptionHandler(Exception.class)` 這種
+    全域 catch-all case（見 `docs/09b_bug_trace.md` #11/#12 唯一有真實
+    案例佐證的情況）。`module["methods"]` 裡若有方法不是
+    `@ExceptionHandler`、或標註了 `Exception` 以外的例外類型（如真實
+    案例裡同時存在的 `handleBaseException(BaseException e)`），只記
+    警告、不產生任何 `InterfaceSpec`——這些方法因此不會流進 [P] 的
+    task list，不會被實作，是已知、刻意接受的限制，不是遺漏。函式
+    本體（哪個例外對應什麼 code/msg）不在這裡機械產生——比照一般
+    service/repository 方法，經 [P] 產生 task、走⑤既有的
+    `fill_function()` 流程翻譯 Java handler 方法本體，見
+    `09b_bug_trace.md` #11/#12「① 已完成的前置修正」。
+    """
+    targets = _exception_handler_targets(module["java_files"], java_project_path)
+
+    interfaces: list[InterfaceSpec] = []
+    for method_info in module["methods"]:
+        java_method = method_info["java_method"]
+        target = targets.get(java_method)
+        if target != "Exception":
+            logger.warning(
+                "module %s 的方法 %s.%s 不是 @ExceptionHandler(Exception.class) 這種全域 "
+                "catch-all case（實際目標：%s），範圍刻意收斂只處理 catch-all，略過（見 "
+                "docs/09b_bug_trace.md #11/#12「範圍刻意收斂」）",
+                module["module"], method_info["class_name"], java_method, target,
+            )
+            continue
+        interfaces.append(
+            InterfaceSpec(
+                file_path=layout.EXCEPTION_HANDLERS_FILE,
+                class_name=None,
+                function_name=_python_function_name(java_method, is_private=False),
+                params=[ParamSpec(name="request", type="Request"), ParamSpec(name="exc", type="Exception")],
+                return_type="Response",
+                http_method=None,
+                route_path=None,
+            )
+        )
+
+    return ModuleDesignResult(module=module["module"], interfaces=interfaces, directory_tree_fragment=None)
+
+
 def _design_module(
     module: ModuleInfo,
     boundary_index: dict[tuple[str, str, str], ApiMapping],
@@ -420,7 +525,15 @@ def _design_module(
     module 的 `_MethodContext` 清單、決定這次呼叫真正需要 LLM 回答的
     問題（無 stereotype 類別的層級、框架注入參數、db session 判斷），
     視需要呼叫一次 Claude，合併回完整的 `InterfaceSpec`。
+
+    **`_GLOBAL_MODULE_NAME` 走完全獨立的專屬路徑**（見
+    `_design_global_advice_module()`）：這個保留模組的方法不屬於任何
+    業務分層慣例，機械決策即可，不需要（也不該）套用下面一般模組的
+    LLM 層級判斷／API 邊界覆寫邏輯。
     """
+    if module["module"] == _GLOBAL_MODULE_NAME:
+        return _design_global_advice_module(module, java_project_path)
+
     class_signatures = signature_scan.scan_java_files(module["java_files"], java_project_path)
     contexts = _build_method_contexts(module, class_signatures, boundary_index, openapi_spec)
 

@@ -2745,7 +2745,11 @@ async def run(state: RefactorState) -> RefactorState:
 04a 十章已定案、在 04b 落地為具體行為的四項（`@RequestMapping` 非字面值解析、`@Qualifier` 消歧失敗頻率、4a 批次拆分門檻、Map/Reduce 重試仍失敗後的策略）見三章各處註解、四章 7.1 `run_map_phase_with_retry()`，不在這裡重複列出。以下是實作過程中浮現、04a 沒有點名的實作層級限制。除非特別註明，「目標專案」均指 `lang-exam-api-refactor`；「沒有觸發」不等於「已證明沒問題」，只代表這個專案剛好沒踩到，換一個專案仍可能踩到，不可因此刪除：
 
 - **Repository interface 的 `default`／`static` method body 不會被追蹤**（見三章 3.1 `_extract_interfaces()`，設計見 04a 四章「Repository interface 的補充掃描」）——這類方法本身會被正確納入 `ClassInfo.methods`（能被 `_yield_call()` 辨識成呼叫目標），但方法自己內部呼叫的東西不會被追蹤（`_build_call_graph()` 只走 `ClassDeclaration`，不含 interface）。Spring Data Repository 極少用這個寫法，目標專案沒有觸發，維持既有「連結留白、預設保留」的安全方向，留待接上真的用到這個寫法的專案再評估。
-- **鏈式呼叫解析（三章 3.3 `_resolve_qualifier_string()`／`_continue_chain()`／`_walk_and_resolve()`）是新寫的遞迴演算法，語意解析的精確度還沒有真實案例驗證過**——javalang 能成功 parse 只證明語法層沒問題，不代表「呼叫圖的語意解析（誰呼叫誰）精不精確」也對。這個演算法假設了 javalang 對純欄位存取鏈（沒有方法呼叫打斷）會把它折成點號字串塞進 `qualifier`、只在遇到方法呼叫時才展開成巢狀 `.selectors`，以及 `this.x.y()` 的 `"this"` 一定出現在 qualifier 字串最前面，第一次接上真實專案後應該優先檢查呼叫圖的連結數量是否合理（多連比漏連安全，但連結數量若跟 class 數量、方法數量的比例明顯失真，可能代表這裡對 javalang 節點結構的假設有誤，需要對照當時安裝的 javalang 版本原始碼核對）。選擇器層級（`.selectors` 內）的節點若自己還帶非空 `qualifier`（javalang 通常不會這樣產生），目前直接視為無法解析，不強行模擬，也是同一類尚待驗證的邊界情況。
+- ~~**鏈式呼叫解析的精確度還沒有真實案例驗證過**~~——單一層欄位呼叫（`answerRepository.findByX()`）已用真實專案驗證無誤。**唯一仍未驗證**：`_resolve_qualifier_string()` 假設 javalang 會把多段純欄位鏈折成點號字串，例如：
+  ```java
+  this.serviceA.serviceB.doSomething();  // qualifier 預期解析成 "this.serviceA.serviceB"
+  ```
+  目前接過的真實專案都沒有這種寫法，遇到時請直接對照 `parse_agent/call_graph.py` 3.3 節核對解析結果是否正確。
 - **`ParsedProject.classes` 用 class 簡單名稱當 key，不處理跨檔案同名類別**（見二章 `types.py` 前言）——沒有觸發，真的遇到時會退化成保守全連結，不會直接壞掉，但精準度下降。
 - **欄位型別只展開單一型別參數的集合容器**（見二章 `FieldInfo` docstring、三章 `_resolve_declared_type()`）——`List<XxxService>`／`Set<XxxService>`／`Optional<XxxService>` 這類寫法已能正確解析出 `XxxService`；`Map<K, V>`、自訂多參數泛型仍只取外層型別名稱，內層型別參數不展開，因為「哪個型別參數才是真正的依賴目標」在雙參數以上沒有一致慣例可循。
 - **`implements` 用完整 package 路徑寫法時，`_extract_classes()` 抓到的介面名稱會錯**（見三章 3.1 `implements=[t.name for t in (class_decl.implements or [])]`）——javalang 把 `implements com.example.iface.MyInterface` 解析成巢狀 `ReferenceType`／`sub_type` 鏈，最外層 `.name` 只是路徑第一段（`"com"`），真正的介面簡單名稱被埋在鏈的最深處，直接取 `.name` 會抓到 `"com"` 而不是 `"MyInterface"`。影響有界：抓錯的介面名稱在 `build_interface_implementors()` 對不上專案內任何 class，會落入既有的「完全無法解析」保守分支（連結留白，不誤排除），不會 crash，只是精準度下降。目標專案用 `import` 搭配簡短型別名稱寫 `implements`，沒有觸發這個情況，暫不需要為此特別解析巢狀 `sub_type` 鏈還原完整名稱。
@@ -2758,3 +2762,23 @@ async def run(state: RefactorState) -> RefactorState:
 - **Import 依賴掃描（三章 `_extract_project_imports()`，設計見 04a 四章「Import 依賴補充」）只認 import 陳述式，同套件內不需要 import 就能互相參照的情況（Java 語言特性）仍解析不到**——目標專案的跨層依賴一律跨 package、都有明確 import，沒有觸發；留待接上真的有這種寫法的專案再評估是否需要另外掃套件宣告＋目錄結構比對。
 - **`needs_llm_summary()`／`classify_trivial_classes()`（四章，設計見 04a 四章「Map 摘要必要性判斷」）的分類是啟發式，不是完美判斷**——只有「無實作類別的介面、方法清單全部沒有本體」（Spring Data Repository 典型形狀）與「Lombok／JPA 資料類別標記＋方法清單只有存取器方法」這兩種情況跳過 Map，其餘一律送 Map，不確定時偏向保守（多送不少判斷少）。已知一個無害的邊界情況：只有建構子、沒有一般方法的例外類別（如自訂 `XxxException`），Map 有時會回傳一個跟類別同名的偽方法（把建構子描述當成方法）——`_normalize_method_name()` 剝掉多載消歧後綴後仍對不上 javalang 掃描出的真實方法清單時判定這筆方法不存在，`_normalize_class_methods()` 直接排除、不進最終 `module_list.methods`，只記一筆 warning 供人工核對，不需要額外處理。
 - **Spring Data 衍生查詢命名慣例解析（`_describe_derived_query()`，七章）只認「動詞緊接 `By`」這個嚴格形狀**——`findAllBy`／`findFirstBy` 這類動詞與 `By` 之間夾了修飾詞的寫法，會退回「認得出是衍生查詢方法、但不逐一拆解欄位」的寬鬆說明；這個寬鬆說明的文字固定引用「`Top`／`Distinct`／`OrderBy` 等複雜關鍵字」，但實際觸發原因不一定包含這些關鍵字，只是文字上不夠精確，不影響正確性（仍然是誠實的「無法逐一拆解」）。已對真實 `lang-exam-api-refactor` 專案驗證過，10 個真實 Repository 方法（`findByGradeAndLocal`／`findTopByKindOrderByIdDesc`／`findAllByTypeNumberAndPartNumberAndQuestionNumber` 等）都正確產出可用描述，沒有觸發解析錯誤或程式例外。
+
+---
+
+## 十二、全域生效類別收集（`_global` 保留模組）
+
+對應 `04a_parse_agent_architecture.md` 十一章決策，回應 `docs/09b_bug_trace.md` #11/#12。
+
+**`grouping.py` 新增**：
+- `_GLOBAL_ADVICE_ANNOTATIONS = frozenset({"RestControllerAdvice", "ControllerAdvice"})`
+- `collect_global_advice_classes(project) -> set[str]`：直接掃 `project.classes.values()`，比對 `class_info.annotations` 是否命中上述集合，不透過 `controller_dependency_closure()` 的 BFS。
+- `build_global_advice_units(project, global_advice_class_names) -> list[MapUnit]`：比照 `build_shared_class_units()` 的字元預算切批次邏輯（`common.chunking.chunk_by_char_budget()`），批次標籤 `4c:global_advice_batch_{i}`。
+
+**`summarize.py` 新增**：
+- `_GLOBAL_MODULE_NAME = "_global"`
+- `_assemble_global_advice_draft(map_results, project) -> _ModuleDraft`：把 Map 階段對這批類別的摘要結果機械組成一筆 `module="_global"`、`depends_on=[]` 的 `_ModuleDraft`，**不呼叫 Reduce**——組裝邏輯與 `_assemble_module_drafts()` 內層迴圈把 `MapClassResult` 轉 `_DraftMethod` 是同一種做法，但這裡是完全獨立的呼叫端（單一固定模組，不需要 Reduce 決定 class 分組），不共用該函式迴圈本身。
+- `run_map_reduce()` 收尾：`global_advice_class_names` 非空時，額外跑一次 4c 批次的 Map（沿用 `run_map_phase_with_retry()`），呼叫 `_assemble_global_advice_draft()` 把結果 append 進 `_assemble_module_drafts()` 產出的 `drafts`，並同步更新 `class_to_module`。
+
+**真實環境驗證**：對 `../lang-exam-api-refactor` 的 `GlobalExceptionHandler.java`（`@RestControllerAdvice`，含 `handleBaseException`／`handleAll`／4 個 `@Override` 的 Spring 內建驗證例外處理方法共 6 個方法）跑過完整 `run_map_reduce()`，`module_list` 正確產出 `_global` 模組，`java_files` 正確指向這個檔案，`depends_on=[]`，6 個方法皆正確送 Map 摘要（不影響 `common`／`school`／`registration`／`exam`／`grading`／`file` 其餘 6 個業務模組的既有分派結果）。
+
+單元測試見 `tests/parse_agent/test_grouping.py`（純假資料，含 mock Claude 呼叫的 `run_map_reduce()` 端對端案例，驗證 Reduce 只看得到業務類別、看不到全域生效類別）。

@@ -90,6 +90,46 @@ def controller_dependency_closure(project: ParsedProject) -> dict[str, set[str]]
     return result
 
 
+# Spring 全域生效、靠 component-scan 自動掃描的例外處理類別 annotation
+# ——不被任何 Controller 用欄位注入，結構上永遠進不了
+# controller_dependency_closure() 的 BFS 閉包（該函式只從
+# RestController/Controller 出發、沿欄位型別依賴展開），需要獨立於 BFS
+# 之外的第二收集路徑，見 collect_global_advice_classes()。對應
+# docs/09b_bug_trace.md #11/#12 根因。
+_GLOBAL_ADVICE_ANNOTATIONS = frozenset({"RestControllerAdvice", "ControllerAdvice"})
+
+
+def collect_global_advice_classes(project: ParsedProject) -> set[str]:
+    """完全獨立於 `controller_dependency_closure()` 的第二收集路徑：直接
+    掃 `project.classes` 比對 `@RestControllerAdvice`／`@ControllerAdvice`
+    這兩個 annotation，不透過 BFS（這批類別不是任何 Controller 的欄位
+    依賴，永遠不會是 BFS 能走到的節點）。回傳偵測到的 class 名稱集合，
+    供 `summarize.run_map_reduce()` 送 Map 摘要、機械組成一筆保留模組
+    （不經過 Reduce 的模組歸屬 LLM 判斷，見該函式）。
+    """
+    return {
+        class_info.class_name
+        for class_info in project.classes.values()
+        if set(class_info.annotations) & _GLOBAL_ADVICE_ANNOTATIONS
+    }
+
+
+def build_global_advice_units(project: ParsedProject, global_advice_class_names: set[str]) -> list[MapUnit]:
+    """比照 `build_shared_class_units()` 的批次切法（同一份字元預算切批
+    邏輯），供 `collect_global_advice_classes()` 找到的類別送 Map 摘要
+    用——這批類別數量通常很小（常見情況是單一 `GlobalExceptionHandler`），
+    但仍套用同一個安全網，不假設它一定小。
+    """
+    classes = [project.classes[name] for name in sorted(global_advice_class_names) if name in project.classes]
+    chunks = chunk_by_char_budget(
+        classes, size_of=lambda c: _class_source_chars(project.project_root, c), budget=_MAX_CHARS_PER_MAP_CHUNK
+    )
+    return [
+        MapUnit(label=f"4c:global_advice_batch_{i + 1}", classes=chunk, project_root=project.project_root)
+        for i, chunk in enumerate(chunks)
+    ]
+
+
 def find_shared_classes(controller_deps: dict[str, set[str]]) -> set[str]:
     """in-degree（class 出現在幾個不同 Controller 的依賴閉包裡，同一個
     Controller 閉包內不重複計數）>= 2 的 class 判定為共用類別，對應

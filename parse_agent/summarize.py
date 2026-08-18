@@ -29,8 +29,10 @@ from parse_agent.grouping import (
     _ACCESSOR_METHOD_RE,
     MapUnit,
     build_controller_units,
+    build_global_advice_units,
     build_shared_class_units,
     classify_trivial_classes,
+    collect_global_advice_classes,
     controller_dependency_closure,
     find_shared_classes,
 )
@@ -477,6 +479,50 @@ def _assemble_module_drafts(
     return drafts, class_to_module
 
 
+# 保留模組名稱，承接 collect_global_advice_classes() 找到的全域例外
+# 處理類別（見 09b_bug_trace.md #11/#12）。前綴底線避免跟 Reduce 產出的
+# 業務模組名稱（一律是 Java package／業務語意衍生的一般 snake_case
+# 字串）撞名——Reduce 的 REDUCE_SYSTEM_PROMPT 沒有理由產生底線開頭的
+# module 名稱。
+_GLOBAL_MODULE_NAME = "_global"
+
+
+def _assemble_global_advice_draft(map_results: list[MapClassResult], project: ParsedProject) -> _ModuleDraft:
+    """機械組成一筆 `_GLOBAL_MODULE_NAME` 保留模組，承接
+    `collect_global_advice_classes()` 找到的類別的 Map 摘要結果。**不
+    經過 Reduce 的模組歸屬 LLM 判斷**——這批類別的模組歸屬是確定性的
+    （它們本來就不屬於任何業務模組），不需要再問一次 LLM，呼應 00 二章
+    「能用程式判斷的，就不要交給 LLM」。`depends_on` 固定為空：全域例外
+    處理不依賴任何業務模組完成才能開始實作，也不該讓排程器誤判成有
+    依賴關係卡住它。
+
+    組裝邏輯比照 `_assemble_module_drafts()` 內層迴圈把 `MapClassResult`
+    轉成 `_DraftMethod` 的做法，這裡是完全獨立的呼叫端（單一固定模組、
+    不需要 Reduce 決定的 class 分組），不共用該函式的迴圈本身。
+    """
+    draft_methods = [
+        _DraftMethod(
+            class_name=r.class_name,
+            file_path=project.classes[r.class_name].file_path,
+            method=MethodInfo(
+                java_method=m.method_name,
+                class_name=r.class_name,
+                description=m.description,
+                complexity=m.complexity,  # type: ignore[typeddict-item]
+            ),
+        )
+        for r in map_results
+        for m in r.methods
+    ]
+    return _ModuleDraft(
+        module=_GLOBAL_MODULE_NAME,
+        summary="；".join(f"{r.class_name}：{r.summary}" for r in map_results),
+        java_files=sorted({project.classes[r.class_name].file_path for r in map_results}),
+        depends_on=[],
+        methods=draft_methods,
+    )
+
+
 def filter_excluded_methods(drafts: list[_ModuleDraft], excluded: set[MethodId]) -> list[_ModuleDraft]:
     """對應 04a 五章「排除發生在 Reduce 階段輸出 module_list...之前，
     被排除的方法從一開始就不會出現在最終輸出裡」——這裡是實際套用排除
@@ -730,10 +776,19 @@ def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str
     `all_map_results` 一起送進 Reduce——不這樣做的話，這些類別會連
     Reduce 都看不到，`module_list.java_files` 又會漏掉它們，等於繞了
     一圈把四章一開始想解決的完整性問題重新引入。
+
+    **4c：全域生效類別（`@RestControllerAdvice`／`@ControllerAdvice`）
+    獨立於上述 4a／4b／Reduce 之外處理**——`collect_global_advice_
+    classes()` 找到的類別不在任何 Controller 的依賴閉包裡（見該函式
+    docstring），不會被 4a／4b 任何一批次涵蓋，也刻意不送進 Reduce（見
+    `_assemble_global_advice_draft()`：模組歸屬是確定性的，不需要 LLM
+    判斷）。方法摘要仍呼叫 Claude API（沿用同一套重試機制），只是產出後
+    直接機械組裝成一筆保留模組，附加進 Reduce 產出的 drafts。
     """
     controller_deps = controller_dependency_closure(project)
     shared_class_names = find_shared_classes(controller_deps)
     trivial_class_names = classify_trivial_classes(project)
+    global_advice_class_names = collect_global_advice_classes(project)
 
     shared_units = build_shared_class_units(project, shared_class_names - trivial_class_names)
     map_results_4a = run_map_phase_with_retry(shared_units)
@@ -754,4 +809,14 @@ def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str
     all_map_results = map_results_4a + map_results_4b + mechanical_results
     reduce_result = _reduce_phase(all_map_results, controller_deps)
 
-    return _assemble_module_drafts(all_map_results, reduce_result, project)
+    drafts, class_to_module = _assemble_module_drafts(all_map_results, reduce_result, project)
+
+    if global_advice_class_names:
+        global_units = build_global_advice_units(project, global_advice_class_names)
+        global_map_results = run_map_phase_with_retry(global_units)
+        global_draft = _assemble_global_advice_draft(global_map_results, project)
+        drafts.append(global_draft)
+        for r in global_map_results:
+            class_to_module[r.class_name] = global_draft.module
+
+    return drafts, class_to_module
