@@ -497,6 +497,15 @@ from translator_cli.git_ops import ensure_git_repo
 WRAPPER_FILE_NAME = "_reload_probe_wrapper.py"
 TOKEN_FILE_NAME = "_reload_token.py"
 
+# __pycache__/ 不是 09a 三章原本列的兩個檔名，是端對端驗證時發現的必要
+# 追加：implement 期間容器（process.py）透過 bind mount 常駐執行
+# uvicorn --reload，CPython 每次 import 都會在磁碟上寫出
+# __pycache__/*.pyc——這些是容器裡的行程寫的，不是任何一次
+# fill_function()／generate_scaffold() 自己的動作，但一樣會讓
+# check_clean_working_tree()（07a 九章）判定 working tree 不乾淨，導致
+# 同一輪 implement 迴圈裡後續每一個 task 都直接被 precondition 檢查擋下。
+_IGNORED_ENTRIES = (WRAPPER_FILE_NAME, TOKEN_FILE_NAME, "__pycache__/")
+
 WRAPPER_TEMPLATE = '''"""測試基礎設施用的固定樣板，不含任何業務邏輯，不由任何 Agent 產生。
 啟動方式：uvicorn _reload_probe_wrapper:wrapper_app --reload
 （不是 uvicorn app.main:app --reload）。
@@ -545,7 +554,7 @@ def ensure_reload_probe_infra(python_project_path: str) -> None:
     existing_lines = (
         gitignore_path.read_text(encoding="utf-8").splitlines() if gitignore_path.exists() else []
     )
-    missing = [name for name in (WRAPPER_FILE_NAME, TOKEN_FILE_NAME) if name not in existing_lines]
+    missing = [name for name in _IGNORED_ENTRIES if name not in existing_lines]
 
     if missing:
         with gitignore_path.open("a", encoding="utf-8") as f:
@@ -620,14 +629,24 @@ class PythonServiceContainer:
         self._started = False
 
     def start(self) -> None:
+        # 啟動前先確保沒有同名的殘留容器（例如上一輪異常中斷留下的），
+        # 否則 docker run --name 會直接失敗；容器本來就不存在時 docker
+        # rm 回非 0 是正常情況，不是這裡要處理的錯誤。
         subprocess.run(["docker", "rm", "-f", self.container_name], capture_output=True, text=True)
 
         pip_install = " ".join(BASELINE_PACKAGES)
         cmd = [
             "docker", "run", "-d", "--name", self.container_name,
+            # 容器內的 127.0.0.1／localhost 指向容器自己，不是跑這個
+            # Orchestrator 的 host——測試 DB 通常監聽在 host 上（見 00
+            # 五章 TEST_DB_DSN／DATABASE_URL 慣例）。--add-host 明確把
+            # host.docker.internal 對應到 host-gateway，不依賴 Docker
+            # Desktop 版本是否預設就會自動提供這個 DNS 名稱（已實測：
+            # 部分版本組合下不加這個旗標會直接解析失敗）。
+            "--add-host=host.docker.internal:host-gateway",
             "-v", f"{self.python_project_path}:/srv", "-w", "/srv",
             "-p", f"{self._port()}:8000",
-            "-e", f"DATABASE_URL={self.database_url}",
+            "-e", f"DATABASE_URL={self._container_database_url()}",
             DOCKER_IMAGE, "bash", "-c",
             f"pip install --quiet {pip_install} && "
             "uvicorn _reload_probe_wrapper:wrapper_app --reload --host 0.0.0.0 --port 8000",
@@ -647,6 +666,17 @@ class PythonServiceContainer:
 
     def _port(self) -> str:
         return str(urlparse(self.base_url).port or 8000)
+
+    def _container_database_url(self) -> str:
+        """把 `database_url` 裡指向 host 自己的位址（`127.0.0.1`／
+        `localhost`）換成 `host.docker.internal`——這個字串是從 host
+        角度寫的（`.env` 的 `DATABASE_URL`），容器內必須用不同的位址
+        才能連到同一顆 DB。只替換 host 部分，不動 port／帳密／DB 名稱。
+        """
+        for host in ("127.0.0.1", "localhost"):
+            if f"@{host}:" in self.database_url or f"@{host}/" in self.database_url:
+                return self.database_url.replace(f"@{host}", "@host.docker.internal")
+        return self.database_url
 
     def _poll_until_ready(self) -> bool:
         deadline = time.monotonic() + self.startup_timeout
@@ -793,74 +823,43 @@ refactor-project/
 
 ## 九、端對端驗證：對真實 Java／Python 專案跑一次完整 Harness 鏈路
 
-五、六章的 Docker 驗證只證明了「熱重載同步屏障」這一個機制對一個最小 FastAPI 玩具 app 有效。這不足以證明 09b 接上的 `DbEnvironment`／`GoldenVerifier` 真的能對一個真實專案跑出有意義的結果——這兩件事是不同層級的驗證，前者測的是「等待邏輯對不對」，後者測的是「Harness 錄製／驗證這條鏈路本身有沒有埋著別的 bug」。本章記錄對這個 repo 既有的真實環境（`../lang-exam-api-refactor` Java 專案、`../exam-platform-api` Python 目標專案——已有 07b 真實驗證留下的 69 個 `fill_function()` commit、`postman/collection_readonly.json`、可連線的 `MOC_MATSUEXAM_TEST`）實際跑一次「① 啟動 Java → ② 錄製 golden → 啟動容器化 Python 服務 → ⑥ 用 `GoldenVerifier` 驗證」的完整鏈路，過程中發現並修正四個既有（02b）程式碼裡從未被真實環境驗證過的缺陷：
+五、六章的 Docker 驗證只證明「熱重載同步屏障」這個機制對一個最小 FastAPI 玩具 app 有效，不足以證明 09b 接上的 `DbEnvironment`／`GoldenVerifier` 真的能對一個真實專案跑出有意義的結果。本章記錄對這個 repo 既有的真實環境（`../lang-exam-api-refactor` Java 專案、`../exam-platform-api` Python 目標專案、可連線的測試 DB）實際跑「① 啟動 Java → ② 錄製 golden → 啟動容器化 Python 服務 → ⑥ 用 `GoldenVerifier` 驗證」完整鏈路的過程，共跑了三輪。
 
-### 1. `newman` 在 Windows 上無法被 `subprocess.run(["newman", ...], shell=False)` 找到
+**第一輪**用的是這個 repo 既有的舊版 `exam-platform-api`（早於 07a 五章「填空模式本體 import 解析」機制存在、也早於 08a 具備 entity 生成能力），過程中發現並修正 `refactor_harness`（`newman` 找不到執行檔、`golden_writer.py` 讀錯 header 欄位、`--env-var` 變數名稱對不上、容器內 DB 連線位址）與 translator-cli（`resolve_body_imports()` 同檔案自我引用誤判）共五項既有缺陷——完整重現過程、程式碼與回歸測試已同步進 `02a_harness_architecture.md`／`02b_harness_code.md`／`07a_translator_cli_architecture.md`／`07b_translator_cli_code.md`，不在本文件重複。修完這五項後，用當時的舊 fixture 驗證仍是 10 個 case 全掛，追查確認純粹是舊 fixture 缺 `app/models/`、且早於上述 import 修正存在，不是這五項修正的問題——需要重新跑一次完整 scaffold＋fill 才能做真正對等的驗證。
 
-npm 全域安裝的 `newman` 在 Windows 上是 `newman.cmd`（batch wrapper），`subprocess.run` 不帶 `shell=True` 時不會自動嘗試附加副檔名去 PATH 上找——即使命令列打字執行 `newman` 完全正常。修正：`core/postman_runner.py` 改用 `shutil.which("newman")` 解析完整路徑，找不到時直接拋出明確錯誤，不依賴 `shell=True`（避免字串注入風險）。
+**第二輪**改用當前 pipeline 對 `exam-platform-api` 重新跑一次 scaffold＋fill（含 08a entity 生成，覆蓋掉舊的驗證 commit），過程中依序發現並解決：
 
-### 2. `golden_writer.py` 讀錯 newman JSON report 的 header 欄位
+- **`SERVICE_READY_TIMEOUT_SECONDS` 逾時**：72 個 task 的真實批次規模下，預設 120 秒不足以讓 `file`／`school` 模組的局部驗證跑到 Newman；診斷用 300 秒後完全不再逾時，確認根因是「批次規模下 120 秒不夠」，不是同步機制卡死（正式預設值是否要調整見十章）。
+- **`__pycache__/` 讓 working tree 變髒**：容器透過 bind mount 常駐執行 `uvicorn --reload`，寫回 host 的 `__pycache__/*.pyc` 是未追蹤檔案，讓後續每個 task 的 precondition 檢查失敗——已修正並補進 `reload_probe.py` 的 `_IGNORED_ENTRIES`（見四章）。
+- **`response["body"]` 在真實 newman 6.2.2 根本不存在**：body 內容序列化在 `response["stream"]`，舊寫法永遠讀到 `None`——代表這之前錄到的每一筆 golden body 都是空的，body diff 從未真正比對過任何內容。這項修正同樣同步進 `02a`/`02b`。
 
-`_build_golden()` 原本讀 `response["headers"]["members"]` 來取得 `Content-Type` 判斷是否為 JSON response——但真實 newman 6.2.2 的 JSON reporter 欄位是 `response["header"]`（單數），值是純陣列 `[{"key":...,"value":...}, ...]`，不是包一層物件的形狀。舊寫法永遠讀到空字典，`content_type` 恆為空字串，**每一筆 response 都被誤判成非 JSON 而跳過**——對真實 Java 服務錄製 `collection_readonly.json`（10 個 endpoint）實測，修正前 `recorded_count=0`，修正後 `recorded_count=9`（唯一被跳過的 `get_version` 本來就回傳 `text/plain`，是正確行為）。既有單元測試（`tests/refactor_harness/test_golden_writer.py`）的 mock fixture 沿用同一個錯誤的欄位形狀，跟程式碼「互相印證」了這個 bug，一併修正。
+修正後重新錄製 golden、逐一排除目標專案本身的翻譯品質問題（`find_distinct_field()` 遮蔽 builtin、`set()` 去重順序不對、缺 `ORDER BY`、寫死訊息文字、Pydantic 必填欄位、缺 import 等——這些是 `exam-platform-api` 自己的程式碼問題，不是 Orchestrator 生成邏輯的 bug，手動修正，未改動任何生成邏輯），最終：
 
-### 3.（最關鍵）`--env-var` 傳的變數名稱跟 collection 實際變數名稱對不上
-
-`run_newman()` 呼叫 `newman run ... --env-var base_url={base_url}`——但 `postman/collection_*.json` 頂層 `variable` 陣列裡實際定義的變數是 `baseUrl`（駝峰式）：
-
-```json
-{"variable": [{"key": "baseUrl", "value": "http://localhost:8080"}]}
+```
+school 模組：total=3, passed=3, failed=0, pass_rate=1.0, status="pass"
+excluded_cases: ["get_version_GET_api_general_version"]（正確排除，非失敗）
 ```
 
-名稱對不上時，`--env-var` 完全不會生效，newman 一律 fallback 回 collection 內建的預設值——**這個預設值剛好是 Java 的網址**，所以錄製對 Java 端「碰巧」正確，長期掩蓋了這個 bug；但驗證對 Python 端時，不論傳入什麼 `base_url`，newman 實際上永遠打的是 `http://localhost:8080`（Java），**`GoldenVerifier`／`MutationVerifier`（⑥ 測試執行 Agent 的核心）自始至終從未真正驗證過 Python 服務**。這是本次端對端驗證裡影響範圍最大的發現，不是 09a/09b 的邏輯設計有問題，是它們共同依賴的底層 `run_newman()` 從一開始就沒有被接上真實 Python 服務測試過。修正：`--env-var` 改傳 `baseUrl={base_url}`；`tests/refactor_harness/test_postman_runner.py` 新增回歸測試鎖住這個變數名稱。
+`school` 模組完整跑過錄製 → 容器化啟動 → 熱重載同步 → Newman 驗證 → 與真實 golden output（含 body 內容）比對的完整鏈路，且完全通過，是第二輪追查達成的目標。
 
-### 4. 容器內的 `127.0.0.1` 不是 host 的 `127.0.0.1`
+**第三輪**針對 #11/#12/#28/#29/#30 這批「架構性、不該丟給 ⑦ Debug Agent 去猜」的缺口（①解析 Agent 漏收 `@RestControllerAdvice` 這類全域生效類別、③架構設計 Agent 沒有 `ResponseEntity<T>` 型別對應、05a schema 生成的跨檔案參照缺口、`registration`/`grading` 排程卡住的真正原因），在①③（Parse／Design Agent，05a/05b 範圍）新增對應機制後，對兩個真實專案重新跑一次完整 ①③[P]④⑤⑥。四項修正（`_global` 全域類別收集、全域例外處理生成與正確註冊、`ResponseEntity → Response` 型別對應、`blocked_reasons` 診斷欄位）**在真實環境中全數確認有效**——容器內直接觀察到 Starlette 正確呼叫到生成的全域例外處理函式、`registration.py` 的 schema 自我完備、`voice_2`／`image_2` 正確產出可執行的 `Response` 型別程式碼。這輪重跑之後，`file`／`grading`／`registration` 剩餘的失敗已能明確歸類為⑤翻譯品質問題（不再是架構層的不確定地帶），不屬於 09a/09b 範圍。完整重現過程、四項修正的程式碼位置與回歸測試見 `09b_bug_trace.md`「第三次完整重跑」一節（04a/05a/06a 範圍，不在本文件重複）。
 
-`PythonServiceContainer` 一開始直接把 `.env` 的 `DATABASE_URL`（從 host 角度寫的，指向 `127.0.0.1:5432`）原樣傳進容器──但容器內的 `127.0.0.1` 指向容器自己，連不到跑在 host 上的測試 DB。修正：新增 `_container_database_url()` 把 `127.0.0.1`／`localhost` 換成 `host.docker.internal`，並在 `docker run` 加上 `--add-host=host.docker.internal:host-gateway`（實測部分 Docker Desktop 版本不會自動提供這個 DNS 名稱，需要顯式指定）。已用真實 `postgres:17-alpine` 容器驗證連線成功，並見下方「測試涵蓋度稽核」補上的自動化測試。
+**兩輪之間補的兩個回歸測試**（稽核發現原本沒鎖住）：`tests/python_service/test_process.py` 的 `test_start_builds_docker_run_command_with_add_host_and_rewritten_database_url`（鎖住 `--add-host` 旗標與 DB 位址改寫真的出現在 `docker run` 指令裡）、`test_container_can_reach_host_database_via_host_docker_internal`（真實容器對 `TEST_DB_DSN` 執行 `SELECT 1`，缺少時自動跳過）。
 
-### 5. `resolve_body_imports()` 把「同一檔案自己定義的 class」誤判成要匯入自己
-
-四項修正後第一次對真實 Python 服務跑驗證，10 個 case 全部沒過，錯誤都是 `NameError`／`AttributeError`（見下方「驗證結果」的分類）。追查 `app/routers/school_router.py` 的 `NameError: SchoolRepository` 時，用**目前（修正後）的** `resolve_body_imports()` 直接對這個真實檔案重跑一次填空階段的 import 解析，確認現在的邏輯**能**正確找出缺的 import（`from app.repositories.school_repository import SchoolRepository`）——代表這不是現在的邏輯有問題，是這份目標專案的程式碼比這個機制本身還舊（見下一節「回填與過時 fixture」）。
-
-但用這個結果對整個 `exam-platform-api` 做批次回填時，`app/services/common_service.py` 又重新長出了六章一開始就手動移除過的那個循環 import（`from app.services.common_service import ResponseResult, Result, ValidationUtil`）——這證明**現在的** `resolve_body_imports()` 本身還有一個獨立的既有 bug，不是舊資料的殘留：這批 Java 靜態工具類常見「方法回傳自己所屬的類別」（如 `ResponseResult.error() -> ResponseResult(...)`），`_scan_project_custom_types()` 掃描整個 `app/` 目錄建索引時沒有排除「這個名稱其實就是正在處理的這個檔案自己頂層定義的 class／函式」，導致這種同檔案內自我引用被誤判成跨檔案缺 import，產生一行恆為 True 的循環 import陳述式。修正：`resolve_body_imports()` 新增排除邏輯，把 `tree.body` 自己的頂層 `ClassDef`／`FunctionDef`／`AsyncFunctionDef`／模組層級變數賦值目標，從候選名單裡剔除。`tests/translator_cli/test_scaffold.py` 新增 `test_resolve_body_imports_excludes_class_defined_in_same_file`／`test_resolve_body_imports_excludes_function_defined_in_same_file` 直接重現這個真實案例。
-
-### 回填與過時 fixture：為什麼修完 import 之後 pass_rate 仍是 0.0
-
-`exam-platform-api` 的 `scaffold: initial skeleton` commit時間是 **2026-08-11**，`resolve_body_imports()`（07a 五章「填空模式：本體 import 解析」）是隔天 **2026-08-12** 才加進 translator-cli（見 `git log -S resolve_body_imports`）——這個目標專案完整生成於這個機制存在**之前**，且 `app/models/` 整個不存在，代表它也早於④骨架實作 Agent（08a）具備 entity 生成能力的版本。用它驗證「現在的 pipeline 產出的程式碼對不對」，本質上是拿舊版工具的產物測新版工具，不是有效的端對端驗證。
-
-用現在的 `resolve_body_imports()` 對這份舊專案的 `app/routers`／`app/services`／`app/repositories` 全部檔案批次重跑一次填空階段的 import 解析（純粹套用既有邏輯，沒有重新呼叫 qwen），修正 6 個檔案缺的 import 後，重新啟動容器化服務、重新驗證，`pass_rate` 仍是 `0.0`，但失敗原因這次精準地分成三類，且都不是這次（09a/09b/02b）範圍內的既有程式碼造成：
-
-1. **`NameError: SchoolEntity`**——這個舊專案沒有 `app/models/`，entity 從未被生成過，是它比 08a 舊的直接後果，不是 import 解析漏了什麼（`SchoolEntity` 真的不存在於磁碟上任何檔案）
-2. **`AttributeError: 'ExamService' object has no attribute 'exam_repository'`**（6 次）——qwen 填空時假設建構子會注入 `self.exam_repository` 這類屬性，但 07a 五章「刻意不產生 `__init__`」的骨架設計是無狀態方法容器，兩者對不上。這是**翻譯品質問題**，不是 import 解析或 Harness 鏈路的 bug——量級上「大部分函式簽名／型別／流程都對，少數幾處假設錯物件狀態」正好符合⑦ Debug Agent 設計要處理的情境（讀 `related_files`、定位、回饋給 ⑤ 重試），不是這次要修的
-3. 一個 `ok_2` 被當自由函式呼叫（該寫成 `ResponseResult().ok_2(...)`）、兩個寫死 Windows 路徑（`C:/images/...`）——同樣是這份舊 fixture 殘留的翻譯瑕疵，不是現在程式碼的問題
-
-**結論**：這次「10/10 全掛」不是單一巨大缺陷，也不是現在的鏈路廣泛失效——是舊 fixture 疊了兩層問題（過時工具版本的殘留＋缺少後來才有的 entity 生成能力），拆開來看之後，現在程式碼裡唯一真正的既有 bug（`resolve_body_imports()` 的自我引用誤判）已經修正並補了回歸測試；其餘全部屬於「這份特定 fixture 資料過舊」或「留給 ⑦ Debug Agent 處理的翻譯品質問題」，不需要在 09a/09b/02b 範圍內動任何程式碼。要用現在的 pipeline 做真正對等的端對端驗證，需要重新跑一次 scaffold（帶 08a 的 entity 生成）＋重新對每個 task 呼叫 `fill_function()`（真的呼叫 ollama），這會覆蓋掉 `exam-platform-api` 現有的 69 個驗證 commit，屬於需要另外確認才進行的範圍。
-
-### 測試涵蓋度稽核：這次的修正跟測試是不是真的對得起這次抓到的問題
-
-被問到「這幾項修正跟測試真的涵蓋這次檢測到的問題嗎」之後，逐項重新核對，發現兩個當時沒補齊的缺口：
-
-- **`--add-host=host.docker.internal:host-gateway` 只有字串重寫邏輯（`_container_database_url()`）被單元測試覆蓋，沒有測試鎖住 `start()` 真正組出的 `docker run` 指令有沒有包含這個旗標**——若日後有人不小心刪掉 `process.py` 裡那一行，既有測試完全不會發現，只有跑到真實 Docker 整合測試、且那個整合測試剛好有連 DB 才會暴露。修正：`tests/python_service/test_process.py` 新增 `test_start_builds_docker_run_command_with_add_host_and_rewritten_database_url`（mock `subprocess.run`，斷言實際指令內容）與 `test_start_raises_when_docker_run_fails`。
-- **既有的 Docker 整合測試（`test_reload_probe_integration.py`）用的是 `database_url="postgresql://unused/unused"`，從未真的透過容器連過 DB**——「容器內能連到 host DB」這件事，先前只有我手動用一次性的 `docker run postgres:17-alpine psql ...` 驗證過，沒有寫進自動化測試套件，代表這個修正實際上沒有回歸保護。修正：新增 `test_container_can_reach_host_database_via_host_docker_internal`，用真實 `TEST_DB_DSN` 啟動一個會實際對 Postgres 執行 `SELECT 1` 的容器化 app，斷言查詢成功——這個測試需要 `.env` 設定可連線的 `TEST_DB_DSN`，缺少時自動跳過（`_real_test_db_reachable()`），不影響套件其餘部分。已實際跑過確認通過（24 秒）。
-
-其餘修正（`newman` 路徑解析、`golden_writer.py` header 欄位、`--env-var` 變數名稱、`resolve_body_imports()` 自我引用排除）原本就各自有直接、明確的回歸測試，稽核後判定已足夠，不需要再補。
-
-`fixtures/golden/` 底下留有這次真實錄製的 golden output，未還原；`../exam-platform-api` 的 import 回填（6 個檔案）與 `common_service.py`／`exam_service.py` 的循環 import 移除也留在該專案的 working tree（未 commit，那是使用者自己的獨立 repo，不代為決定是否保留）。
+`fixtures/golden/` 底下留有兩輪真實錄製的 golden output；`exam-platform-api` 的手動修正留在該專案自己的 working tree（未 commit，使用者自己的獨立 repo，不代為決定是否保留）。
 
 ---
 
 ## 十、已知限制與待驗證事項
 
-- [x] **`newman`／`golden_writer.py` header 解析／`--env-var` 變數名稱四項既有缺陷**：已在九章發現並修正，附真實環境重現記錄與回歸測試
-- [x] **容器內 DB 連線位址（`127.0.0.1` vs `host.docker.internal`）**：已在九章發現並修正，附真實 postgres 容器驗證與自動化測試（`test_container_can_reach_host_database_via_host_docker_internal`）
-- [x] **`resolve_body_imports()` 的同檔案自我引用誤判**：已在九章發現並修正，附兩個回歸測試
-- [ ] **容器內的依賴集合是刻意簡化，不是完整的依賴管理方案**：`PythonServiceContainer` 目前只安裝 `BASELINE_PACKAGES`（FastAPI／uvicorn／SQLAlchemy／psycopg2-binary，對應 00 三章已定案的技術棧），若目標專案實際還需要更多套件（如 alembic、其他第三方函式庫），容器會在 import 階段直接失敗——目標專案本身的依賴清單（`requirements.txt`）如何產生、如何餵給容器，目前完全沒有文件涵蓋，是本次落地過程中新發現的缺口，需要 05a／08a 或另一份操作文件補齊
-- [ ] **Docker 是新的環境前提，尚未寫進 00 五章「環境建立」**：目前只記錄在本文件與程式碼註解裡。00 五章「環境建立」目前完全沒有提到 Python 目標服務的啟動方式（09a 十一章原本就指出這個缺口），這次補上的是「怎麼啟動、為什麼要用容器」，00 文件本身尚未同步更新
-- [ ] **`SERVICE_READY_TIMEOUT_SECONDS` 等時間預算調校**：目前預設 `120` 秒／輪詢間隔 `2` 秒（`PythonServiceContainer` 另有自己的 `startup_timeout=90` 秒，涵蓋容器內第一次 `pip install` 的額外時間），屬於數字微調，需要接上真實專案規模校準
-- [x] **`_reload_token.py` 是否確實落在 uvicorn `--reload` 預設監控範圍內**：已在 Docker 容器內用真實 reload 週期驗證過會被偵測到（見六章），維持 `.py` 副檔名的既有理由不變
+- [ ] **容器內的依賴集合是刻意簡化，不是完整的依賴管理方案**：`PythonServiceContainer` 目前只安裝 `BASELINE_PACKAGES`（FastAPI／uvicorn／SQLAlchemy／psycopg2-binary，對應 00 三章已定案的技術棧），若目標專案實際還需要更多套件（如 alembic），容器會在 import 階段直接失敗——目標專案本身的依賴清單（`requirements.txt`）如何產生、如何餵給容器，目前完全沒有文件涵蓋，需要 05a／08a 或另一份操作文件補齊
+- [ ] **Docker 是新的環境前提，尚未寫進 00 五章「環境建立」**：目前只記錄在本文件與程式碼註解裡，00 五章目前完全沒有提到 Python 目標服務的啟動方式
+- [ ] **`SERVICE_READY_TIMEOUT_SECONDS` 正式預設值未定案**：程式碼目前仍是 `120` 秒／輪詢間隔 `2` 秒，第二輪重跑診斷用 300 秒才穩定不逾時（見九章），是否要把預設值正式調高、或改成依批次 task 數量動態計算，尚未決定
 - [ ] **`scaffold_skipped` 是否該讓整條 pipeline 提早 `give_up`**：留給 `10a_debug_agent_architecture.md`（待建立）評估，本次未變動
-- [ ] **`app/services/common_service.py` 的循環 import、`school_router.py` 缺 import**：九章發現，屬於 07a/07b 填空後自動補 import 機制或更早期 fill 結果的既有缺陷，範圍外，只做了讓服務能啟動的最小修正，未深入根因
+- [ ] **`file`／`grading`／`registration` 三個模組尚未達到完整通過**：第三輪重跑已確認架構層根因（①③的既有缺口）全數解決，剩餘失敗明確歸類為⑤翻譯品質問題（如 `handle_all` 函式本體 import 幻覺模組、`voice`／`image` 業務邏輯分支跟 Java 不完全一致），細節見 `09b_bug_trace.md`「第三次完整重跑」，不屬於 09a/09b 範圍，這裡只記錄「尚未通過」這個事實
+- [ ] **mutation collection 路徑完全沒有被三輪完整重跑觸及**：#1／#2／#3／#20 的修正對 mutation 端的影響仍是推論，不是實測，見 `09b_bug_trace.md`「待決定事項」
 
-單元測試層級已驗證：`should_run_tests_or_give_up()` 的分流邏輯、`scaffold_done=False` 短路、`scaffold_done=True` 且 `module_list` 為空時不誤觸發短路、`ensure_reload_probe_infra()` 的 git 行為（首次 commit、冪等、precondition 相容性）、`PythonServiceContainer` 的 DB 位址改寫與 port 解析、`run_newman()` 的變數名稱與執行檔解析。**整合測試層級已驗證**（真實 Docker 容器，非 mock）：探測端點連線、token round-trip、修改程式碼觸發真正的容器內 reload 並正確等到新 worker。**端對端層級已驗證**（真實 Java／Python 專案、真實 PostgreSQL、真實 Docker 容器，見九章）：完整的錄製→容器化啟動→驗證鏈路，回傳結構正確、內容真實可信的 report。全部 430 項測試（含既有）通過。
+單元測試層級已驗證：`should_run_tests_or_give_up()` 的分流邏輯、`scaffold_done=False` 短路、`scaffold_done=True` 且 `module_list` 為空時不誤觸發短路、`ensure_reload_probe_infra()` 的 git 行為（首次 commit、冪等、precondition 相容性）、`PythonServiceContainer` 的 DB 位址改寫與 port 解析、`run_newman()` 的變數名稱與執行檔解析。**整合測試層級已驗證**（真實 Docker 容器，非 mock）：探測端點連線、token round-trip、修改程式碼觸發真正的容器內 reload 並正確等到新 worker。**端對端層級已驗證**（真實 Java／Python 專案、真實 PostgreSQL、真實 Docker 容器，見九章）：三輪完整的錄製→容器化啟動→驗證鏈路，`school` 模組完整通過，第三輪確認①③架構修正全數有效。全部 478 項測試（含既有）通過，另有 4 項需要真實 `TEST_DB_DSN` 才會執行，缺少時自動跳過。
 
 ---
 

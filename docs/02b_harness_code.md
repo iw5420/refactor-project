@@ -185,7 +185,9 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
     這層副檔名比對，`subprocess.run(shell=False)` 沒有這層行為。
     `shutil.which()` 內部用 `os.environ["PATHEXT"]`（Windows）逐一嘗試
     副檔名，回傳真正可執行的完整路徑，兩平台行為一致，不需要引入
-    `shell=True`（避免字串注入風險）。找不到就在這裡直接拋出明確錯誤。
+    `shell=True`（避免字串注入風險）。找不到就在這裡直接拋出明確錯誤，
+    不要留給 `subprocess.run` 丟一個「檔案或路徑無效」這種難以第一眼
+    看懂根因的原生例外。
     """
     newman_path = shutil.which("newman")
     if newman_path is None:
@@ -201,11 +203,12 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
         newman_path, "run", collection_path,
         # collection 裡實際的變數名稱是 "baseUrl"（駝峰式，[B] Collection
         # Agent 產生 collection 時內建的變數，見 postman/collection_*.json
-        # 頂層 "variable" 陣列），不是 "base_url"（底線）。舊寫法傳錯變數
-        # 名稱，newman 永遠不會覆寫，一律 fallback 回 collection 內建的
-        # 預設值——這個預設值恰好等於 Java 的網址，導致這個 bug 長期被
-        # 掩蓋（錄製對 Java「碰巧」正確，驗證對 Python 則從未真正命中過
-        # Python 服務），見 09b_bug_trace.md #3。
+        # 的頂層 "variable" 陣列），不是 "base_url"（底線）。舊寫法傳錯
+        # 變數名稱，newman 永遠不會覆寫，一律 fallback 回 collection 內建
+        # 的預設值——已用真實 Java／Python 服務核對過：這個預設值恰好等於
+        # Java 的網址，導致這個 bug 長期被掩蓋（錄製對 Java 「碰巧」正確，
+        # 驗證對 Python 則從未真正命中過 Python 服務，永遠連到 Java／或
+        # 連線被拒），見 09b_implement_agent_code.md 十章「已知限制」。
         "--env-var", f"baseUrl={base_url}",
         "--reporters", "json",
         "--reporter-json-export", output_path
@@ -232,20 +235,25 @@ def extract_response_body(response: dict) -> str | None:
     從 newman 單一 execution 的 `response` 物件取出原始 body 文字。
 
     真實 newman（6.2.2）的 JSON reporter **沒有** `response["body"]` 這個
-    欄位——`response.keys()` 只有 `['id', 'status', 'code', 'header',
-    'stream', 'cookie', 'responseTime', 'responseSize']`。實際內容序列化
-    在 `response["stream"]`，是 Node.js Buffer 的 JSON 表示
-    （`{"type": "Buffer", "data": [位元組陣列]}`），要自己組回位元組再解碼。
+    欄位——已用真實 Java 服務重現過：`response.keys()` 只有
+    `['id', 'status', 'code', 'header', 'stream', 'cookie', 'responseTime',
+    'responseSize']`，不含 `body`。實際內容序列化在 `response["stream"]`，
+    是 Node.js Buffer 的 JSON 表示（`{"type": "Buffer", "data": [位元組
+    陣列]}`），要自己組回位元組再解碼。
 
-    舊寫法 `response.get("body")` 永遠回傳 `None`（鍵不存在），即使實際
-    回應內容非空——這個 bug 修好之前，Recorder／Verifier 錄到、比對到的
-    body 全部都是空的，body diff 從未真正比對過任何內容，見
-    `09b_bug_trace.md` #20。
+    舊寫法 `response.get("body")` 永遠回傳 `None`（鍵不存在，`.get()`
+    無預設值），即使實際回應內容非空——這代表這個 bug 修好之前，錄製端
+    （`golden_writer.py`）錄到的每一筆 golden output body 都是空的，
+    驗證端（`comparator.py`／`mutation_verifier.py`）比對到的 actual
+    body 也一樣永遠是空的，body diff 從未真正比對過任何內容，只有
+    status code 比對還有意義（見 09b_bug_trace.md）。
 
     回傳 `None` 代表這個 response 真的沒有 body（如 204 No Content，
-    `stream` 缺席或 `data` 是空陣列）；`stream` 存在但形狀不符預期則讓
-    例外往外拋，不吞——這跟後續 JSON parse 失敗走 `response_not_json`
-    分類是不同層級的錯誤。
+    `stream` 缺席或 `data` 是空陣列）；`stream` 存在但形狀不符預期
+    （不是 `{"type": "Buffer", "data": [...]}`）視為程式碼對 newman
+    輸出格式的假設有誤，讓例外往外拋，不吞——這跟後續 JSON parse 失敗
+    走 `response_not_json` 分類是不同層級的錯誤，不應該混在一起被
+    這裡的容錯吞掉。
     """
     stream = response.get("stream")
     if stream is None:
@@ -298,23 +306,14 @@ def make_case_id(item: dict) -> str:
 
 def get_module(url_parts: list[str]) -> str:
     """
-    module 詞彙表的 **fallback** 推斷：取第一個非版本前綴的路徑段。
+    module 詞彙表的 fallback 推斷：取第一個非版本前綴的路徑段。
     例：["api", "v1", "orders", "123"] → "orders"
 
-    ⚠️ 這個函式不再是 module 詞彙表的唯一來源——**唯一權威來源是
-    `config/harness.yaml` 的 `route_to_module_mapping`**（Agent ③ 產出，
-    見 02a 十三章、十一章、`05a_design_agent_architecture.md` 八章），由
-    `RouteMapper.resolve_module()` 優先查詢；這個函式只在查無對應時，作為
-    `resolve_module()` 內部呼叫的 fallback 使用，不應該再被其他模組直接呼叫
-    （`golden_writer.py`／`comparator.py`／`mutation_verifier.py` 一律經由
-    `self.route_mapper.resolve_module(method, url_parts)`，見 core/route_mapper.py）。
-
-    ⚠️ 深層／跨模組路由的已知限制只留在這個 fallback 分支：本推斷只看第一個
-    非版本段，/api/v1/admin/orders/audit 會歸入 "admin" 而非語意上的
-    "orders"。只要這個 endpoint 有出現在 `api_to_python_target`（進而出現在
-    `route_to_module_mapping`），`resolve_module()` 就不會走到這裡，這個限制
-    只影響①③解析範圍外、`route_to_module_mapping` 查無對應的殘餘情況
-    （如 04a 十一章列出的已知限制，或 skip 呼叫鏈已排除的端點）。
+    ⚠️ 唯一權威來源是 config/harness.yaml 的 route_to_module_mapping
+    （見 02a 十三章、十一章、05a 八章），由 RouteMapper.resolve_module()
+    優先查詢；這個函式只在查無對應時當 fallback，不應被其他模組直接呼叫
+    （golden_writer.py／comparator.py／mutation_verifier.py 一律經由
+    self.route_mapper.resolve_module(method, url_parts)）。
     """
     return next(
         (p for p in url_parts if p not in ("api", "v1", "v2")),
@@ -330,6 +329,7 @@ def get_module(url_parts: list[str]) -> str:
 import re
 from typing import Any, Literal
 import yaml
+
 
 class ResponseMasker:
     def __init__(self, rules_path: str = "config/mask_rules.yaml"):
@@ -377,6 +377,7 @@ import re
 import yaml
 from deepdiff import DeepDiff
 
+
 class DiffEngine:
     def __init__(self, config_path: str = "config/harness.yaml"):
         with open(config_path, encoding="utf-8") as f:
@@ -399,19 +400,10 @@ class DiffEngine:
         最上層就是 JSON Array」的情況（如 GET /api/v1/users 直接回傳
         [{...}, {...}]），此時 DeepDiff 對頂層陣列的 level.path() 就是 "root"。
         "root[*]" 這類萬用字元寫法不是 DeepDiff 的合法路徑，被此檢查擋下是
-        預期行為——DeepDiff 的 ignore_order_func 逐節點精確比對路徑字串，
-        不支援萬用字元展開。
+        預期行為。
 
         語法合法不代表語意正確：本檢查只擋「格式錯誤」，擋不掉「格式正確但
-        永遠匹配不到」的設定——路徑必須指向**陣列節點本身**：
-        - ✅ "root['data']['items']"：items 是陣列，level.path() 會產生這個值
-        - ❌ "root['data'][0]"：以數字索引**結尾**＝指向陣列的某個「元素」而非
-          陣列本身，除非該元素本身又是陣列（陣列包陣列，罕見），否則
-          ignore_order_func 永遠比對不中，規則靜默失效——這幾乎必然是設定錯誤
-        - ⚠️ "root['items'][0]['tags']"：合法且有意義（items 的第 0 個元素裡的
-          tags 陣列），但只涵蓋第 0 個元素——DeepDiff 不支援萬用字元，若要忽略
-          每個元素裡 tags 的順序，每個索引都要列一條（[0]、[1]、…），實務上
-          建議改在 Java/Python 端加 ORDER BY 根治，而不是列舉索引
+        永遠匹配不到」的設定——路徑必須指向**陣列節點本身**。
         """
         bracket_pattern = re.compile(r"^root(\['[^']+'\]|\[\d+\])*$")
         invalid = [p for p in self.ignore_order_paths if not bracket_pattern.match(p)]
@@ -437,9 +429,6 @@ class DiffEngine:
         """
         # expected / actual 可能是 None（空 body 規格化為 None，不 fallback 成 {}）。
         # 進 DeepDiff 之前先明確處理：
-        # (1) 避免 ignore_order=True 模式下部分 DeepDiff 版本對 None 輸入的邊界行為；
-        # (2) 「一端沒有 body、另一端有」給出明確的 body_presence_mismatch 分類，
-        #     而不是讓 DeepDiff 的 type_changes 結構被 Reporter 粗分成 value_mismatch。
         if expected is None or actual is None:
             if expected is None and actual is None:
                 return None  # 兩端都沒有 body，一致
@@ -500,9 +489,8 @@ logger = logging.getLogger(__name__)
 class RouteMapper:
     """
     讀取 config/harness.yaml 的 route_to_file_mapping／route_to_module_mapping
-    （皆由 Agent ③ 自動產生，同一次呼叫一併輸出，見 02a 十一章、
-    `05a_design_agent_architecture.md` 八章），把 route 解析成對應的 Python
-    原始碼檔案清單，或對應的 module 名稱。
+    （皆由 Agent ③ 自動產生，見 02a 十一章、05a 八章），把 route 解析成對應的
+    Python 原始碼檔案清單，或對應的 module 名稱。
     """
 
     _UUID_RE = re.compile(
@@ -537,8 +525,7 @@ class RouteMapper:
         從 method 和 url_parts 組出 normalized key，查 route_to_file_mapping。
         精確匹配優先；fallback 到前綴匹配時，取候選中 pattern 字串「最長
         （最精確）」的一筆，不依賴 harness.yaml 裡 key 的撰寫順序決定命中
-        結果——否則巢狀資源可能被較不精確的前綴誤匹配（見 02a 十一章）。
-        找不到則回傳空清單，由 Reporter 標記警告。
+        結果。找不到則回傳空清單。
         """
         key = self.normalize_path_key(method, url_parts)
 
@@ -557,23 +544,11 @@ class RouteMapper:
 
     def resolve_module(self, method: str, url_parts: list[str]) -> str:
         """
-        module 詞彙表的**唯一權威來源**（見 02a 十三章）：優先精確匹配
-        route_to_module_mapping（跟 resolve_related_files() 共用同一套
-        normalize_path_key()，key 格式完全一致——route_to_file_mapping／
-        route_to_module_mapping 是 Agent ③ 同一次迴圈產出的兩份表，見
-        `05a_design_agent_architecture.md` 八章）。
-
-        故意不做 resolve_related_files() 那種「前綴匹配」fallback：
-        route_to_module_mapping 的值是單一 module 字串，不是清單，前綴匹配
-        撈到的候選之間沒有「取最長最精確」這種可比較的排序意義——查不到就
-        直接落到下面的 get_module() URL 推斷 fallback，不嘗試模糊比對。
-
-        查無精確對應時 fallback 回 core/postman_runner.get_module() 的
-        URL 推斷（記警告，供人工核對是否為①③解析範圍外的殘餘情況，如
-        04a 十一章列出的已知限制，或 skip 呼叫鏈已排除的端點——這種情況下
-        沒有 ApiMapping 可用，Plan Agent 也不會為對應的方法產生 task，因此
-        這裡的推斷結果不會影響任何 task.module 的一致性，純粹是 golden
-        檔案還是需要一個目錄可以歸類）。
+        module 詞彙表的唯一權威來源（見 02a 十三章）：精確匹配
+        route_to_module_mapping，查無對應才 fallback 回
+        core.postman_runner.get_module() 的 URL 推斷（記警告）。不做
+        resolve_related_files() 那種前綴匹配——這裡的值是單一 module
+        字串，前綴候選之間沒有可比較的排序意義。
         """
         key = self.normalize_path_key(method, url_parts)
 
@@ -581,9 +556,7 @@ class RouteMapper:
             return self.module_mapping[key]
 
         logger.warning(
-            "route_to_module_mapping 查無對應 key=%s，fallback 回 URL 推斷"
-            "（見 core/postman_runner.get_module() 說明）",
-            key,
+            "route_to_module_mapping 查無對應 key=%s，fallback 回 URL 推斷", key
         )
         return get_module(url_parts)
 ```
@@ -609,12 +582,13 @@ class HarnessReporter:
 
         excluded_cases：readonly 情境下，Recorder 錄製時就判定為非 JSON（如
         text/plain 的 /version 端點）而主動跳過、從未寫入 golden 的
-        case_id 清單（見 verifier/comparator.py GoldenVerifier._load_
-        skipped_case_ids()）——這些 case 不是「golden 遺失」或
-        「route_to_file_mapping 設定錯誤」，是這個端點本來就不在 JSON body
-        diff 這種比對契約的適用範圍內。跟 excluded_folders 是同一種精神
-        （呼叫端已經在傳進來的 results 裡排除掉了，這裡只是把排除掉的
-        識別碼原樣附加成頂層欄位）。
+        case_id 清單（見 GoldenVerifier._load_skipped_case_ids()）——這些
+        case 不是「golden 遺失」或「route_to_file_mapping 設定錯誤」，是
+        這個端點本來就不在 JSON body diff 這種比對契約的適用範圍內。跟
+        excluded_folders 是同一種精神（呼叫端已經在傳進來的 results 裡
+        排除掉了，這裡只是把排除掉的識別碼原樣附加成頂層欄位，供人工
+        或 ⑦ Debug Agent 事後知道「這些 case 不是沒被驗證到，是刻意跳過」，
+        不是本方法自己做排除判斷）。
 
         兩者都不計入 summary／failures／passed_cases 既有的計算邏輯——本
         方法其餘分類行為完全不變，只是額外附加兩個頂層欄位。
@@ -732,6 +706,7 @@ class HarnessReporter:
 import subprocess
 import psycopg2
 
+
 class DbEnvironment:
     def __init__(self, test_dsn: str):
         # 永遠只連 test_dsn（如 MOC_MATSUEXAM_TEST），絕不連 production DB（如 MOC_MATSUEXAM）
@@ -747,13 +722,10 @@ class DbEnvironment:
 
         TRUNCATE 與 seed 注入包在同一個 psycopg2 交易裡——psycopg2 走 simple
         query protocol，本來就支援分號分隔的多條語句。seed 失敗時整體
-        rollback，不會留下「已清空但沒灌資料」的中間態，也不依賴 psql
-        命令列工具。
+        rollback，不會留下「已清空但沒灌資料」的中間態。
 
         ⚠️ 限制：seed.sql 必須是標準 SQL（INSERT / UPDATE / ...），
-        不能包含 psql meta-command（\\copy、\\i、\\set 等）或 COPY FROM stdin
-        （pg_dump 的資料匯出格式）——psycopg2 無法執行這些。
-        若未來 seed 改用 pg_dump 匯出格式，需改回 psql subprocess 或改用 copy_expert。
+        不能包含 psql meta-command 或 COPY FROM stdin——psycopg2 無法執行這些。
         """
         with psycopg2.connect(self.test_dsn) as conn:
             with conn.cursor() as cur:
@@ -771,8 +743,7 @@ class DbEnvironment:
         """
         當 production DB（如 MOC_MATSUEXAM）的 schema 有變動時，同步到測試 DB（test_dsn）。
         僅適用於 Flyway/Liquibase／手動 migration 的情況；若 Java 用 Hibernate/JPA
-        `ddl-auto`，schema 由 [A] Spec Agent 啟動 Java 服務時自動建立，不需呼叫這個方法
-        （見 02a 十四章「Schema 來源」）。
+        `ddl-auto`，schema 由 [A] Spec Agent 啟動 Java 服務時自動建立，不需呼叫這個方法。
         在每次 migration 後執行一次即可。
         """
         dump = subprocess.run(
@@ -817,6 +788,7 @@ from refactor_harness.fixtures.db_env import DbEnvironment
 # 傳入 context="mutation" 時套用，readonly 不受影響。
 _EXPECTED_STATUS_RANGE = range(200, 300)
 
+
 class GoldenRecorder:
     """
     readonly／mutation 分別呼叫 record()／record_mutation()，兩者的 DB reset
@@ -836,8 +808,7 @@ class GoldenRecorder:
         self.golden_dir = Path(golden_dir)
         self.masker = ResponseMasker()
         # module 分區用共用的 RouteMapper.resolve_module()，與 GoldenVerifier／
-        # MutationVerifier 共用同一套（route_to_module_mapping 優先，get_module()
-        # URL 推斷 fallback，見 core/route_mapper.py、02a 十三章）。
+        # MutationVerifier 共用同一套（見 core/route_mapper.py、02a 十三章）。
         self.route_mapper = RouteMapper(config_path)
 
         with open(config_path, encoding="utf-8") as f:
@@ -1013,8 +984,10 @@ class GoldenRecorder:
         """
         # newman JSON reporter 的實際欄位是 "header"（單數），值是純陣列
         # [{"key": ..., "value": ...}, ...]，不是 "headers": {"members": [...]}
-        # 這種包一層物件的形狀——已用真實 newman 6.2.2 輸出核對過，見
-        # 09b_bug_trace.md（golden_writer.py 一節）。
+        # 這種包一層物件的形狀——已用真實 newman 6.2.2 輸出核對過。舊寫法
+        # 讀錯欄位名稱＋錯誤形狀，永遠拿到空 dict，導致 content_type 恆為
+        # 空字串，每一筆 response 都被誤判成非 JSON 而跳過（見
+        # 09b_implement_agent_code.md 十章「已知限制」的完整重現記錄）。
         headers = {h["key"].lower(): h["value"] for h in (response.get("header") or [])}
         content_type = headers.get("content-type", "")
 
@@ -1052,8 +1025,8 @@ class GoldenRecorder:
         return golden, None
 
     def _write_golden(self, case_id: str, golden: dict):
-        # module 分區用共用的 RouteMapper.resolve_module()（route_to_module_mapping
-        # 優先，見 core/route_mapper.py），與驗證端的載入／過濾用同一套詞彙。
+        # module 分區用共用的 RouteMapper.resolve_module()（見
+        # core/route_mapper.py），與驗證端的載入／過濾用同一套詞彙。
         module = self.route_mapper.resolve_module(
             golden["request"]["method"], golden["request"]["path"]
         )
@@ -1080,6 +1053,7 @@ from refactor_harness.core.reporter import HarnessReporter
 from refactor_harness.core.postman_runner import extract_response_body, run_newman, make_case_id
 from refactor_harness.core.route_mapper import RouteMapper
 
+
 class GoldenVerifier:
     def __init__(self, python_base_url: str, golden_dir: str,
                  config_path: str = "config/harness.yaml"):
@@ -1091,19 +1065,21 @@ class GoldenVerifier:
         # route 解析用共用的 RouteMapper，與 MutationVerifier 共用同一套邏輯
         self.route_mapper = RouteMapper(config_path)
         # Recorder 錄製時主動判定為非 JSON（如 text/plain 的 /version 端點）
-        # 而跳過、從未寫入 golden 的 case_id 清單
+        # 而跳過、從未寫入 golden 的 case_id 清單——見 _load_skipped_case_ids()。
         self._skipped_case_ids = self._load_skipped_case_ids()
         self._last_excluded_cases: list[str] = []
 
     def _load_skipped_case_ids(self) -> set[str]:
         """讀取 {golden_dir}/_metadata.json 的 skipped 清單（見 02a 三章
-        「非 JSON Response 與空 Body 的處理」）。沒有這份清單時，
-        _process_executions() 會把這些 case 誤判成 golden_not_found
-        失敗，即使 Python 端回傳的內容其實跟 Java 一致（如 /version
-        端點兩邊都回傳同一種 text/plain 版本字串）。_metadata.json
-        不存在時（例如尚未跑過 record_golden_output）視為沒有任何已知
-        跳過的 case，不拋例外——比照 MutationVerifier 對 tainted_folders
-        的既有處理方式。
+        「非 JSON Response 與空 Body 的處理」）——這些 case 在錄製當下就
+        被 Recorder 主動判定成非 JSON 而跳過，不是 golden 遺失或
+        route_to_file_mapping 設定錯誤。沒有這份清單時，_process_
+        executions() 會把它們誤判成 golden_not_found 失敗，即使 Python
+        端回傳的內容其實跟 Java 一致（如 /version 端點兩邊都回傳同一種
+        text/plain 版本字串）。_metadata.json 不存在時（例如尚未跑過
+        record_golden_output）視為沒有任何已知跳過的 case，不拋例外——
+        這是正常的初次執行情境，比照 MutationVerifier 對
+        tainted_folders 的既有處理方式。
         """
         metadata_path = self.golden_dir / "_metadata.json"
         if not metadata_path.exists():
@@ -1127,8 +1103,7 @@ class GoldenVerifier:
     def verify_raw(self, collection_path: str) -> list[dict]:
         """
         與 verify() 相同，但回傳尚未分類的原始 case 結果清單，不呼叫 build_report()。
-        給 run_postman_tests（見 test_nodes.py）用來跟 MutationVerifier 的結果合併成
-        單一 report，避免重複分類造成靜默誤判（見下方合併注意事項）。
+        給 run_postman_tests 用來跟 MutationVerifier 的結果合併成單一 report。
         """
         newman_output = run_newman(collection_path, self.python_base_url)
         return self._process_executions(newman_output["run"]["executions"])
@@ -1149,13 +1124,14 @@ class GoldenVerifier:
         )
 
     def _get_module(self, method: str, url_parts: list[str]) -> str:
-        # 委派給共用的 RouteMapper.resolve_module()（module 詞彙表唯一權威
-        # 來源，見 core/route_mapper.py、02a 十三章）。
+        # 委派給共用的 RouteMapper.resolve_module()（見 02a 十三章）
         return self.route_mapper.resolve_module(method, url_parts)
 
     def _process_executions(self, executions: list[dict]) -> list[dict]:
-        """回傳尚未分類（未呼叫 build_report）的原始 case 結果清單。每次
-        呼叫重新計算 self._last_excluded_cases（覆蓋，不累加）。
+        """回傳尚未分類的原始 case 結果清單。每次呼叫重新計算
+        self._last_excluded_cases（覆蓋，不累加）——跟 MutationVerifier
+        的 _last_excluded_folders 是同一種「每次呼叫都是一份新快照」
+        的既有慣例。
         """
         results = []
         excluded: list[str] = []
@@ -1163,7 +1139,7 @@ class GoldenVerifier:
             item = execution["item"]
             actual_response = execution["response"]
 
-            case_id = make_case_id(item)  # 共用函式，與錄製端演算法一致（含消毒）
+            case_id = make_case_id(item)
             url_parts = item["request"]["url"]["path"]
             method = item["request"]["method"]
             module = self._get_module(method, url_parts)
@@ -1171,9 +1147,10 @@ class GoldenVerifier:
             golden = self._load_golden(case_id, module)
             if golden is None:
                 if case_id in self._skipped_case_ids:
-                    # Recorder 錄製時就判定這個 case 是非 JSON 而主動跳過，
-                    # 不是 golden 遺失或 route_to_file_mapping 設定錯誤——
-                    # 不算失敗，直接排除，不計入 summary／failures。
+                    # Recorder 錄製時就判定這個 case 是非 JSON 而主動跳過
+                    # （見 __init__ 的 _load_skipped_case_ids()），不是
+                    # golden 遺失或 route_to_file_mapping 設定錯誤——不算
+                    # 失敗，直接排除，不計入 summary／failures。
                     excluded.append(case_id)
                     continue
                 results.append({
@@ -1196,8 +1173,7 @@ class GoldenVerifier:
                         "error": "response_not_json"
                     })
                     continue
-            # GoldenVerifier 只處理 readonly collection，context 用預設值 "readonly"——
-            # 不遮罩 id 系欄位，讓「撈錯資料實體」這類 bug 能被真正比對到（見 mask_rules.yaml）。
+            # GoldenVerifier 只處理 readonly collection，context 用預設值 "readonly"
             actual_masked = self.masker.mask(actual_body, context="readonly")
 
             # status_match 提前算好，供 passed／status_match 兩處共用。
@@ -1209,9 +1185,6 @@ class GoldenVerifier:
 
             results.append({
                 "case_id": case_id,
-                # passed 須同時滿足 status_match 與 body diff 為空（AND 關係），
-                # 與 MutationVerifier._verify_one_raw() 的判斷邏輯一致
-                # （見 02a 四章「通過標準」）。
                 "passed": status_match and (diff is None),
                 "expected_status": golden["response"]["status_code"],
                 "actual_status": actual_response["code"],
@@ -1241,13 +1214,14 @@ class GoldenVerifier:
 import json
 import yaml
 from pathlib import Path
-# 套件內部一律用帶 refactor_harness. 前綴的絕對匯入（見 02a 二章「匯入慣例」）
+# 套件內部一律用帶 refactor_harness. 前綴的絕對匯入
 from refactor_harness.core.postman_runner import extract_response_body, run_newman, list_top_level_folders, make_case_id
 from refactor_harness.core.masker import ResponseMasker
 from refactor_harness.core.diff_engine import DiffEngine
 from refactor_harness.core.reporter import HarnessReporter
 from refactor_harness.core.route_mapper import RouteMapper
 from refactor_harness.fixtures.db_env import DbEnvironment
+
 
 class MutationVerifier:
     """
@@ -1425,8 +1399,8 @@ class MutationVerifier:
         return results
 
     def _get_module(self, method: str, url_parts: list[str]) -> str:
-        # 委派給共用的 RouteMapper.resolve_module()（module 詞彙表唯一權威
-        # 來源，見 core/route_mapper.py、02a 十三章），與 GoldenVerifier 共用。
+        # 委派給共用的 RouteMapper.resolve_module()（module 詞彙表唯一
+        # 權威來源，見 02a 十三章），與 GoldenVerifier 共用。
         return self.route_mapper.resolve_module(method, url_parts)
 
     def _load_golden(self, case_id: str, module: str) -> dict | None:
