@@ -318,6 +318,36 @@ def _reduce_phase(
     ]
 
 
+def _exclude_self_referential(
+    dependencies: list[ChainDependency],
+) -> list[ChainDependency]:
+    """捨棄 producer_endpoint == consumer_endpoint 的鏈式依賴——同一次
+    呼叫不可能既產生某個欄位、又消費同一個欄位當自己這次呼叫的輸入參數：
+    時序上這次呼叫還沒發生，不會有任何步驟能先跑過它去產生這個值，注入的
+    capture script 永遠只能拿到 `undefined`／上一次殘留值。
+
+    真實案例：reduce 階段曾把 `POST /api/candidate/search` 自己回應的
+    `data.card` 誤判成能餵給自己 `card` 參數的來源（這個端點語意其實是
+    「用 card 查使用者」，`card` 是輸入，不是可被產出的欄位）——這次
+    重跑到真實 Java 服務才第一次真正觸發，capture script 對 `null.card`
+    丟 TypeError，見 docs/09b_bug_trace.md #32。這裡不做語意判斷，只用
+    「producer 與 consumer 是不是同一個 endpoint」這個 100% 可判定的
+    時序矛盾條件過濾，跟 Map 階段排除 GET/HEAD producer 是同一種寫法。
+    """
+    kept = []
+    for dep in dependencies:
+        if dep.producer_endpoint == dep.consumer_endpoint:
+            logger.warning(
+                "捨棄自我參照的鏈式依賴（producer 與 consumer 是同一個 "
+                "endpoint，時序上不可能成立）：endpoint=%s producer_field=%s "
+                "consumer_param=%s",
+                dep.producer_endpoint, dep.producer_field, dep.consumer_param,
+            )
+            continue
+        kept.append(dep)
+    return kept
+
+
 def detect_chain_dependencies(
     openapi_spec: OpenAPISpec,
     *,
@@ -347,4 +377,4 @@ def detect_chain_dependencies(
         )
         return []
 
-    return _reduce_phase(producers, consumers)
+    return _exclude_self_referential(_reduce_phase(producers, consumers))

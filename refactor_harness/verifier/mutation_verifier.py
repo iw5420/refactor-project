@@ -173,6 +173,7 @@ class MutationVerifier:
 
             results.append({
                 "case_id": case_id,
+                "module": module,
                 "passed": status_match and (body_diff is None),
                 "expected_status": expected_status,
                 "actual_status": actual_response["code"],

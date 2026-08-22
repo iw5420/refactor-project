@@ -4,12 +4,14 @@ LLM 呼叫全部 monkeypatch 掉，不連真實 Claude API。
 from spec_collection_agent import chain_dependency_detect as cdd
 from spec_collection_agent.chain_dependency_detect import (
     _chunk_operations,
+    _exclude_self_referential,
     group_operations_by_tag,
     _map_analyze_group,
     _map_phase,
     detect_chain_dependencies,
 )
 from spec_collection_agent.exceptions import ChainDependencyDetectionError
+from spec_collection_agent.types import ChainDependency
 
 
 def _spec(paths: dict) -> dict:
@@ -115,3 +117,50 @@ class TestDetectChainDependenciesSkipsReduce:
 
         monkeypatch.setattr(cdd, "_reduce_phase", _fail_reduce)
         assert detect_chain_dependencies({"paths": {}}) == []
+
+
+class TestExcludeSelfReferential:
+    def test_drops_dependency_where_producer_equals_consumer(self):
+        # 對應真實案例：POST /api/candidate/search 自己的 data.card 被誤判
+        # 成能餵給自己 card 參數的來源，時序上不可能成立，見
+        # docs/09b_bug_trace.md #32。
+        deps = [
+            ChainDependency(
+                producer_endpoint="POST /api/candidate/search",
+                producer_field="data.card",
+                consumer_endpoint="POST /api/candidate/search",
+                consumer_param="card",
+                env_var_name="candidate_card",
+            )
+        ]
+        assert _exclude_self_referential(deps) == []
+
+    def test_keeps_dependency_between_different_endpoints(self):
+        deps = [
+            ChainDependency(
+                producer_endpoint="POST /api/candidate/generateRandomId",
+                producer_field="data.randomId",
+                consumer_endpoint="POST /api/exam/search",
+                consumer_param="randomId",
+                env_var_name="candidate_random_id",
+            )
+        ]
+        assert _exclude_self_referential(deps) == deps
+
+    def test_detect_chain_dependencies_applies_the_filter(self, monkeypatch):
+        self_referential = ChainDependency(
+            producer_endpoint="POST /a", producer_field="data.x",
+            consumer_endpoint="POST /a", consumer_param="x",
+            env_var_name="x_val",
+        )
+        valid = ChainDependency(
+            producer_endpoint="POST /a", producer_field="data.id",
+            consumer_endpoint="GET /a/{id}", consumer_param="id",
+            env_var_name="a_id",
+        )
+        monkeypatch.setattr(cdd, "_map_phase", lambda spec: (["p"], ["c"]))
+        monkeypatch.setattr(cdd, "_reduce_phase", lambda p, c: [self_referential, valid])
+
+        result = detect_chain_dependencies({"paths": {}})
+
+        assert result == [valid]

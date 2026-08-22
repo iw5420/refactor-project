@@ -52,7 +52,7 @@
 | ④ 骨架實作 Agent | 建立目錄與骨架（呼叫 translator-cli「骨架生成模式」），並從 Java entity 原始碼組出 `db_models` | `08a_scaffold_agent_architecture.md` / `08b_scaffold_agent_code.md` |
 | ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md` |
 | ⑥ 測試執行 Agent（Harness 驗證端） | 對 Python 服務執行 Postman，比對 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
-| ⑦ Debug Agent | 分析 diff、定位問題，回饋給 ⑤ | `10a_debug_agent_architecture.md` / `10b_debug_agent_code.md`（待建立） |
+| ⑦ Debug Agent | 分析 diff、定位問題，回饋給 ⑤ | `10a_debug_agent_architecture.md` / `10b_debug_agent_code.md` |
 
 ### 預計開發順序
 
@@ -143,7 +143,7 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 ├── LangGraph Orchestrator（輕量 Python 流程控制）
 ├── Claude API 呼叫（雲端，解析/設計/Debug Agent）
 ├── Java／Python 服務（本機執行：[A] 啟動的 java -jar、日後 Python 服務同樣跑在這台機器）
-└── translator-cli（subprocess 呼叫）
+└── translator-cli（Python 套件，in-process 呼叫，非獨立子行程——見 11a 六章「run_id：執行模型查證」對實際程式碼的核對）
       ├── 骨架生成模式（④）：純機械組裝，全程留在這台機器，不發出任何請求
       └── 填空模式（⑤）：HTTP（帶 Authorization: Bearer <token>）→ 另一台 Mac
                             └── nginx（反向代理，驗證 token）
@@ -240,23 +240,19 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 具體怎麼拆、候選結果的資料形狀、reduce 階段的輸入輸出契約，由各自的細節文件定案。
 
-### Claude API 呼叫用量記錄（成本稽核）
+### Claude API 呼叫紀錄（成本稽核與內容留痕）
 
-任何 Agent（不限於 ①③⑦、[P]、[B] 現有這幾個）只要呼叫 Claude API，都必須記錄用量，不能只驗證輸出對不對，不驗證花了多少。
+任何 Agent（不限於 ①③⑦、[P]、[B] 現有這幾個）只要呼叫 Claude API，都必須記錄用量與呼叫內容，不能只驗證輸出對不對，不驗證花了多少、送了什麼。
 
-- **共用工具**：`common/llm_usage_logger.py` 提供 `log_usage(response, *, model)`，所有 Claude API 呼叫點（各 Agent 各自的 LLM 呼叫函式）呼叫 API 之後、回傳結果之前，直接呼叫這個函式一次，不需要自己組 log 格式。
-- **呼叫端不必手動標記自己是誰**：`log_usage()` 內部用 `inspect.stack()[1]` 抓呼叫端所在的檔名＋函式名稱（例如 `value_filler.fill_example_values`），自動組出「哪個 Agent、哪個 function」，避免每個呼叫點手動填標籤、日後改名或搬檔案時忘記同步更新而失準。前提：`log_usage()` 必須在實際呼叫 `messages.create()` 的函式內**直接**呼叫，不能包一層中間函式再轉呼叫，否則抓到的會是中間層、不是真正的呼叫端。
-- **輸出格式**：固定寫到 `logs/claude_api_usage.jsonl`（JSON Lines，一行一筆，方便事後用程式加總算成本，不用人工去解析文字 log），每筆記錄：`timestamp`（UTC ISO 8601）、`caller`（自動抓到的「檔名.函式名」）、`model`、`input_tokens`、`output_tokens`、`cache_creation_input_tokens`、`cache_read_input_tokens`。
-- **不覆寫**：每次啟動都是 append，不清空舊紀錄，讓一次完整 pipeline 執行的所有呼叫可以在同一份檔案裡依時間戳串起來看。
+完整機制——一般執行 log、Claude／本地 Ollama 呼叫的 prompt／response 記錄、`run_id`／`trace_id` 等識別碼設計、`llm_traces.db` 查詢介面（`llmlog` CLI 與 ⑦ Debug Agent 共用同一組函式）——見 `11a_logging_architecture.md`／`11b_logging_code.md`。`common/llm_client.py::call_claude_for_json()` 是所有 Agent 呼叫 Claude API 的唯一入口，內部直接呼叫 `common/llm_trace.py::record_llm_call()` 記錄進 `llm_traces.db`，呼叫端不需要自己組 log 格式。
 
 ### Claude API 呼叫封裝（共用 client）
 
-`log_usage()` 只負責記錄用量，不負責「怎麼打 API」；「怎麼打 API」這件事本身（client 初始化、Structured Outputs 的 `output_config.format` 組裝、JSON parse、錯誤處理）在 ①③⑤(⑦ Debug)、[P] Plan、[B] 這些會呼叫 Claude API 的 Agent 之間幾乎完全相同——差別只在「用哪個模型」（各 Agent 自己的環境變數，如 `SPEC_COLLECTION_AGENT_MODEL`／`PARSE_AGENT_MODEL`）。這部分因此集中在 `common/llm_client.py`，跟 `common/llm_usage_logger.py` 放同一層級，不讓每個 Agent 各自維護一份幾乎相同的實作：
+「怎麼打 API」這件事本身（client 初始化、Structured Outputs 的 `output_config.format` 組裝、JSON parse、錯誤處理、呼叫紀錄）在 ①③⑤(⑦ Debug)、[P] Plan、[B] 這些會呼叫 Claude API 的 Agent 之間幾乎完全相同——差別只在「用哪個模型」（各 Agent 自己的環境變數，如 `SPEC_COLLECTION_AGENT_MODEL`／`PARSE_AGENT_MODEL`）。這部分因此集中在 `common/llm_client.py`：
 
-- `common/llm_client.call_claude_for_json(*, system_prompt, user_prompt, schema, model, max_tokens=4096)`：唯一對外函式，`model` 是必填參數——這個模組不知道任何 Agent 的環境變數命名慣例，「沒指定要用哪個模型時退回什麼」是每個 Agent 自己的決策，不由共用層代為決定。
+- `common/llm_client.call_claude_for_json(*, system_prompt, user_prompt, schema, model, max_tokens=4096, ...)`：唯一對外函式，`model` 是必填參數——這個模組不知道任何 Agent 的環境變數命名慣例，「沒指定要用哪個模型時退回什麼」是每個 Agent 自己的決策，不由共用層代為決定。完整參數（含 `run_id`／`task_id`／`target_file`／`class_name`／`function_name` 等純記錄用選填參數）見 `11a_logging_architecture.md` 八章。
 - 各 Agent 只需要自己的 `llm.py` 留幾行：讀自己的環境變數，沒設定時退回 `common.llm_client.DEFAULT_MODEL_FALLBACK`，算出 `DEFAULT_MODEL` 常數，呼叫端把這個值傳進 `call_claude_for_json(..., model=DEFAULT_MODEL)`。
 - `max_tokens` 比照同一個原則，是 Agent 自己的決策，不是共用層該猜的事——差別在於「多少 token 夠用」取決於這個 Agent 輸出內容的密度：`call_claude_for_json()` 的 `max_tokens` 有預設值（`DEFAULT_MAX_TOKENS=4096`），給輸出精簡的分類／抽取型 Agent（①③[B]）直接沿用即可，不需要每個 Agent 都覆寫；但輸出密度高的 Agent（如 [P] Plan Agent，每個 task 都帶完整業務描述／context／依賴清單）需要在自己的 `llm.py` 另外算一個 `PLAN_AGENT_MAX_TOKENS` 常數、呼叫時明確覆寫，同樣經環境變數可調，不寫死在程式碼裡——實測案例見 `06a_plan_agent_architecture.md` 五章。
-- `common/llm_client.py` 內部呼叫 `log_usage()` 時，屬於 `common/llm_usage_logger.py` module docstring「例外」段落講的「共用 API 封裝函式」情況——它自己先用 `inspect.stack()[1]` 抓出真正的業務呼叫端，明確傳給 `log_usage(response, model=model, caller=caller)`，不靠 `log_usage()` 內部的自動偵測（那會抓到 `call_claude_for_json` 自己）。
 
 `spec_collection_agent/llm.py` 是第一個接上這個共用 client 的 Agent（見 `03c_collection_agent_code.md` 一、1.2 節）；之後任何新 Agent（如 ①③⑦、[P] Plan Agent）需要呼叫 Claude API 時，一律直接呼叫 `common.llm_client.call_claude_for_json()`，不要各自重新實作 client 初始化、Structured Outputs 組裝這些邏輯——只需要在自己的 `llm.py` 決定「用哪個模型」，輸出密度高時一併決定「`max_tokens` 要多少」。
 
@@ -481,6 +477,8 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 | `09b_implement_agent_code.md` | ⑤ 功能改寫 Agent 的實際程式碼實作 |
 | `10a_debug_agent_architecture.md` | ⑦ Debug Agent 詳細設計：diff 分析邏輯、修正指令產出格式 |
 | `10b_debug_agent_code.md` | ⑦ Debug Agent 的實際程式碼實作 |
+| `11a_logging_architecture.md` | 全域 log 機制詳細設計：一般執行 log、Claude API／本地 Ollama 呼叫的 prompt/response 記錄、run_id／trace_id 等識別碼設計、`llm_traces.db` 查詢層（`llmlog` CLI 與 ⑦ Debug Agent 共用） |
+| `11b_logging_code.md` | 全域 log 機制的實際程式碼實作，含 `llmlog` CLI |
 
 ---
 

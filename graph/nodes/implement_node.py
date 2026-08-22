@@ -21,6 +21,7 @@ context/context_files 疊加）見本檔案，對應 09a 三～七章。
 統一關閉。
 """
 import asyncio
+import logging
 import os
 import time
 import uuid
@@ -36,6 +37,8 @@ from refactor_harness.fixtures.db_env import DbEnvironment
 from refactor_harness.verifier.comparator import GoldenVerifier
 from translator_cli import client as translator_cli
 from translator_cli.types import FillResult
+
+logger = logging.getLogger(__name__)
 
 # 對應硬體限制：本地模型併發數＝1（見 00 三章）。排程層 get_ready_tasks()
 # 可一次回傳多個就緒 task，但實際呼叫 translator_cli.fill_function()
@@ -113,7 +116,7 @@ def _make_task_failure(task: TaskSpec, reason: str, error: str) -> TaskFailure:
     )
 
 
-async def _run_one_task(task: TaskSpec, python_project_path: str) -> FillResult:
+async def _run_one_task(task: TaskSpec, python_project_path: str, run_id: str) -> FillResult:
     context, context_files = _augment_task_io(task)
     async with MODEL_SEMAPHORE:
         return await translator_cli.fill_function(
@@ -125,6 +128,7 @@ async def _run_one_task(task: TaskSpec, python_project_path: str) -> FillResult:
             description=task["description"],
             context=context,
             context_files=context_files,
+            run_id=run_id,
         )
 
 
@@ -347,12 +351,25 @@ async def run(state: RefactorState) -> RefactorState:
 
         # 排程層可以同時把多個就緒 task 丟進 gather，
         # 但 MODEL_SEMAPHORE(1) 保證同一時間只有一個真的在呼叫本地模型。
-        results = await asyncio.gather(*(_run_one_task(t, state["python_project_path"]) for t in ready))
+        results = await asyncio.gather(
+            *(_run_one_task(t, state["python_project_path"], state["run_id"]) for t in ready)
+        )
 
         touched_modules = set()
+        upstream_degraded = False
         for task, result in zip(ready, results):
             scheduler.mark_task_done(task, result.success)
             touched_modules.add(task["module"])
+
+            # 心跳 log：對應 docs/09b_bug_trace.md #34——這次真實重跑卡住時，
+            # log 完全安靜超過一小時，因為 task 成功時原本什麼都不印（只有
+            # 失敗／重試才有 log），沒辦法只靠「log 有沒有新東西」判斷是
+            # 正常在跑還是卡死。每個 task 做完（不論成功失敗）都固定印一行，
+            # 讓「長時間沒有這行」變成一個對 implement 階段也有效的卡住訊號。
+            logger.info(
+                "task %s %s（module=%s）", task["id"],
+                "成功" if result.success else "失敗", task["module"],
+            )
 
             if result.success:
                 completed.append(task["id"])
@@ -365,6 +382,8 @@ async def run(state: RefactorState) -> RefactorState:
             else:
                 failed.append(task["id"])
                 task_failures.append(_make_task_failure(task, "fill_failed", result.error or ""))
+                if result.upstream_degraded:
+                    upstream_degraded = True
 
         pending_verify = [m for m in touched_modules if scheduler.module_ready_for_verification(m)]
         pending_reverify = [m for m, s in scheduler.module_status.items() if s == "needs_reverify"]
@@ -407,6 +426,23 @@ async def run(state: RefactorState) -> RefactorState:
                     report["regression"] = True
                     partial_reports.append({"module": module, "report": report})
                     scheduler.mark_module_verified(module, passed=report["status"] == "pass")
+
+        if upstream_degraded:
+            # 見 translator_cli/exceptions.py::TranslatorCliUpstreamDegradedError、
+            # docs/09b_bug_trace.md #35：連續多個 task 各自獨立地在傳輸層
+            # 失敗，懷疑是上游 ollama／nginx 服務本身異常，不是個別 task
+            # 的暫時性問題——這一輪已經觸發的驗證（跟 ollama 無關，是打
+            # 本地 Python 服務的 harness 驗證）照常做完、真正完成的
+            # module 不會卡在 in_progress，但不再開始下一輪
+            # get_ready_tasks()，不要繼續逐一燒重試預算。還沒被排到的
+            # task 維持在排程器的 pending 狀態，對應 module 會自然落在
+            # 下方的 blocked_modules 分類（見下方「while 迴圈跳出的兩種
+            # 可能」說明），不需要額外處理。
+            logger.error(
+                "偵測到疑似上游模型服務異常（連續多個 task 在傳輸層失敗），"
+                "提早停止後續 task，建議先確認 ollama／nginx 服務健康狀態"
+            )
+            break
 
     # while 迴圈跳出的兩種可能，對 run_tests/debug 的意義完全不同：
     # - blocked：從未被排到（上游從沒驗證過，屬於「程式碼不存在」）

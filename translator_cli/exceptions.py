@@ -52,6 +52,31 @@ class TranslatorCliNetworkError(TranslatorCliError):
     """
 
 
+class TranslatorCliUpstreamDegradedError(TranslatorCliNetworkError):
+    """連續多次（跨不同 task，不是同一次呼叫內部的重試）都在傳輸層失敗
+    ——見 `ollama_client._call_ollama_once()` 的模組層級連續失敗計數器。
+
+    跟一般 `TranslatorCliNetworkError`（單次呼叫的網路層重試耗盡）不同：
+    這代表的不是「這次剛好運氣不好」，而是「上游 ollama／nginx 服務本身
+    可能異常（掛了、重啟中、過載）」這種系統性訊號——真實案例：對真實
+    ollama 端點跑真實 pipeline 時，該服務被重啟，連續多個不同 task 在
+    同一時間點各自獨立地重試 3 次、每次都吃滿 300 秒才判定逾時，沒有
+    任何機制發現「這其實是同一個根因」，讓 `implement_node.py` 花了數小時
+    把每個 task 各自的重試預算逐一燒完，才等到既有的 `MAX_RETRY` 迴圈
+    上限，見 docs/09b_bug_trace.md #35。
+
+    刻意繼承 `TranslatorCliNetworkError`（不是直接繼承 `TranslatorCliError`）：
+    `client.py::fill_function()` 既有的
+    `except (TranslatorCliModelOutputError, TranslatorCliNetworkError,
+    TranslatorCliConfigError)` 攔截範圍不用跟著改，這個例外一樣會被接住、
+    轉成 `FillResult(success=False, ...)`，不違反「translator-cli 呼叫
+    失敗不直接觸發例外洩漏」的既有契約（見本檔案開頭 docstring）——差別
+    只在於 `FillResult.upstream_degraded=True` 這個額外訊號，讓真正決定
+    「要不要繼續重試」的呼叫端（`implement_node.py`）能提早看到、提早
+    停下來，不用等每個 task 各自燒完重試預算才發現。
+    """
+
+
 class TranslatorCliModelOutputError(TranslatorCliError):
     """ollama 回應違反格式契約，對應 07a 七章「模型輸出格式錯誤的修正
     重試」四種觸發情況：delimiter 抽取失敗、`body_text` 通不過

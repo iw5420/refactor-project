@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-21T08:53:22.981106Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "POST",
+    "path": [
+      "api",
+      "grading",
+      "score"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 1002,
+      "msg": "找不到指定答案 ID：1",
+      "data": null
+    }
+  }
+}

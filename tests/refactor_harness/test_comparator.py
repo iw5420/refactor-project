@@ -63,6 +63,10 @@ def test_process_executions_passes_when_body_genuinely_matches(tmp_path, monkeyp
     assert raw[0]["case_id"] == case_id
     assert raw[0]["passed"] is True
     assert raw[0]["body_diff"] is None
+    # module 沒有 config/harness.yaml 對應（GET_api_v1_version 不在
+    # route_to_module_mapping 裡），falls back 回 get_module() 的 URL
+    # 推斷：跳過 api/v1，取下一段。
+    assert raw[0]["module"] == "version"
 
 
 def test_verify_excludes_case_recorded_as_skipped_non_json(tmp_path, monkeypatch):
@@ -93,6 +97,63 @@ def test_verify_excludes_case_recorded_as_skipped_non_json(tmp_path, monkeypatch
     assert report["excluded_cases"] == [case_id]
     # 沒有其他真正的失敗時，被排除的 case 不該讓整體 status 變成 fail。
     assert report["status"] == "pass"
+
+
+def test_golden_not_found_includes_module_and_related_files(tmp_path, monkeypatch):
+    """golden_not_found 分支：⑦ Debug Agent 要靠 module／related_files
+    才能把這類失敗歸到對應模組，不用自己從 case_id 反推。故意不寫任何
+    golden 檔案，也不放進 skipped 清單，觸發真正的 golden_not_found。"""
+    execution = _execution("get version", "GET", ["api", "general", "version"], 200, {"version": "1.0.1"})
+    monkeypatch.setattr(
+        "refactor_harness.verifier.comparator.run_newman",
+        lambda *a, **kw: {"run": {"executions": [execution]}},
+    )
+
+    verifier = GoldenVerifier(python_base_url="http://localhost:8000", golden_dir=str(tmp_path))
+    raw = verifier.verify_raw("postman/collection_readonly.json")
+
+    assert len(raw) == 1
+    assert raw[0]["error"] == "golden_not_found"
+    assert raw[0]["module"] == "school"
+    assert raw[0]["related_files"] == [
+        "app/repositories/school_repository.py",
+        "app/routers/school_router.py",
+        "app/schemas/school.py",
+    ]
+
+
+def test_response_not_json_includes_module_and_related_files(tmp_path, monkeypatch):
+    """response_not_json 分支：Python 服務回傳非 JSON（如未處理例外的
+    HTML error page）時，module／related_files 一樣要附上，理由同上。"""
+    _write_golden(tmp_path, "school", "get_version_GET_api_general_version", 200, {"version": "1.0.1"})
+
+    execution = {
+        "item": {
+            "name": "get version",
+            "request": {"method": "GET", "url": {"path": ["api", "general", "version"]}},
+        },
+        "response": {
+            "code": 200,
+            "header": [{"key": "Content-Type", "value": "text/html"}],
+            "stream": {"type": "Buffer", "data": list(b"<html>Internal Server Error</html>")},
+        },
+    }
+    monkeypatch.setattr(
+        "refactor_harness.verifier.comparator.run_newman",
+        lambda *a, **kw: {"run": {"executions": [execution]}},
+    )
+
+    verifier = GoldenVerifier(python_base_url="http://localhost:8000", golden_dir=str(tmp_path))
+    raw = verifier.verify_raw("postman/collection_readonly.json")
+
+    assert len(raw) == 1
+    assert raw[0]["error"] == "response_not_json"
+    assert raw[0]["module"] == "school"
+    assert raw[0]["related_files"] == [
+        "app/repositories/school_repository.py",
+        "app/routers/school_router.py",
+        "app/schemas/school.py",
+    ]
 
 
 def test_process_executions_catches_real_body_mismatch(tmp_path, monkeypatch):

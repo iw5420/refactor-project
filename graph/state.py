@@ -83,6 +83,11 @@ class TaskSpec(TypedDict):
 class RefactorState(TypedDict):
     # 進入點輸入（main.py 組裝 initial_state 時填入，見九）
     java_project_path: str
+    # 這次 pipeline 執行的唯一識別碼，main.py 用 common/run_context.py::
+    # new_run_id() 產生一次，貫穿一般 log 與 llm_traces.db 兩邊（見
+    # 11a_logging_architecture.md 六章）。implement_node.py 透過
+    # translator_cli.fill_function(run_id=...) 往下傳。
+    run_id: str
     # translator-cli 寫入目標的 Python 專案根目錄，對應 .env 的
     # PYTHON_PROJECT_PATH（見 07a_translator_cli_architecture.md 二章
     # 「新輸入：python_project_path」）——與 refactor-project/、

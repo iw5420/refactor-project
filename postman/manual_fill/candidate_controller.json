@@ -23,7 +23,9 @@
       "note": null,
       "fill_mode": "raw_body",
       "values": {},
-      "raw_body": {"card":"26MA-A-0504I"},
+      "raw_body": {
+        "card": "26MA-A-0504I"
+      },
       "file_paths": {},
       "decision": "fill",
       "last_apply_error": null
@@ -71,7 +73,18 @@
       "note": null,
       "fill_mode": "raw_body",
       "values": {},
-      "raw_body": {"email":"test3@gmail.com.tw","card":"26MA-A-0503X","kind":"","name":"黃小芳","school":"淡水國小","grade":"","classes":"1","role":"老師","department":"","local":"台北市"},
+      "raw_body": {
+        "email": "test3@gmail.com.tw",
+        "card": "26MA-A-0503X",
+        "kind": "",
+        "name": "黃小芳",
+        "school": "淡水國小",
+        "grade": "",
+        "classes": "1",
+        "role": "老師",
+        "department": "",
+        "local": "台北市"
+      },
       "file_paths": {},
       "decision": "fill",
       "last_apply_error": null

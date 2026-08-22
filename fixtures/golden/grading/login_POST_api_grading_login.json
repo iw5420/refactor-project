@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-21T08:53:26.582388Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "POST",
+    "path": [
+      "api",
+      "grading",
+      "login"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": true
+    }
+  }
+}

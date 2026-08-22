@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-20T15:55:17.101811Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "POST",
+    "path": [
+      "api",
+      "candidate",
+      "generateRandomId"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": {
+        "randomId": "mRmN7",
+        "result": "true"
+      }
+    }
+  }
+}

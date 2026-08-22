@@ -126,6 +126,7 @@ class TestBlockedReasons:
             },
         ]
         state = {
+            "run_id": "test_run",
             "scaffold_done": True,
             "module_list": module_list,
             "task_list": task_list,
@@ -144,6 +145,88 @@ class TestBlockedReasons:
         assert result["failed_modules"] == ["upstream"]
         assert result["blocked_modules"] == ["downstream"]
         assert result["blocked_reasons"] == {"downstream": ["upstream"]}
+
+class TestUpstreamDegradedStopsEarly:
+    def test_stops_before_next_batch_when_upstream_degraded(self, monkeypatch):
+        """對應 docs/09b_bug_trace.md #35：module A 的 task 成功、module B
+        （跟 A 完全獨立，同一輪就緒）的 task 失敗且標記 upstream_degraded
+        ——這一輪已經觸發的 A 驗證要照常做完（跟 ollama 無關），但因為
+        偵測到疑似上游模型服務異常，不該再開始下一輪；module C（依賴 A，
+        原本 A 驗證通過後應該在下一輪變成就緒）的 task 不該被呼叫到。"""
+        import graph.nodes.implement_node as implement_node
+
+        async def _skip_start(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(implement_node, "_ensure_python_service_started", _skip_start)
+
+        async def _fake_wait_for_service_reload(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(implement_node, "_wait_for_service_reload", _fake_wait_for_service_reload)
+
+        async def _fake_partial_verify(module, db, verifier):
+            return {"status": "pass", "reason": None}
+
+        monkeypatch.setattr(implement_node, "_partial_verify", _fake_partial_verify)
+
+        called_task_ids = []
+
+        async def _fake_fill_function(**kwargs):
+            task_id = kwargs["task_id"]
+            called_task_ids.append(task_id)
+            if task_id == "task_a":
+                return FillResult(success=True, diff="")
+            if task_id == "task_b":
+                return FillResult(success=False, error="連續多次傳輸層失敗", upstream_degraded=True)
+            raise AssertionError(f"不該被呼叫到：{task_id}（提早停止的驗證目標）")
+
+        monkeypatch.setattr(implement_node.translator_cli, "fill_function", _fake_fill_function)
+
+        module_list = [
+            {"module": "A", "java_files": [], "depends_on": [], "methods": [], "summary": ""},
+            {"module": "B", "java_files": [], "depends_on": [], "methods": [], "summary": ""},
+            {"module": "C", "java_files": [], "depends_on": ["A"], "methods": [], "summary": ""},
+        ]
+        task_list = [
+            {
+                "id": "task_a", "module": "A", "description": "d",
+                "target_files": ["app/services/a_service.py"], "context": "",
+                "depends_on": [], "class_name": "AService", "function_name": "do_it",
+            },
+            {
+                "id": "task_b", "module": "B", "description": "d",
+                "target_files": ["app/services/b_service.py"], "context": "",
+                "depends_on": [], "class_name": "BService", "function_name": "do_it",
+            },
+            {
+                "id": "task_c", "module": "C", "description": "d",
+                "target_files": ["app/services/c_service.py"], "context": "",
+                "depends_on": [], "class_name": "CService", "function_name": "do_it",
+            },
+        ]
+        state = {
+            "run_id": "test_run",
+            "scaffold_done": True,
+            "module_list": module_list,
+            "task_list": task_list,
+            "completed_tasks": [],
+            "failed_tasks": [],
+            "task_failures": [],
+            "skipped_interfaces": [],
+            "partial_reports": [],
+            "python_project_path": "/unused",
+            "test_dsn": "postgresql://unused",
+            "python_base_url": "http://unused",
+        }
+
+        result = asyncio.run(run(state))
+
+        assert "task_c" not in called_task_ids  # 提早停止，沒有進入下一輪
+        assert result["completed_tasks"] == ["task_a"]
+        assert result["failed_tasks"] == ["task_b"]
+        assert result["blocked_modules"] == ["C"]  # 從未被排到，停在 pending
+
 
     def test_no_blocked_modules_yields_empty_blocked_reasons(self, monkeypatch):
         import graph.nodes.implement_node as implement_node

@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-21T08:53:22.983285Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "POST",
+    "path": [
+      "api",
+      "exam",
+      "answer",
+      "search"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 1002,
+      "msg": "randomId 與 kind 不可為空",
+      "data": null
+    }
+  }
+}

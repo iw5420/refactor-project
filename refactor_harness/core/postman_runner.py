@@ -1,8 +1,67 @@
 import json
+import logging
+import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+
+logger = logging.getLogger(__name__)
+
+# newman 打的目標服務可能處於「socket 還開著、但 app 沒真的載入」這種
+# 半死不活狀態（例如容器內 uvicorn --reload 的 app import 階段拋
+# SyntaxError，reload watcher 仍在監聽，連進去的請求會一直掛著不回應，
+# 不是乾脆的 connection refused）——這種情況下 newman 本身也會卡住不
+# 結束，若 `subprocess.run()` 沒設 timeout，Python 會無界等下去，見
+# docs/09b_bug_trace.md #34（真實重跑卡了一個多小時，用 py-spy dump
+# 活行程才抓到卡在這裡）。可用環境變數覆蓋，預設值遠大於一般 collection
+# 的正常執行時間，只是拿來擋「目標服務死掉」這種異常情境。
+NEWMAN_TIMEOUT_SECONDS = float(os.environ.get("NEWMAN_TIMEOUT_SECONDS", "180"))
+
+
+def _spawn(cmd: list[str]) -> subprocess.Popen:
+    """啟動子行程時讓它自成一個獨立的行程群組／session，見
+    `_kill_process_tree()` docstring——逾時要砍的時候才砍得到整棵行程樹，
+    不會漏殺孫行程。
+    """
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs
+    )
+
+
+def _kill_process_tree(pid: int) -> None:
+    """對應 docs/09b_bug_trace.md #36：Windows 上 `newman` 實際執行的是
+    `newman.cmd`（npm batch wrapper），這個 `.cmd` 檔案內部會再啟動一個
+    真正在做事的 `node.exe` 子行程。`Popen.kill()`／`subprocess.run(timeout=)`
+    逾時時只會砍掉 Python 直接持有 handle 的那個行程（`cmd.exe`／
+    `newman.cmd` wrapper 本身），**不會連帶砍掉這個 wrapper 底下的
+    `node.exe` 子行程**——Windows 沒有 POSIX 那種預設的行程群組／session
+    語意。結果是 wrapper 被砍了，但 `node.exe` 還活著、還占著
+    `capture_output` 開的 stdout/stderr 管線沒放手，讓
+    `communicate(timeout=...)` 逾時後續的收尾等待永遠等不到 EOF，即使
+    設了 `timeout=` 整個呼叫實際上還是沒有真正的上限（真實重跑卡了
+    24 分鐘以上才被 py-spy＋netstat 查出來）。
+
+    改用 `taskkill /T /F` 對整棵行程樹下手（`/T` 是關鍵：連子行程、孫
+    行程一起砍），是 Windows 上唯一可靠的做法；POSIX 對應 `_spawn()`
+    用 `start_new_session=True` 建立的整個 session 用 `os.killpg()` 處理。
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True, text=True,
+        )
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # 行程樹已經自己結束了，不是錯誤
 
 
 def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
@@ -52,18 +111,53 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
     if folder:
         cmd += ["--folder", folder]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
+    process = _spawn(cmd)
+    try:
+        stdout, stderr = process.communicate(timeout=NEWMAN_TIMEOUT_SECONDS)
+        returncode = process.returncode
+    except subprocess.TimeoutExpired:
+        # 見 _kill_process_tree() docstring、docs/09b_bug_trace.md #36：
+        # 光是 process.kill() 砍不乾淨 newman.cmd 底下真正在跑的
+        # node.exe，會讓下面這次收尾用的 communicate() 也卡住——所以
+        # 逾時後一定要先把整棵行程樹砍乾淨，才能安全地做收尾讀取。
+        _kill_process_tree(process.pid)
+        process.communicate()  # 收尾：確認管線真的關閉，避免留下殭屍行程
         raise RuntimeError(
-            f"newman 執行失敗（return code {result.returncode}）\n"
+            f"newman 執行逾時（timeout={NEWMAN_TIMEOUT_SECONDS}s）：目標服務可能處於"
+            "「socket 還開著但沒有真的回應」的異常狀態（如容器內 app 載入時就掛掉，"
+            "reload watcher 仍在監聽）\n"
             f"collection: {collection_path}\n"
-            f"base_url: {base_url}\n"
-            f"stderr: {result.stderr[:500]}"
+            f"base_url: {base_url}"
+        ) from None
+
+    # newman 的 exit code 只反映「collection 裡的 test script 斷言是否全部
+    # 通過」，不是「這次執行本身有沒有成功產生報表」——鏈式依賴注入的
+    # capture script 斷言失敗時 exit code 也會是非 0，但 JSON reporter仍
+    # 正常寫出完整報表（已用真實案例核對過：POST /api/candidate/search
+    # 的斷言失敗、exit code=1，報表檔案仍含完整 executions，見
+    # docs/09b_bug_trace.md #32）。呼叫端（GoldenVerifier／MutationVerifier／
+    # GoldenRecorder）都是自己重新比對 response 內容，從不依賴 newman 自身
+    # 的斷言結果，所以只要報表存在且是合法 JSON 就該當成執行成功回傳，讓
+    # 斷言失敗與否交給呼叫端自己的邏輯判斷（如 record_mutation() 的
+    # tainted-folder 機制）；報表根本沒產生（服務沒起來、collection 路徑
+    # 錯誤等真正的執行失敗）才是這裡要擋下的硬性錯誤。
+    if returncode != 0:
+        logger.warning(
+            "newman exit code=%s（collection 內部斷言失敗，非執行本身失敗），"
+            "仍嘗試讀取報表: collection=%s base_url=%s",
+            returncode, collection_path, base_url,
         )
 
-    with open(output_path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(output_path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        raise RuntimeError(
+            f"newman 執行失敗（return code {returncode}），且未產生有效報表\n"
+            f"collection: {collection_path}\n"
+            f"base_url: {base_url}\n"
+            f"stderr: {(stderr or '')[:500]}"
+        )
 
 
 def extract_response_body(response: dict) -> str | None:

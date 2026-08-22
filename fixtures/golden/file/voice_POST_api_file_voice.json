@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-21T08:53:22.983339Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "POST",
+    "path": [
+      "api",
+      "file",
+      "voice"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": "上傳成功: C:\\voice\\2025\\macuhau\\TAA\\poCWH\\1_1.wav"
+    }
+  }
+}

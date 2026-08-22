@@ -33,6 +33,11 @@ class FillResult:
     success: bool
     error: str | None = None
     diff: str = ""
+    # 見 translator_cli/exceptions.py::TranslatorCliUpstreamDegradedError：
+    # 連續多次（跨不同 task）都在傳輸層失敗時為 True，讓呼叫端
+    # （implement_node.py）能提早停止繼續逐一重試，不是每個 task 各自
+    # 燒完重試預算才發現同一個根因，見 docs/09b_bug_trace.md #35。
+    upstream_degraded: bool = False
 
 
 class SkippedInterface(TypedDict):

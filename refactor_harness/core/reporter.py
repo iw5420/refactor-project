@@ -37,6 +37,7 @@ class HarnessReporter:
             "failures": [
                 {
                     "case_id": f["case_id"],
+                    "module": f.get("module"),
                     "failure_type": self._classify_failure(f),
                     "status_code_match": f.get("status_match", True),
                     "expected_status": f.get("expected_status"),

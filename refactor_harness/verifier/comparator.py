@@ -109,8 +109,10 @@ class GoldenVerifier:
                     continue
                 results.append({
                     "case_id": case_id,
+                    "module": module,
                     "passed": False,
-                    "error": "golden_not_found"
+                    "error": "golden_not_found",
+                    "related_files": self.route_mapper.resolve_related_files(method, url_parts),
                 })
                 continue
 
@@ -123,8 +125,10 @@ class GoldenVerifier:
                 except (json.JSONDecodeError, TypeError):
                     results.append({
                         "case_id": case_id,
+                        "module": module,
                         "passed": False,
-                        "error": "response_not_json"
+                        "error": "response_not_json",
+                        "related_files": self.route_mapper.resolve_related_files(method, url_parts),
                     })
                     continue
             # GoldenVerifier 只處理 readonly collection，context 用預設值 "readonly"
@@ -139,6 +143,7 @@ class GoldenVerifier:
 
             results.append({
                 "case_id": case_id,
+                "module": module,
                 "passed": status_match and (diff is None),
                 "expected_status": golden["response"]["status_code"],
                 "actual_status": actual_response["code"],

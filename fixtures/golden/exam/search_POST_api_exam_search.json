@@ -1,0 +1,55 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-21T08:53:22.981215Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "POST",
+    "path": [
+      "api",
+      "exam",
+      "search"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": {
+        "exam": [
+          {
+            "id": "<<MASKED>>",
+            "created": null,
+            "updated": null,
+            "school": "",
+            "year": "113",
+            "grade": "1",
+            "className": "1",
+            "status": "1",
+            "userName": "王孝恩",
+            "card": "26MA-A-0504I",
+            "kind": "",
+            "randomId": "poCWH",
+            "finishTime": null,
+            "score": null,
+            "comment": null,
+            "email": "test4@gmail.com.tw",
+            "registrationDate": null,
+            "registrationSession": null,
+            "cellPhone": null,
+            "department": null,
+            "role": "老師",
+            "local": "台北市",
+            "gtptPassed": false,
+            "gtptCertificate": null,
+            "questionRelated": null,
+            "isReviewer": true,
+            "testNumber": null
+          }
+        ],
+        "result": null
+      }
+    }
+  }
+}

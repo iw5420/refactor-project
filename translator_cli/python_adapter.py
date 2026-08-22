@@ -20,6 +20,31 @@ from typing import Protocol
 from translator_cli.exceptions import TranslatorCliModelOutputError
 
 
+def strip_all_function_bodies(source: str) -> str:
+    """把 `source` 裡「所有」函式／方法本體替換成單一 `pass`，只保留
+    簽名、裝飾器、import、class 定義與 class 層級屬性宣告（SQLAlchemy
+    Column／Pydantic 欄位這類定義資料形狀的陳述式，不是函式本體，不受
+    影響）。對應 09b_bug_trace.md #37：`context_files` 純粹是參考用途，
+    模型只需要知道「這裡有哪些函式／類別可用、簽名長怎樣」就能正確
+    呼叫，不需要看到其他（非目前要填的）函式的完整實作細節——真實環境
+    量化證實，prompt 越大，本地模型跑題與生成耗時暴增的機率越高（見
+    `translator_cli/client.py` 的 `_trim_context_files_if_oversized()`）。
+
+    只在呼叫端判斷 context 過大時才會被呼叫，不是無條件套用（見
+    `client.py`）。用 `ast.walk()` 找出所有 `FunctionDef`／
+    `AsyncFunctionDef`（不分是否巢狀、是否為 class 方法）逐一替換
+    `body`，其餘節點原封不動。輸入若通不過 `ast.parse()`，讓
+    `SyntaxError` 原樣往外傳，由呼叫端決定要不要退回原始內容（裁減本身
+    不該變成新的失敗來源）。
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            node.body = [ast.Pass()]
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
 def extract_body_statements(body_source: str, function_name: str) -> list[ast.stmt]:
     """對應 07a 六章步驟 6／6a／6b。`body_source` 是 delimiter 抽取出的
     「未縮排」陳述式文字（07a 六章「delimiter 契約：模型回傳格式」）。

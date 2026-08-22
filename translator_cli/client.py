@@ -22,20 +22,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
-from translator_cli import formatting, git_ops, ollama_client, scaffold
+from common.run_context import adhoc_run_id
+from translator_cli import formatting, git_ops, ollama_client, python_adapter, scaffold
 from translator_cli.exceptions import (
     TranslatorCliConfigError,
     TranslatorCliError,
     TranslatorCliModelOutputError,
     TranslatorCliNetworkError,
     TranslatorCliScaffoldMismatchError,
+    TranslatorCliUpstreamDegradedError,
 )
 from translator_cli.python_adapter import PythonAdapter
 from translator_cli.types import FillResult, PythonStructure, ScaffoldResult
 
 logger = logging.getLogger(__name__)
+
+# 對應 09b_bug_trace.md #37：真實環境量化證實，context_files 總量超過
+# 這個量級時，本地模型（qwen2.5-coder:32b）明顯更容易跑題、生成耗時
+# 暴增到正常值的 7～20 倍。門檻值取自真實資料：那次重跑裡所有「成功」
+# 呼叫的 context_files 總量最高 12942 bytes，所有「三次 attempt 全部
+# 失敗」的呼叫最低 15590 bytes，兩者之間留有餘裕，13000 bytes 取在
+# 安全側。之後若有更多真實資料，這個值可以直接調整，不影響裁減機制
+# 本身的結構。
+TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES = int(
+    os.environ.get("TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", "13000")
+)
 
 
 async def generate_scaffold(
@@ -147,6 +161,45 @@ def _read_context_files(root: Path, context_files: list[str], *, task_id: str) -
     return resolved
 
 
+def _trim_context_files_if_oversized(
+    context_files: list[tuple[str, str]], *, task_id: str
+) -> list[tuple[str, str]]:
+    """對應 09b_bug_trace.md #37「context 過大時的裁減」：只在總大小
+    超過 `TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES` 時才裁減，小
+    context 維持原始完整內容不動——真實資料顯示大部分呼叫的
+    context_files 遠低於這個門檻，裁減只該發生在真的需要的時候。
+
+    裁減方式：呼叫 `python_adapter.strip_all_function_bodies()` 把每個
+    檔案的所有函式本體換成單一 `pass`，只留簽名／裝飾器／import／class
+    定義與屬性宣告（見該函式 docstring）。單一檔案裁減失敗（理論上不該
+    發生——這裡的內容一定是合法 Python，`ast.parse()` 沒有理由失敗，但
+    裁減本身不該變成新的失敗來源）時，那個檔案退回原始內容，不影響其他
+    檔案／整體流程。純 AST 記憶體操作，不是 I/O，不需要 `asyncio.to_thread()`
+    （見模組 docstring）。
+    """
+    total_bytes = sum(len(content.encode("utf-8")) for _, content in context_files)
+    if total_bytes < TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES:
+        return context_files
+
+    trimmed: list[tuple[str, str]] = []
+    for path, content in context_files:
+        try:
+            trimmed.append((path, python_adapter.strip_all_function_bodies(content)))
+        except SyntaxError as exc:
+            logger.warning(
+                "task %s：context_files 裁減 %s 失敗，保留原始內容（見 09b_bug_trace.md #37）：%s",
+                task_id, path, exc,
+            )
+            trimmed.append((path, content))
+
+    trimmed_bytes = sum(len(content.encode("utf-8")) for _, content in trimmed)
+    logger.info(
+        "task %s：context_files 總量 %d bytes 超過門檻 %d bytes，已裁減至 %d bytes（見 09b_bug_trace.md #37）",
+        task_id, total_bytes, TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES, trimmed_bytes,
+    )
+    return trimmed
+
+
 async def fill_function(
     python_project_path: str,
     task_id: str,
@@ -156,11 +209,19 @@ async def fill_function(
     description: str,
     context: str,
     context_files: list[str],
+    run_id: str | None = None,
 ) -> FillResult:
     """對應 07a 五、六、七章。呼叫失敗時不寫入任何內容（見五章「呼叫
     失敗時不寫入任何內容」）——每個失敗分支都在寫入磁碟之前 return，
     是九章「衝突偵測」成立的前提。
+
+    `run_id`：選填，省略時用 `adhoc_run_id()`。這裡是 Ollama 呼叫鏈的
+    最外層（見 `11a_logging_architecture.md` 九章「run_id 的解析只在
+    fill_function() 做一次」），只在這裡解析一次再往下傳給
+    `ollama_client.get_function_body()`，同一個 task 的多次格式修正
+    attempt 才會落在同一個 run_id 底下，不會各自 fallback 出不同的值。
     """
+    resolved_run_id = run_id or adhoc_run_id()
     root = Path(python_project_path)
 
     try:
@@ -188,6 +249,8 @@ async def fill_function(
         # FillResult(success=False)，不讓原生例外洩漏擊穿合約。
         return FillResult(success=False, error=f"讀取 context_files 失敗：{exc}", diff="")
 
+    resolved_context_files = _trim_context_files_if_oversized(resolved_context_files, task_id=task_id)
+
     try:
         body_source = await ollama_client.get_function_body(
             current_signature=current_signature,
@@ -195,6 +258,10 @@ async def fill_function(
             context=context,
             context_files=resolved_context_files,
             function_name=function_name,
+            task_id=task_id,
+            target_file=target_file,
+            class_name=class_name,
+            run_id=resolved_run_id,
         )
     except (TranslatorCliModelOutputError, TranslatorCliNetworkError, TranslatorCliConfigError) as exc:
         # TranslatorCliNetworkError（網路層重試耗盡）／TranslatorCliConfigError
@@ -204,8 +271,16 @@ async def fill_function(
         # 錯誤與環境變數缺失都不該進「模型輸出格式錯誤」的重試邏輯，那
         # 救不了連線失敗或缺環境變數這兩件事，一樣轉成
         # FillResult(success=False) 讓這個 task 明確失敗、不讓例外洩漏
-        # 擊穿合約。
-        return FillResult(success=False, error=str(exc), diff="")
+        # 擊穿合約。TranslatorCliUpstreamDegradedError 是
+        # TranslatorCliNetworkError 的子類別，一樣會被這裡接住，差別只是
+        # 額外標記 upstream_degraded=True，讓 implement_node.py 決定要不要
+        # 提早停止重試（見該例外類別 docstring、docs/09b_bug_trace.md #35）。
+        return FillResult(
+            success=False,
+            error=str(exc),
+            diff="",
+            upstream_degraded=isinstance(exc, TranslatorCliUpstreamDegradedError),
+        )
 
     try:
         adapter.splice_body(node, body_source)

@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-21T08:53:22.978445Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "POST",
+    "path": [
+      "api",
+      "exam",
+      "getAllExamKind"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": {
+        "kinds": [
+          "2025/macuhau-t/TAA",
+          "2025/macuhau/TAA",
+          "2025/macuhau/TBA"
+        ]
+      }
+    }
+  }
+}

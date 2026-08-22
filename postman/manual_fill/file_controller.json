@@ -60,15 +60,15 @@
       "note": "目前已無使用早期開發api",
       "fill_mode": "file_upload",
       "values": {
-		"kind": "2025/macuhau/TAA",
-		"randomId": "3de7f",
-		"partNumber": "1",
-		"questionNumber": "1"
-		},
+        "kind": "2025/macuhau/TAA",
+        "randomId": "3de7f",
+        "partNumber": "1",
+        "questionNumber": "1"
+      },
       "raw_body": null,
       "file_paths": {
-		"file": "local_uploads/1_1.wav"
-		},
+        "file": "local_uploads/1_1.wav"
+      },
       "decision": "fill",
       "last_apply_error": null
     },

@@ -5,6 +5,16 @@
     "detail": "人工確認排除"
   },
   {
+    "endpoint": "DELETE /api/exam/delete",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
+    "endpoint": "POST /api/exam/create",
+    "category": "skip",
+    "detail": "人工確認排除"
+  },
+  {
     "endpoint": "PUT /api/exam/saveFinishTime",
     "category": "skip",
     "detail": "人工確認排除"
@@ -20,17 +30,7 @@
     "detail": "人工確認排除"
   },
   {
-    "endpoint": "POST /api/exam/create",
-    "category": "skip",
-    "detail": "人工確認排除"
-  },
-  {
     "endpoint": "POST /api/exam/ResumeSameTypeAnswer",
-    "category": "skip",
-    "detail": "人工確認排除"
-  },
-  {
-    "endpoint": "DELETE /api/exam/delete",
     "category": "skip",
     "detail": "人工確認排除"
   },

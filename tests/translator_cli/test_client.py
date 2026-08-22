@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from translator_cli import client, formatting, git_ops, ollama_client, scaffold
-from translator_cli.exceptions import TranslatorCliError, TranslatorCliScaffoldMismatchError
+from translator_cli.exceptions import (
+    TranslatorCliError,
+    TranslatorCliNetworkError,
+    TranslatorCliScaffoldMismatchError,
+    TranslatorCliUpstreamDegradedError,
+)
 from translator_cli.types import FillResult
 
 
@@ -175,6 +180,65 @@ def test_fill_function_adds_missing_body_imports(tmp_path, monkeypatch):
     assert "from fastapi import" in written and "HTTPException" in written
     assert "from app.repositories.user_repository import UserRepository" in written
     ast.parse(written)  # 語法必須合法
+
+
+def test_fill_function_marks_upstream_degraded_on_that_specific_error(tmp_path, monkeypatch):
+    """對應 docs/09b_bug_trace.md #35：get_function_body() 拋出
+    TranslatorCliUpstreamDegradedError（連續多個 task 都在傳輸層失敗）
+    時，fill_function() 除了照常轉成 FillResult(success=False)，還要把
+    upstream_degraded=True 一併帶出來，讓 implement_node.py 能提早停止
+    重試，不是每個 task 各自燒完重試預算才發現同一個根因。"""
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    async def _raise_upstream_degraded(**kwargs):
+        raise TranslatorCliUpstreamDegradedError("連續 3 次都在傳輸層失敗")
+
+    monkeypatch.setattr(ollama_client, "get_function_body", _raise_upstream_degraded)
+
+    result = asyncio.run(
+        client.fill_function(
+            str(tmp_path),
+            task_id="task_001",
+            target_file="app/repositories/user_repository.py",
+            class_name="UserRepository",
+            function_name="get_by_id",
+            description="d",
+            context="",
+            context_files=[],
+        )
+    )
+
+    assert result.success is False
+    assert result.upstream_degraded is True
+
+
+def test_fill_function_does_not_mark_upstream_degraded_on_plain_network_error(tmp_path, monkeypatch):
+    """普通的 TranslatorCliNetworkError（單次呼叫的網路層重試耗盡，還沒
+    累積到跨 task 的連續失敗門檻）不該被誤標成 upstream_degraded。"""
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    async def _raise_plain_network_error(**kwargs):
+        raise TranslatorCliNetworkError("這次剛好連不上")
+
+    monkeypatch.setattr(ollama_client, "get_function_body", _raise_plain_network_error)
+
+    result = asyncio.run(
+        client.fill_function(
+            str(tmp_path),
+            task_id="task_001",
+            target_file="app/repositories/user_repository.py",
+            class_name="UserRepository",
+            function_name="get_by_id",
+            description="d",
+            context="",
+            context_files=[],
+        )
+    )
+
+    assert result.success is False
+    assert result.upstream_degraded is False
 
 
 def test_fill_function_idempotent_rerun_with_identical_body_succeeds(tmp_path, monkeypatch):
@@ -556,3 +620,106 @@ def test_fill_function_missing_ollama_env_vars_returns_failure_not_crash(tmp_pat
 
     assert result.success is False
     assert "OLLAMA_BASE_URL" in result.error
+
+
+class TestTrimContextFilesIfOversized:
+    """對應 09b_bug_trace.md #37：context 過大時的裁減，只在超過門檻時
+    才動手，門檻值取自真實環境量化資料（成功呼叫最高 12942 bytes、
+    三次 attempt 全失敗的呼叫最低 15590 bytes）。
+    """
+
+    _BIG_FUNCTION = "\n".join(
+        f"    def with_{name}(self, {name}: str) -> object:\n"
+        f"        validator = ValidationUtil()\n"
+        f"        if validator.is_valid_field({name}):\n"
+        f"            return Specification(lambda x: x.{name} == {name})\n"
+        f"        else:\n"
+        f"            return conjunction()\n"
+        for name in ("year", "grade", "classes", "kind", "status", "card", "random_id")
+    )
+
+    def test_below_threshold_returns_unchanged(self, monkeypatch):
+        monkeypatch.setattr(client, "TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", 100_000)
+        context_files = [("app/services/foo.py", "class Foo:\n    def bar(self): pass\n")]
+        result = client._trim_context_files_if_oversized(context_files, task_id="task_x")
+        assert result == context_files
+
+    def test_above_threshold_strips_function_bodies(self, monkeypatch):
+        monkeypatch.setattr(client, "TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", 100)
+        source = "class ExamSpecification:\n" + self._BIG_FUNCTION
+        context_files = [("app/repositories/exam_repository.py", source)]
+        result = client._trim_context_files_if_oversized(context_files, task_id="task_x")
+        assert len(result) == 1
+        path, trimmed = result[0]
+        assert path == "app/repositories/exam_repository.py"
+        assert "return Specification(lambda x: x.year == year)" not in trimmed
+        assert "def with_year(self, year: str) -> object:" in trimmed
+        ast.parse(trimmed)  # 裁減後仍是合法 Python
+
+    def test_threshold_measured_against_total_not_per_file(self, monkeypatch):
+        # 五個各自不大的檔案，加總超過門檻時仍要觸發裁減——真實案例
+        # 就是這種「單一檔案不算大，加總才過大」的情況。
+        monkeypatch.setattr(client, "TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", 150)
+        small_file = "class Foo:\n    def bar(self): return 1\n"
+        context_files = [(f"app/m{i}.py", small_file) for i in range(5)]
+        total_before = sum(len(c.encode("utf-8")) for _, c in context_files)
+        assert total_before > 150
+        result = client._trim_context_files_if_oversized(context_files, task_id="task_x")
+        assert all("return 1" not in content for _, content in result)
+
+    def test_unparseable_file_falls_back_to_original_content(self, monkeypatch):
+        monkeypatch.setattr(client, "TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", 10)
+        bad_source = "def (:\n"  # 不合法 Python，理論上不該發生，但裁減本身不能崩潰
+        context_files = [("app/broken.py", bad_source)]
+        result = client._trim_context_files_if_oversized(context_files, task_id="task_x")
+        assert result == [("app/broken.py", bad_source)]
+
+
+def test_fill_function_trims_oversized_context_before_calling_ollama(tmp_path, monkeypatch):
+    # 端對端驗證：真的超過門檻時，get_function_body() 收到的 context_files
+    # 已經被裁減過，不是原始的巨大內容（見 09b_bug_trace.md #37）。
+    monkeypatch.setattr(client, "TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", 100)
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    bloated_source = (
+        "class UserRepository:\n"
+        "    def get_by_id(self, user_id: int) -> int:\n"
+        "        pass\n"
+        "    def get_all(self) -> list[int]:\n"
+        "        return [x for x in range(1000) if x % 2 == 0 and x % 3 == 0]\n"
+        "    def get_by_name(self, name: str) -> int | None:\n"
+        "        return db.query(User).filter(User.name == name).one_or_none()\n"
+    )
+    (tmp_path / "app" / "repositories" / "user_repository.py").write_text(bloated_source, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "test: bloat user_repository.py"],
+        cwd=tmp_path, capture_output=True, text=True, check=True,
+    )
+
+    captured = {}
+
+    async def fake_get_function_body(**kwargs):
+        captured["context_files"] = kwargs["context_files"]
+        return "return user_id\n"
+
+    monkeypatch.setattr(ollama_client, "get_function_body", fake_get_function_body)
+
+    result = asyncio.run(
+        client.fill_function(
+            str(tmp_path),
+            task_id="task_001",
+            target_file="app/repositories/user_repository.py",
+            class_name="UserRepository",
+            function_name="get_by_id",
+            description="d",
+            context="",
+            context_files=["app/repositories/user_repository.py"],
+        )
+    )
+
+    assert result.success is True
+    received_content = dict(captured["context_files"])["app/repositories/user_repository.py"]
+    assert "range(1000)" not in received_content
+    assert "def get_all(self) -> list[int]:" in received_content

@@ -170,7 +170,15 @@
       "note": null,
       "fill_mode": "raw_body",
       "values": {},
-      "raw_body": {"card":"","classes":"","grade":"","kind":"","status":"","year":"113","randomId":""},
+      "raw_body": {
+        "card": "",
+        "classes": "",
+        "grade": "",
+        "kind": "",
+        "status": "",
+        "year": "113",
+        "randomId": ""
+      },
       "file_paths": {},
       "decision": "fill",
       "last_apply_error": null
@@ -195,7 +203,7 @@
         }
       },
       "note": null,
-     "fill_mode": "raw_body",
+      "fill_mode": "raw_body",
       "values": {},
       "raw_body": {
         "kind": "2025/macuhau/TAA"
@@ -229,7 +237,7 @@
           "required": true
         }
       },
-	"note": "目前已無使用早期開發api",
+      "note": "目前已無使用早期開發api",
       "fill_mode": "fields",
       "values": {},
       "raw_body": null,
@@ -331,7 +339,11 @@
       "note": null,
       "fill_mode": "raw_body",
       "values": {},
-      "raw_body": {"card": "26MA-A-0501E", "randomId": "pt28Z", "kind": "2025/macuhau/TAA"},
+      "raw_body": {
+        "card": "26MA-A-0501E",
+        "randomId": "pt28Z",
+        "kind": "2025/macuhau/TAA"
+      },
       "file_paths": {},
       "decision": "fill",
       "last_apply_error": null
@@ -376,7 +388,248 @@
       "note": null,
       "fill_mode": "raw_body",
       "values": {},
-      "raw_body": [{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"1","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"2","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"3","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"4","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"5","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"6","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"7","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"8","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"9","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"10","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"11","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"1","questionNumber":"12","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"1","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"2","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"3","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"4","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"5","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"6","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"7","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"8","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"9","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"10","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"11","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"12","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"13","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"14","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"15","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"16","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"17","typeNumber":"1"},{"answer":"D","randomId":"3de7f","kind":"2025/macuhau/TAA","partNumber":"2","questionNumber":"18","typeNumber":"1"}],
+      "raw_body": [
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "1",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "2",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "3",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "4",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "5",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "6",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "7",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "8",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "9",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "10",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "11",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "1",
+          "questionNumber": "12",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "1",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "2",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "3",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "4",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "5",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "6",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "7",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "8",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "9",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "10",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "11",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "12",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "13",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "14",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "15",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "16",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "17",
+          "typeNumber": "1"
+        },
+        {
+          "answer": "D",
+          "randomId": "3de7f",
+          "kind": "2025/macuhau/TAA",
+          "partNumber": "2",
+          "questionNumber": "18",
+          "typeNumber": "1"
+        }
+      ],
       "file_paths": {},
       "decision": "fill",
       "last_apply_error": null

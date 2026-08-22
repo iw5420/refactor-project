@@ -1,6 +1,6 @@
 {
-  "recorded_at": "2026-08-18T03:32:42.992817Z",
-  "total_cases": 9,
+  "recorded_at": "2026-08-21T08:53:28.307193Z",
+  "total_cases": 26,
   "cases": [
     "test_exception_GET_api_grading_test-exception",
     "locals_GET_api_general_localtions",
@@ -10,7 +10,24 @@
     "image_1_GET_api_file_image",
     "schools_1_GET_api_registration_exam_schools",
     "grades_GET_api_registration_exam_grades",
-    "classes_GET_api_registration_exam_classes"
+    "classes_GET_api_registration_exam_classes",
+    "get_all_exam_kind_POST_api_exam_getAllExamKind",
+    "analyze_POST_api_grading_analyze",
+    "score_POST_api_grading_score",
+    "get_candidate_POST_api_candidate_search",
+    "create_random_POST_api_candidate_generateRandomId",
+    "search_POST_api_exam_search",
+    "get_single_exam_POST_api_exam_getSingleExam",
+    "search_answer_POST_api_exam_answer_search",
+    "save_answer_POST_api_exam_answer_save",
+    "grade_POST_api_grading_grade",
+    "voice_POST_api_file_voice",
+    "voice_1_鏈式依賴驗證__GET_api_file_voice",
+    "image_1_鏈式依賴驗證__GET_api_file_image",
+    "voice_1_鏈式依賴驗證__GET_api_file_voice",
+    "get_all_POST_api_exam_getAll",
+    "login_POST_api_grading_login",
+    "schools_POST_api_general_schools"
   ],
   "skipped": [
     "get_version_GET_api_general_version"

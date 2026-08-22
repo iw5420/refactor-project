@@ -26,7 +26,10 @@
       "note": null,
       "fill_mode": "raw_body",
       "values": {},
-      "raw_body": {"grade":"國小","local":"[10]嘉義縣"},
+      "raw_body": {
+        "grade": "國小",
+        "local": "[10]嘉義縣"
+      },
       "file_paths": {},
       "decision": "fill",
       "last_apply_error": null

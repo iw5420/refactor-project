@@ -73,15 +73,20 @@ class _FakeClient:
         self.messages = _Messages()
 
 
+@pytest.fixture(autouse=True)
+def _stub_record_llm_call(monkeypatch):
+    # 這裡不測 record_llm_call()／record_llm_call_start() 內部寫入邏輯
+    # （見 test_llm_trace.py），只確保這份檔案的測試不會因為呼叫記錄而
+    # 意外寫真實 DB。個別測試需要驗證實際傳了什麼參數時，在測試本體裡
+    # 用自己的 monkeypatch.setattr() 覆寫掉這裡的 no-op（同一個
+    # monkeypatch fixture 實例，後設定的覆蓋先設定的）。
+    monkeypatch.setattr(llm_client, "record_llm_call", lambda *a, **kw: None)
+    monkeypatch.setattr(llm_client, "record_llm_call_start", lambda *a, **kw: None)
+
+
 class TestCallClaudeForJson:
     _SCHEMA = {"type": "object", "properties": {"a": {"type": "integer"}}}
     _MODEL = "claude-sonnet-4-6"
-
-    @pytest.fixture(autouse=True)
-    def _stub_log_usage(self, monkeypatch):
-        # 這裡不測 log_usage() 內部寫檔邏輯（見 test_llm_usage_logger.py），
-        # 只確保這些既有測試不會因為新增的用量記錄而意外寫真實檔案。
-        monkeypatch.setattr(llm_client, "log_usage", lambda *a, **kw: None)
 
     def test_returns_parsed_value(self, monkeypatch):
         fake = _FakeClient('{"a": 1}')
@@ -141,34 +146,80 @@ class TestCallClaudeForJson:
             call_claude_for_json(system_prompt="x", user_prompt="y", schema=self._SCHEMA, model=self._MODEL)
 
 
-class TestCallClaudeForJsonUsageLogging:
-    def test_logs_usage_with_real_caller_not_wrapper(self, monkeypatch):
-        # call_claude_for_json() 是所有 Agent 共用的封裝——log_usage()
-        # 不傳 caller 時的預設行為（inspect.stack()[1]）會抓到
-        # call_claude_for_json 自己，不是真正的業務呼叫端。
-        # call_claude_for_json() 必須自己先算出真正的呼叫端（這裡測試函式
-        # 本身），明確傳給 log_usage() 覆寫掉這個預設行為。
-        fake = _FakeClient('{"a": 1}')
-        monkeypatch.setattr(llm_client, "_get_client", lambda: fake)
+class TestCallClaudeForJsonStartRecording:
+    def test_record_llm_call_start_called_before_api_call_with_full_prompt(self, monkeypatch):
+        # 呼叫還沒結束就要能查到 prompt（見 11a 七章「呼叫開始即寫入
+        # running row」）：record_llm_call_start() 必須在真正打 API 之前
+        # 就被呼叫，且帶著跟 finally 那筆完全一致的組好的 prompt 內容。
+        call_order = []
+        start_kwargs = {}
 
-        captured = {}
+        def _fake_record_start(**kw):
+            call_order.append("start")
+            start_kwargs.update(kw)
 
-        def _fake_log_usage(response, *, model, caller=None):
-            captured["response"] = response
-            captured["model"] = model
-            captured["caller"] = caller
+        class _OrderTrackingClient:
+            class messages:
+                @staticmethod
+                def create(**kwargs):
+                    call_order.append("api_call")
+                    return _FakeResponse(content=[_FakeBlock(type="text", text='{"a": 1}')])
 
-        monkeypatch.setattr(llm_client, "log_usage", _fake_log_usage)
+        monkeypatch.setattr(llm_client, "_get_client", lambda: _OrderTrackingClient())
+        monkeypatch.setattr(llm_client, "record_llm_call_start", _fake_record_start)
+
+        call_claude_for_json(
+            system_prompt="sys 內容", user_prompt="user 內容",
+            schema={"type": "object"}, model="claude-sonnet-4-6",
+        )
+
+        assert call_order == ["start", "api_call"]
+        assert "sys 內容" in start_kwargs["prompt"]
+        assert "user 內容" in start_kwargs["prompt"]
+        assert start_kwargs["vendor"] == "claude"
+        assert start_kwargs["model"] == "claude-sonnet-4-6"
+
+    def test_record_llm_call_start_uses_same_trace_id_as_finish(self, monkeypatch):
+        # record_llm_call() 靠比對同一個 trace_id 才能把 running row
+        # upsert 成最終結果，不是兩筆獨立紀錄——這裡驗證兩次呼叫確實共用
+        # 同一個 trace_id。
+        start_kwargs = {}
+        finish_kwargs = {}
+        monkeypatch.setattr(llm_client, "_get_client", lambda: _FakeClient('{"a": 1}'))
+        monkeypatch.setattr(llm_client, "record_llm_call_start", lambda **kw: start_kwargs.update(kw))
+        monkeypatch.setattr(llm_client, "record_llm_call", lambda **kw: finish_kwargs.update(kw))
 
         call_claude_for_json(
             system_prompt="x", user_prompt="y", schema={"type": "object"}, model="claude-sonnet-4-6"
         )
 
-        assert captured["caller"] == "test_llm_client.test_logs_usage_with_real_caller_not_wrapper"
-        assert captured["model"] == "claude-sonnet-4-6"
-        assert captured["response"].usage.input_tokens == 10
+        assert start_kwargs["trace_id"] == finish_kwargs["trace_id"]
 
-    def test_not_called_when_api_call_fails(self, monkeypatch):
+
+class TestCallClaudeForJsonTraceRecording:
+    def test_records_with_real_caller_not_wrapper(self, monkeypatch):
+        # call_claude_for_json() 是所有 Agent 共用的封裝，用 sys._getframe(1)
+        # 抓真正的業務呼叫端（這裡測試函式本身），不是自己這層 wrapper。
+        fake = _FakeClient('{"a": 1}')
+        monkeypatch.setattr(llm_client, "_get_client", lambda: fake)
+
+        captured = {}
+        monkeypatch.setattr(
+            llm_client, "record_llm_call", lambda **kw: captured.update(kw)
+        )
+
+        call_claude_for_json(
+            system_prompt="x", user_prompt="y", schema={"type": "object"}, model="claude-sonnet-4-6"
+        )
+
+        assert captured["caller"] == "test_llm_client.test_records_with_real_caller_not_wrapper"
+        assert captured["model"] == "claude-sonnet-4-6"
+        assert captured["status"] == "ok"
+        assert captured["input_tokens"] == 10
+
+    def test_records_with_status_error_when_api_call_fails(self, monkeypatch):
+        # record_llm_call() 在 finally 區塊呼叫，失敗時也要留下一筆
+        # status='error' 的 trace，不能因為呼叫失敗就完全沒有記錄。
         request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
 
         class _FailingClient:
@@ -178,13 +229,16 @@ class TestCallClaudeForJsonUsageLogging:
                     raise anthropic.APIConnectionError(request=request)
 
         monkeypatch.setattr(llm_client, "_get_client", lambda: _FailingClient())
-        called = {"n": 0}
-        monkeypatch.setattr(llm_client, "log_usage", lambda *a, **kw: called.__setitem__("n", called["n"] + 1))
+        captured = {}
+        monkeypatch.setattr(
+            llm_client, "record_llm_call", lambda **kw: captured.update(kw)
+        )
 
         with pytest.raises(LlmJsonError):
             call_claude_for_json(system_prompt="x", user_prompt="y", schema={"type": "object"}, model="claude-sonnet-4-6")
 
-        assert called["n"] == 0  # 沒有 response 可記錄，不該被呼叫
+        assert captured["status"] == "error"
+        assert captured["error_msg"] is not None
 
 
 class TestGetClientThreadSafety:

@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "recorded_at": "2026-08-21T08:53:22.983306Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "POST",
+    "path": [
+      "api",
+      "exam",
+      "answer",
+      "save"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": "考生答案儲存成功"
+    }
+  }
+}

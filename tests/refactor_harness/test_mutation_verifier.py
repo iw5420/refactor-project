@@ -68,6 +68,67 @@ def test_verify_all_raw_skips_tainted_folder(tmp_path, monkeypatch):
     assert verifier.get_excluded_folders() == [_TAINTED_FOLDER]
 
 
+def test_verify_one_raw_includes_module_and_related_files(tmp_path, monkeypatch):
+    """_verify_one_raw() 的每筆結果要附上 module／related_files，
+    ⑦ Debug Agent 才能把 mutation 失敗歸到對應模組——邏輯與
+    GoldenVerifier 共用同一個 RouteMapper。故意不吃真實
+    config/harness.yaml：那份檔案每次①③重新產生時，LLM 對 module 分組
+    的結果會變（同一個路由這次分到哪個 module 不保證跟上次一樣），拿
+    活的設定檔斷言會讓這個測試隨著別的 Agent 重新產生設定檔而反覆
+    誤報——改用一份寫死在測試裡、內容穩定的最小設定檔。
+    """
+    monkeypatch.setattr(DbEnvironment, "apply_seed", lambda self, *a, **kw: None)
+
+    config_path = tmp_path / "harness.yaml"
+    config_path.write_text(
+        """
+databases:
+  test:
+    dsn: postgresql://fake/db
+    tables_to_truncate: []
+collections:
+  mutation:
+    path: postman/collection_mutation.json
+route_to_file_mapping:
+  POST_api_candidate_search:
+  - app/routers/candidate_router.py
+  - app/schemas/candidate.py
+  - app/services/candidate_service.py
+route_to_module_mapping:
+  POST_api_candidate_search: candidate
+""",
+        encoding="utf-8",
+    )
+
+    execution = {
+        "item": {
+            "name": "candidate search",
+            "request": {"method": "POST", "url": {"path": ["api", "candidate", "search"]}},
+        },
+        "response": {"code": 200, "stream": {"type": "Buffer", "data": []}},
+    }
+    monkeypatch.setattr(
+        mutation_verifier, "run_newman",
+        lambda collection_path, base_url, folder=None: {"run": {"executions": [execution]}},
+    )
+
+    verifier = MutationVerifier(
+        python_base_url="http://localhost:8000",
+        golden_dir=str(tmp_path),
+        test_dsn="postgresql://fake/db",
+        config_path=str(config_path),
+    )
+    results = verifier._verify_one_raw(_CLEAN_FOLDER)
+
+    assert len(results) == 1
+    assert results[0]["module"] == "candidate"
+    assert results[0]["related_files"] == [
+        "app/routers/candidate_router.py",
+        "app/schemas/candidate.py",
+        "app/services/candidate_service.py",
+    ]
+
+
 def test_init_without_metadata_file_is_not_tainted(tmp_path, monkeypatch):
     """_metadata.json 不存在時（初次執行）__init__ 不應拋例外，
     _tainted_folder_names 是空集合。"""

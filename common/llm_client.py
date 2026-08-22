@@ -12,32 +12,42 @@ Agent 自己的 `prompts.py` 負責（各 Agent 的 schema 集中定義在自己
 哪個模型」是每個 Agent 自己的決策，不該由共用層代為決定。
 
 **格式保證用 Structured Outputs（`output_config.format`），不是
-prefill**：原本設計是用 assistant message prefill（呼叫時多帶一個「已經
-開始的助手回覆」）從結構上避免模型在正式答案前夾帶推理文字，但實測
-`claude-sonnet-4-6`（Claude 4.6 系列）已經不支援 prefill，呼叫會直接被
-API 拒絕（400 錯誤）——這是 4.6 的破壞性變更，官方遷移指南建議改用
-Structured Outputs。查證後改用 `output_config.format`：把 JSON Schema
-編譯成文法，在生成階段直接限制 token 選擇，保證輸出結構上符合 schema
-（constrained decoding），不是靠事後解析或重試去猜模型有沒有照做。原本
-的「prefill＋擷取信心分級＋有界修正重試」三層防禦機制因此整組拿掉，
-格式正確性由 API 本身保證，不需要應用層再做這些事（沿革見
-`docs/03c_collection_agent_code.md` 1.2 節）。
+prefill**：`claude-sonnet-4-6`（Claude 4.6 系列）已經不支援 prefill，
+呼叫會直接被 API 拒絕（400 錯誤），改用 `output_config.format` 把 JSON
+Schema 編譯成文法，在生成階段直接限制 token 選擇（constrained decoding）。
 
 傳輸層級的暫時性錯誤（連線、429、5xx，含 529 Overloaded）已由
 `anthropic` SDK 內建 `max_retries`（預設 2、指數退避）處理，不需要應用層
 再做額外重試。
+
+**這個函式是同步函式，不是 `async def`**：Map 階段用
+`concurrent.futures.ThreadPoolExecutor.submit()` 呼叫它（見 00 六章），
+是被丟進執行緒池、用阻塞呼叫的方式跑的普通函式（見
+`11a_logging_architecture.md` 八章）。
+
+**呼叫記錄**：不透過 `common/llm_usage_logger.py::log_usage()`（該模組
+已退場，見 11a 八章「`log_usage()` 退場」）——那個簽名結構上就拿不到
+`system_prompt`／`user_prompt`／呼叫起訖時間。改成呼叫發出前先呼叫
+`common/llm_trace.py::record_llm_call_start()` 寫入 `status="running"`
+的 row（讓長時間等待中的呼叫也查得到當時送了什麼），`finally` 再呼叫
+`record_llm_call()` 用同一個 `trace_id` 補齊 response、token 用量、耗時、
+成功與否，一併記進 `llm_traces.db`，見 11a 八章「控制流程需求」。
 """
 from __future__ import annotations
 
-import inspect
 import json
+import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import anthropic
 
-from common.llm_usage_logger import log_usage
+from common.llm_trace import record_llm_call, record_llm_call_start
+from common.run_context import adhoc_run_id
+from common.trace_context import current_trace_id
 
 # 各 Agent 自己的 llm.py 讀不到環境變數時的保底 fallback；不是「選定的
 # 模型」，只是沒設定任何環境變數時不至於整個炸掉的最低限度預設值。
@@ -88,6 +98,11 @@ def call_claude_for_json(
     user_prompt: str,
     schema: dict[str, Any],
     model: str,
+    run_id: str | None = None,
+    task_id: str | None = None,
+    target_file: str | None = None,
+    class_name: str | None = None,
+    function_name: str | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> Any:
     """呼叫 Claude API，用 `output_config.format`（Structured Outputs）
@@ -95,21 +110,44 @@ def call_claude_for_json(
 
     `model`：必填，呼叫端自己的 `llm.py` 算好（讀自己的環境變數＋
     `DEFAULT_MODEL_FALLBACK` 保底）再傳進來，這個函式不猜測任何 Agent
-    專屬的預設值（見模組docstring）。
+    專屬的預設值（見模組 docstring）。
 
-    `schema`：完整的 JSON Schema（不是單純的 Python `dict`/`list` 型別），
-    由呼叫端從自己的 `prompts.py` 引入對應的 `*_OUTPUT_SCHEMA` 常數——
-    schema 跟它描述的 system prompt 放在同一個檔案，調整其中一個時另一個
-    也在旁邊，不容易顧此失彼。
+    `schema`：完整的 JSON Schema，由呼叫端從自己的 `prompts.py` 引入
+    對應的 `*_OUTPUT_SCHEMA` 常數。
 
-    這個函式是 `common/llm_usage_logger.py` module docstring 講的「共用
-    API 封裝函式」例外情況：所有 Agent 的業務函式都透過這裡才打 API，
-    `log_usage()` 內部預設的 `inspect.stack()[1]` 會抓到這個函式自己，
-    不是真正的業務呼叫端，所以要在這裡（呼叫端的呼叫端）先抓出真正的
-    caller，明確傳下去。
+    `run_id`：選填，省略時就地呼叫 `adhoc_run_id()`（見
+    `common/run_context.py`）——這個函式本身就是 Claude 呼叫鏈的最外層，
+    fallback 在這裡解析一次即可，不需要再往下傳。
+
+    `task_id`／`target_file`／`class_name`／`function_name`：純記錄用的
+    選填參數，讓 `llmlog task`／`llmlog func` 也查得到 Claude 呼叫的歷史
+    （見 11a 八章）。不是每個呼叫都填得出來——Map 階段批次呼叫涵蓋多個
+    Java class 時，`target_file`／`class_name` 語意上無法化約成單一值，
+    維持 `None` 是正確行為，不是遺漏。
     """
-    caller_frame = inspect.stack()[1]
-    caller = f"{Path(caller_frame.filename).stem}.{caller_frame.function}"
+    caller_frame = sys._getframe(1)  # noqa: SLF001 - 比 inspect.stack() 便宜一到兩個數量級
+    caller = f"{Path(caller_frame.f_code.co_filename).stem}.{caller_frame.f_code.co_name}"
+
+    resolved_run_id = run_id or adhoc_run_id()
+    trace_id = str(uuid4())
+    token = current_trace_id.set(trace_id)
+    start = time.monotonic()
+    status: str = "error"  # 預設值：finally 執行時若還是這個值，代表中途有例外
+    http_code: int | None = None
+    error_msg: str | None = None
+    raw_text: str | None = None
+    usage = None
+    prompt_text = f"=== SYSTEM ===\n{system_prompt}\n\n=== USER ===\n{user_prompt}"
+
+    # 呼叫實際發出「之前」就寫入 status="running" 的 row（見
+    # 11a_logging_architecture.md 七章「呼叫開始即寫入 running row」）：
+    # 這次呼叫還沒結束、甚至卡住很久時，prompt 已經可以被 llmlog 查到，
+    # 不必等下面 finally 的 record_llm_call() 補上最終結果。
+    record_llm_call_start(
+        trace_id=trace_id, run_id=resolved_run_id, vendor="claude", model=model, caller=caller,
+        attempt=0, task_id=task_id, target_file=target_file, class_name=class_name, function_name=function_name,
+        prompt=prompt_text,
+    )
 
     try:
         response = _get_client().messages.create(
@@ -123,19 +161,60 @@ def call_claude_for_json(
             messages=[{"role": "user", "content": user_prompt}],
             output_config={"format": {"type": "json_schema", "schema": schema}},
         )
+        usage = response.usage
+        raw_text = "".join(
+            block.text for block in response.content if block.type == "text"
+        ).strip()
+        parsed = json.loads(raw_text)
+        status = "ok"  # 只有走到這裡（json.loads 成功）才標記成功
+        return parsed
+    except anthropic.APITimeoutError as exc:
+        # 必須排在 anthropic.APIError 之前——APITimeoutError 是 APIError
+        # 的子類別，except 順序由上而下比對，子類別要放前面，否則永遠會
+        # 被下面較泛用的 APIError 分支接住，狀態就分不出是不是逾時。
+        status = "timeout"
+        error_msg = str(exc)
+        raise LlmJsonError(f"Claude API 呼叫逾時: {exc}") from exc
     except anthropic.APIError as exc:
+        status = "error"
+        http_code = getattr(exc, "status_code", None)
+        error_msg = str(exc)
         raise LlmJsonError(f"Claude API 呼叫失敗: {exc}") from exc
-
-    log_usage(response, model=model, caller=caller)
-
-    text_parts = [block.text for block in response.content if block.type == "text"]
-    raw_text = "".join(text_parts).strip()
-
-    try:
-        return json.loads(raw_text)
     except json.JSONDecodeError as exc:
+        status = "error"
+        error_msg = str(exc)
         raise LlmJsonError(
             f"Claude 回應無法解析為 JSON（output_config 應保證格式合法，"
             f"這是異常情況）: {exc}",
             raw_text=raw_text,
         ) from exc
+    except Exception as exc:
+        # 涵蓋以上三種以外、真正意外的例外（SDK 內部錯誤、response 物件
+        # 形狀不符預期等）。沒有這個分支，這類例外會留下一筆
+        # status='error' 但 error_msg=NULL 的 row——有留痕但查不出原因，
+        # 等於沒查。不轉換成 LlmJsonError（不屬於這個函式原本的錯誤契約），
+        # 讓原始例外類型原樣往外傳，這裡只負責補上記錄用的 error_msg。
+        status = "error"
+        error_msg = repr(exc)
+        raise
+    finally:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        # current_trace_id.reset() 必須排在 record_llm_call() 之前——
+        # 見 11a_logging_architecture.md 八章「為什麼 reset() 要排在
+        # record_llm_call() 之前」：record_llm_call() 內部吞掉自己的寫入
+        # 例外只是內部契約，不是語言保證，萬一它自己出現非預期的 bug 而
+        # 拋出例外，reset() 排在後面就永遠不會執行，trace_id 會殘留污染
+        # 這個（可能被 ThreadPoolExecutor 重用的）執行緒後續的 log。
+        current_trace_id.reset(token)
+        record_llm_call(
+            trace_id=trace_id, run_id=resolved_run_id, vendor="claude", model=model, caller=caller,
+            attempt=0,  # Claude 路徑沒有格式重試迴圈，固定填 0，不留 NULL（schema NOT NULL）
+            task_id=task_id, target_file=target_file, class_name=class_name, function_name=function_name,
+            prompt=prompt_text,
+            response=raw_text,
+            input_tokens=usage.input_tokens if usage else None,
+            output_tokens=usage.output_tokens if usage else None,
+            cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", 0) if usage else None,
+            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0) if usage else None,
+            latency_ms=latency_ms, status=status, http_code=http_code, error_msg=error_msg,
+        )

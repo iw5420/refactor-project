@@ -1465,16 +1465,15 @@
           "kind": {
             "type": "string"
           },
-          "acount": {
+          "bcount": {
             "type": "integer",
             "format": "int64"
           },
           "brate": {
             "type": "string"
           },
-          "bcount": {
-            "type": "integer",
-            "format": "int64"
+          "arate": {
+            "type": "string"
           },
           "dcount": {
             "type": "integer",
@@ -1484,8 +1483,9 @@
             "type": "integer",
             "format": "int64"
           },
-          "arate": {
-            "type": "string"
+          "acount": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
