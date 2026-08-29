@@ -117,8 +117,18 @@ def build_graph():
         },
     )
 
-    # debug 迴圈回 implement
-    builder.add_edge("debug", "implement")
+    # debug 迴圈：give_up_early（10a 七章：這一輪所有 root_cause module
+    # 都判定不可修，或機械分類已經確定沒有任何 module 可能透過重試修好）
+    # 路由到 give_up，不進 implement 浪費一輪重試；否則照舊回 implement
+    # 讓 pending_fixed_bodies 生效。
+    builder.add_conditional_edges(
+        "debug",
+        debug_node.should_retry_or_give_up,
+        {
+            "implement": "implement",
+            "give_up": "give_up",
+        },
+    )
     builder.add_edge("give_up", END)
 
     return builder.compile()

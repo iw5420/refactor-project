@@ -2,15 +2,17 @@
 
 > 本文件承接 `00_refactor_architecture.md`（七、⑦ Debug Agent 一節：「輸入：fail 清單 + diff 報告 + 對應 Python 原始碼；分析根本原因，輸出具體修正指令回饋給 Agent ⑤」）、`02a_harness_architecture.md`（九章 Report 格式、十一章 Route Mapping、十三章 Module 級局部驗證、十五章資料流）、`09a_implement_agent_architecture.md`/`09b_implement_agent_code.md`（`task_failures` 欄位、`already_failed` 修正、09a 七章明確留給本文件的 `scaffold_skipped` 提早止損評估）、`01_langgraph_architecture.md`（State、retry 迴圈）。是這個 Agent 的**設計面**文件：決策、契約、資料結構、流程。實際程式碼實作見 `10b_debug_agent_code.md`。
 
-> **⚠️ 實作狀態（截至本文件目前版本）：本文件與 `10b_debug_agent_code.md` 都是設計稿，尚未套用進 repo 的實際程式碼**。本文件多處要求對既有、已通過真實環境驗證的 02b／09b 檔案做「前置修補」——`refactor_harness/verifier/comparator.py`（`module`／`related_files` 欄位）、`refactor_harness/core/reporter.py`（`module` 欄位）、`refactor_harness/langgraph_nodes/test_nodes.py`（`_is_service_reachable()` 健康檢查、`service_diagnostics`、`should_debug_or_done()` 上限檢查前移）、`graph/nodes/implement_node.py`（`_augment_task_io()`／`_run_one_task()` 擴充、`force_reschedule()` 呼叫點、`partial_reports` 的 `"round"` 鍵、改呼叫 `python_service.manager`）、`graph/scheduler.py`（新增 `force_reschedule()`）——這些全部只是**設計決策**，此刻的 repo（`git status` 可查）完全沒有反映任何一項。這是比照 09a（純設計）→09b（實際落地＋真實環境驗證＋`09b_bug_trace.md`）的既有兩階段作法：09a/09b 之間隔著一次真正的實作與測試，本文件目前對應的是「09a 那個階段」，**還沒有走到「09b 那個階段」**——換句話說，即使是命名為「程式碼實作」的 `10b_debug_agent_code.md`，也只是這一輪設計時同步寫好的預期程式碼，跟已經 commit、跑過真實測試的 09b 本身性質不同，不能假設 10b 列出的程式碼片段已經是 repo 的一部分。若要讓 ⑦ 真正運作，需要一個獨立的後續實作階段：把 10b 列出的全部 diff 實際套用進對應檔案、跑過真實 Claude API 與真實 pipeline 驗證、把過程中發現的落差（就像 `09b_bug_trace.md` 那樣）回寫進文件。
+> 本文件與 `10b_debug_agent_code.md` 描述的程式碼已套用進 repo，通過完整單元測試，並已完成多輪真實環境端對端驗證（含真實 Claude API、真實 Docker、真實 Postgres、多輪 `debug ↔ implement ↔ run_tests` 迴圈）。設計已收斂的關鍵結論：⑦ 直接產生可套用的程式碼（`fixed_body`／`file_fixes`），⑤ 的本地模型完全退出除錯迴圈（見八章）；`fixed_body` 只能替換函式本體，簽名／模組層級敘述改動需要 `file_fixes`（見八章 phase 2）；`retry_count` 上限檢查前移到 `should_debug_or_done()`、對所有分支統一套用（見七章）。已知的結構性限制見十二章。
 
 ---
 
 ## 一、本文件範圍與定位
 
+**⑦ 的核心任務：把專案改到能通過驗證，不是分析完就結束、把結論丟給人工或 ⑤ 決定要不要採用。** ⑦ 讀原始碼、定位根因之後，直接產生可以套用的最終程式碼（`fixed_body`／`file_fixes`，見六、八章），套用、重新驗證、沒過就再分析一次，直到通過或重試預算用盡——不是「⑦ 給建議、⑤ 執行」的兩階段分工，是 ⑦ 自己把程式碼改到能重新驗證通過，⑤ 的本地模型完全不參與這個迴圈。這個設計是真實環境測試逼出來的結論：曾經讓 ⑦ 只給自然語言指令、由 ⑤ 的本地模型根據指令重新生成程式碼，實測發現本地模型執行指令會不完整（見八章）——讓做出診斷的模型直接寫出程式碼，比讓另一個能力較弱的模型基於別人的結論重做一次更可靠。
+
 ⑦ Debug Agent 的輸入橫跨兩個既有 Agent 的輸出，不是單一 Agent 自己的延伸——這也是 00 文件把 010a 列成獨立文件、不塞進 09a/09b 的原因：
 
-1. **`task_failures`**（09b 一章，`implement_node.py` 逐 task 累積寫入）——「連程式碼都生不出來」的失敗：`reason` 為 `"scaffold_skipped"`（④ 骨架階段沒渲染出這個函式，永久性，重試無法修好）或 `"fill_failed"`（qwen 填空本身失敗，可能重試修好）
+1. **`task_failures`**（09b 一章，`implement_node.py` 逐 task 累積寫入）——「連程式碼都生不出來」的失敗：`reason` 為 `"scaffold_skipped"`（④ 骨架階段沒渲染出這個函式，永久性，重試無法修好）或 `"fill_failed"`（⑤ 本地模型填空本身失敗）。**`"fill_failed"` 的「可能重試修好」明確指的是「⑦ 這一輪直接接手寫出完整函式本體」，不是「排程器把它排回⑤本地模型重新翻譯一次」**——這條界線見四章「`known_fill_failures`：一旦失敗過一次，不再退回本地模型」，是本文件的正式決策，不是含糊帶過的措辭
 2. **`test_results`**（02a 九章 `HarnessReporter.build_report()` 的輸出，⑥ 產生）——「生出來但驗證沒過」的失敗，這才是真正的 bug list：`failures[]` 每筆含 `case_id`／`failure_type`／`body_diff`／`related_files`／`debug_hint`
 
 `test_results` 是**全量**驗證（readonly＋mutation，⑥ 對所有 module 無條件跑一次，見 02a 十二章），不是只驗證 ⑤ 認為有問題的 module——這一點是本文件多處設計決策的基礎（見三章）。
@@ -23,14 +25,14 @@
 
 ### 本文件推翻的一項既有假設：`retry_count` 不能只在 `failed_modules` 非空時遞增
 
-02a 十二章原本的措辭是「`retry_count` 只在 `failed_modules`（確實跑過、驗證過但沒過）非空時才扣減；`blocked_modules`……不消耗重試次數，因為那不是『寫錯了』，只是排程還沒排到」，`graph/nodes/debug_node.py` 現有 stub 也依此實作（`increment = 1 if state.get("failed_modules") else 0`）。**這條規則在交叉比對 09a 三章之後站不住腳，本文件明確推翻它**，理由與修正見六章「`retry_count` 遞增」；不是本文件遺漏未處理，是校對後判定這是必須修正的既有缺陷，見六章完整論證。
+02a 十二章原本的措辭是「`retry_count` 只在 `failed_modules`（確實跑過、驗證過但沒過）非空時才扣減；`blocked_modules`……不消耗重試次數，因為那不是『寫錯了』，只是排程還沒排到」，`graph/nodes/debug_node.py` 現有 stub 也依此實作（`increment = 1 if state.get("failed_modules") else 0`）。**這條規則在交叉比對 09a 三章之後站不住腳，本文件明確推翻它**，理由與修正見六章「`retry_count` 遞增」。
 
 ### 本文件要定案的部分（09a/02a 明確留下的缺口）
 
 1. `task_failures`／`test_results`／`partial_reports`／`blocked_reasons` 四份粒度、格式都不同的資料，如何正規化成 Debug Agent 能逐 module 分析的統一輸入（三章）
 2. **`test_results.failures[]` 目前沒有 `module` 欄位**——`GoldenVerifier`／`MutationVerifier` 內部都算出了 `module` 這個區域變數，但 `HarnessReporter.build_report()` 從未把它寫進輸出，Debug Agent 因此無法把「哪筆失敗屬於哪個 module」對起來。這是 02a 九章當初設計時沒有預見的缺口（那時候還沒有任何東西真的消費這個 report），本文件定案一個最小、不影響既有欄位與既有測試的修補（二章）
 3. `scaffold_skipped` 造成的失敗如何處理——不能重試修好，也不能讓 `debug ↔ implement` 白白耗掉 `retry_count` 卻不可能有結果；09a 七章「沒有採用的方案」明確評估過「在條件邊層級提早繞過整條 debug 迴圈」風險太高、留給本文件用更細的資料重新評估（七章）
-4. Debug Agent 的輸出契約——「回饋給 Agent ⑤」具體是什麼形狀、⑤ 怎麼在下一輪讀到它（六、八章）
+4. Debug Agent 的輸出契約——直接產生什麼形狀的程式碼、`implement_node.py` 怎麼在下一輪把它套用進真實檔案（六、八章）
 5. task 級粒度的定位——`related_files` 只是檔案清單，不是函式名，一個檔案可能有多個函式，如何精確判斷「哪個 task 該重新填空」（五章）
 
 ---
@@ -96,9 +98,21 @@ def _is_service_reachable(base_url: str, timeout_seconds: float, poll_interval: 
 
 `status` 固定填 `"fail"`（不是 `"pass"`，也不是留空）：`should_debug_or_done()`（02b，本文件不改動）看到 `status != "pass"` 才會繼續往下判斷，而不是誤判成整條驗證通過。`reason` 欄位比照 09b 二章 `partial_reports` 裡 `batch_reload_timeout`／`module_entirely_scaffold_skipped` 的既有寫法，是頂層最小結構標記，供三章的正規化辨識這種情況與正常的 `HarnessReporter` 輸出不同。**完整程式碼、逾時時長的選擇理由見 10b 一章**。
 
-**同一時間點，新增 `RefactorState.service_diagnostics: str | None` 欄位**：`_is_service_reachable()` 判定不可達的當下，順手呼叫 `python_service.manager.get_diagnostics()`（見八章「診斷資料改走 State」，容器崩潰當下的 docker log），連同 `test_results` 一起回傳、寫進這個新欄位——不掛 reducer，每輪覆寫（跟 `test_results` 本身的既有覆寫語意一致）。這是三章「子情境」crash-log 分析機制的**唯一**資料來源，⑦ 全程只讀 `state.get("service_diagnostics")`，不呼叫任何跨節點函式，理由見八章。
+**同一時間點，新增 `RefactorState.service_diagnostics: str | None` 欄位**：`_is_service_reachable()` 判定不可達的當下，順手呼叫 `python_service.manager.get_diagnostics()`（見八章「診斷資料改走 State」，容器崩潰當下的 docker log），連同 `test_results` 一起回傳、寫進這個新欄位——不掛 reducer，每輪覆寫（跟 `test_results` 本身的既有覆寫語意一致）。這是四章「`service_diagnostics` 要傳給所有 `root_cause` module」的資料來源，⑦ 全程只讀 `state.get("service_diagnostics")`，不呼叫任何跨節點函式，理由見八章。
 
-**這是對 02b 既有、已驗證程式碼的最小加法，不是重新設計**：`run_newman()` 本身完全不動（②、⑤ 局部驗證的呼叫點都不受影響，仍然是遇到服務沒起來就直接拋例外——那些情境下沒有 Debug Agent 這種後續可以接手分析的機制，直接失敗、讓人工介入仍然是對的），只在 `run_postman_tests()` 這一個呼叫點前面加一道防護，理由與 09b 六章讓 ⑤ 容忍暫時連不上、`_get_reload_probe_id()` 的既有精神完全一致——只是 ⑥ 需要的是「現在」的連通狀態，不需要 ⑤ 那套比對特定 token 的同步屏障。
+這一道健康檢查只加在 `run_postman_tests()` 這一個呼叫點前面：`run_newman()` 本身、②與⑤局部驗證的呼叫點都不受影響，仍然是遇到服務沒起來就直接拋例外——那些情境下沒有 Debug Agent 這種後續可以接手分析的機制，直接失敗、讓人工介入仍然是對的。
+
+### 前置修補之二：健康檢查只擋得住「開始前就死了」，擋不住「其實沒死只是行程沒退出」
+
+上面的健康檢查只在 `run_postman_tests()` 一開始做一次；readonly＋mutation 合計要打完整個 collection，實際耗時可能遠超過那次檢查的短逾時預算，服務完全可能在健康檢查通過「之後」才變得沒有回應（`docs/09b_bug_trace.md #47`：多次真實重現，症狀是 `run_postman_tests()` 回報 `service_unreachable`，但用獨立診斷腳本直接探測同一顆容器卻完全正常——是健康檢查時機撞上暫時的不穩定視窗，不是真的壞掉，緩解方向是把逾時預算調大，但只能降低機率、不能根除）。
+
+**真正需要動 `run_newman()` 本身的是另一個機制完全不同的問題**（`#48`）：`run_newman()` 逾時不等於「服務沒回應」——newman（Node.js）可能已經把 collection 全部請求跑完、報表也完整寫出了，純粹是**行程本身沒有退出**（已知的 Node.js keep-alive socket 未乾淨關閉問題，同類案例見 [uvicorn discussion #1691](https://github.com/encode/uvicorn/discussions/1691)），`_is_service_reachable()` 這種連線層級的健康檢查從機制上不可能預先擋住它。**修法**：`run_newman()`（`refactor_harness/core/postman_runner.py`）逾時當下，`_kill_process_tree()` 收尾之後不直接判定失敗，先檢查報表檔案是否已完整合法——是的話當成功回傳，只有報表也沒寫完才是真正的逾時錯誤（新增 `NewmanTimeoutError`，`RuntimeError` 子類別，讓 `run_postman_tests()` 精確只攔這一種、不誤吞設定錯誤）。這是對 `run_newman()` 本身的修改，因為問題發生在它內部的逾時處理，`run_postman_tests()` 這一層看不到、也不該重複判斷。
+
+### 前置修補之三：健康檢查前先固定緩衝，緩解「⑦ 一輪套用多筆修正」造成的誤判（`#47` 補充）
+
+`#47` 後續真實環境重跑另外三次重現了一種更具體的成因：⑦ 一輪可能一次開出多筆 `pending_fixed_bodies`／`pending_file_fixes`（真實案例一輪套用 3 筆），`implement_node.py` 各自的檔案寫入被 uvicorn `--reload`（watchfiles）依短暫的 debounce 視窗各自分批觸發，可能連續產生不只一次的 reload 週期；`_wait_for_service_reload()`（09a 三章）只確認「它自己最後一次寫入的 token」已經生效，不保證這就是這一輪「最後一次」被觸發的 reload——`implement_node.run()` 可能在某個 reload 仍在進行中的窗口就已經返回，緊接著 `run_postman_tests()` 的健康檢查（前置修補一）就撞上這個還沒收斂穩定的窗口，回報 `service_unreachable`，但用獨立診斷腳本立刻探測同一顆容器，服務其實完全正常。
+
+根因（uvicorn 忙碌／reload 批次時機）未 100% 證實，這裡採用兩個建議緩解方向之一：健康檢查呼叫之前先固定等一段緩衝時間（`RUN_TESTS_PRE_HEALTH_CHECK_BUFFER_SECONDS`，預設 5 秒），不分岔判斷「這一輪是不是⑦套用了多筆修正」——那需要額外跨節點狀態，且緩解方向本身是機率性的，對「這一輪其實只有一筆改動」的情況多等這幾秒也無害。這不是 `_wait_for_service_reload()` 那種比對特定 token 的同步屏障，純粹是給連續 reload 一點喘息時間，只降低機率、不保證根除——若真正需要更高把握，仍要靠既有的 `retry_count` 迴圈與⑦下一輪重新診斷收斂。完整程式碼見 10b 一章。
 
 ---
 
@@ -128,60 +142,9 @@ else:
 
 **`service_unreachable` 分支**（對應二章「⑥ 對外呼叫前必須先確認 Python 服務有回應」）：這種情況下 `test_results["failures"]` 本身是空陣列——Newman 根本沒有機會執行，不是「執行了、沒有失敗」。此時退回 `state["failed_modules"]`（⑤ 上一輪自己標記失敗的 module，多半正是造成這次連不上的元凶所在，見 09a 三章「批次執行」），每個 module 先給空的 `harness_failures`（沒有 body-diff 可看）——3.3 的分類規則**完全不變**，繼續套用在這份用不同方式湊出來的 `modules_with_failures` 上；3.5 的 `special_reason`／`batch_sibling_modules` 计算方式也不變（仍然讀 `partial_reports`，跟 `harness_failures` 從哪裡來無關），會自然把這批 module 的 `special_reason` 標成 `batch_reload_timeout`（若 09a 三章的批次判定就是這樣記的）——四章的 LLM 分析因此完全能沿用既有機制，唯一差別只是這次 `harness_failures` 是空的，LLM 只能靠原始碼＋`special_reason`／`batch_sibling_modules` 判斷，這正是四章 prompt 對 `batch_reload_timeout` 情境本來就準備好的分析路徑（「優先檢查 source_files 有沒有明顯的 import／語法層級問題，而不是先假設是業務邏輯比對錯誤」）。
 
-**子情境（真正的邊界條件）：`service_unreachable` 且 `state["failed_modules"]` 也是空的**——`modules_with_failures` 因此是空字典，`contexts`／`root_cause_ctxs`（四、七章）連帶全部是空清單。這會發生在「服務崩潰的根因是⑤局部驗證（readonly-only）從未偵測到的問題」這個場景（見六章：mutation-only 或跨模組 regression，⑤ 因此把這個 module 標成 `verified`，`failed_modules` 不含它，但它剛好又是造成這次匯入／語法錯誤崩潰的元凶）——這不是理論邊角案例，正是六章花了整節篇幅論證、也是這一輪多個修正圍繞的核心場景，`service_unreachable` 分支必須明確接住它，不能放任它落入七章「`root_cause_ctxs` 為空 → `give_up_early=True`」的一般規則。**這裡的「不能放任落入」是控制流程層級的：偵測到這個子情境時直接 `return`（見下方「修正」，10b 二章的實際實作是一段帶 `return` 陳述式的 `if` 區塊），七章的判斷規則因此根本不會被執行到，不是先套用七章規則得出 `True`、再被這裡的 `False` 蓋掉——兩節的邏輯是互斥分支，不是循序執行，見七章「判斷規則」開頭補充的說明。
+**`service_unreachable` 且 `state["failed_modules"]` 也是空**：`modules_with_failures` 因此是空字典，`contexts`／`root_cause_ctxs`（四、七章）連帶全部是空清單——直接套用七章「`root_cause_ctxs` 為空 → `give_up_early=True`」的一般規則，不另外分岔。
 
-**為什麼不能套用七章「`root_cause_ctxs` 為空即代表沒救」的一般規則**：七章那條規則成立的前提是「`test_results.failures` 完整列出了這一輪所有已知失敗，逐一機械分類後沒有一個是 `root_cause`」——這個前提在這個子情境下不成立：`test_results.failures` 根本是空的（Newman 沒跑），不是「跑過、分類完畢後發現沒有可修的」，而是「完全沒有機會蒐集任何跡象」。此時 `give_up_early=True` 會讓系統在**一次 LLM 呼叫都沒有發生**的情況下直接放棄，跟「已經試過分析、確認沒救」在證據強度上完全不對等——這正是本文件之所以要有 Debug Agent 的理由（讓 LLM 有機會診斷）在這個情境下完全被繞過。
-
-**單純記錄、不採取行動不夠——會讓這個場景把 `retry_count` 燒到底也解不開，而且不是理論上的風險**：`ModuleScheduler.get_ready_tasks()`（`graph/scheduler.py`，01 六章既有邏輯）只回傳 `module_status` 為 `"pending"`／`"in_progress"` 的 module 底下的 task——一個已經被標成 `"verified"` 的 module（這個子情境的前提就是：這個 module 上一輪被 ⑤ 判定 `verified`，才會不在 `failed_modules` 裡），**永遠不會再被排進就緒佇列**，不論後續跑幾輪 `debug → implement`。這代表若這一輪 `pending_fix_instructions` 是空字典、什麼都不做，`implement()` 對這個真正造成崩潰的 module **完全不會有任何動作**（不是「重新生成同樣的錯誤程式碼」，是「連生成都不會發生」）——若這一輪 `implement()` 也沒有其他 module 的 task 可排，整個 `implement → run_tests → debug` 循環會在沒有任何一行程式碼被改動的情況下空轉，直到六、七章修正過的 `retry_count` 上限機制才讓它停下來。這不是「無限循環」（`retry_count` 保證有限，見六、七章），但**確定會白白燒光整個重試預算、沒有任何一輪有機會真正解決問題**——這跟「沒有證據支持沒救」的保守精神其實是矛盾的：明明有機會做點什麼（下方機制），卻選擇什麼都不做，只是消極地等重試次數耗盡。
-
-**修正：用容器崩潰當下的 log 當作訊號，而不是放棄「找出是哪個 module」這件事**——`python_service/process.py::PythonServiceContainer.diagnostics`（09b 四章既有屬性，`docker logs --tail 200`）本來就是為了「啟動失敗時定位原因」設計的，目前只在 `PythonServiceContainer.start()` 逾時失敗時被讀取過一次，之後就沒有任何地方再用到它——但 `service_unreachable` 正是同一類「服務起不來」的狀況，這份診斷資料理應同樣有用：Python 服務因為模組層級 import／語法錯誤崩潰時，容器的 log 裡幾乎必然包含一段完整的 Python traceback，直接指出是哪一個檔案、哪一行造成的（例如 `File "/srv/app/services/order_service.py", line 12, in <module>` 或 `ImportError: cannot import name 'Foo' from 'app.services.bar'`）——這是遠比「完全沒有訊號」更有效的線索，機械層面就足以反查回 `task_list` 裡對應的 task。
-
-**具體流程**：`run_debug_analysis()`（十章）在偵測到這個子情境時：
-
-1. 讀取 `state.get("service_diagnostics")`（見二章、八章——⑥ 判定服務不可達的當下就已經寫進 State，⑦ 全程只讀 State，不呼叫任何跨節點函式）
-2. 若拿得到非空的 log 內容，送進一次**特殊用途**的 Claude API 呼叫（四章之外、專屬於這個子情境的 prompt，見十章），輸入是這份 log 原文，加上**整個專案**（不是單一 module）的 task 清單（`id`／`module`／`function_name`／`class_name`／`target_files`／`description`，只是 metadata，不含原始碼——log 裡的 traceback 通常已經足夠精確定位問題，不需要額外的整份原始碼），輸出契約沿用既有的 `DEBUG_OUTPUT_SCHEMA`（`task_fixes` 這次是「整個專案範圍」而非「單一 module 範圍」的 `task_id` 驗證，其餘不變）
-3. 驗證回應的 `task_id` 必須落在「全專案 task_list」扣掉「全專案 scaffold_gap_task_ids」的合法集合內（跟 4.3 同一種防禦精神，只是驗證範圍從單一 module 放大到全專案）
-4. 驗證通過的 `task_fixes` 一樣寫進 `pending_fix_instructions`——這一步是打破「什麼都不做」死結的關鍵：下一輪 `implement()` 執行前，`_augment_task_io()` 會把這個 `fix_instruction` 疊加進被鎖定的那個 task 的 context，但**光是這樣還不夠**：那個 module 的 `module_status` 仍然是 `"verified"`，`get_ready_tasks()` 依然不會排到它——這一步因此還需要讓排程器知道「這個 module 需要重驗」，機制細節見下方「與 `ModuleScheduler` 的銜接」
-5. 若這一輪成功定位到至少一個 task，`give_up_early` 維持 `False`（不是因為保守，是因為這次真的有具體行動要做）；`debug_rounds` 記一筆 `origin="no_signal"` 的 `DebugRound`（`module` 欄位填這次涉及的 module 名稱，用逗號組合字串，因為這次的 `task_fixes` 理論上可能橫跨不只一個 module，不強制拆成多筆——這個情境本來就是既有 per-module 迴圈設計沒有涵蓋到的例外路徑，不需要勉強套用同一種切法），`fixable` 反映 `task_fixes` 是否非空
-6. 若拿不到 log、或 log 沒有可用的 Claude API 呼叫結果、或呼叫失敗、或驗證後沒有任何合法 `task_fixes`——退回被動記錄（`pending_fix_instructions={}`、記一筆 `unfixable_reasons` 固定文字的診斷 `DebugRound`），當作最後手段，不是主要機制；`give_up_early` 這一輪該是 `True` 還是 `False`，見下方「Fail-fast」
-
-**Fail-fast：純基礎設施異常不該跟真正的程式碼崩潰一樣，每次都要熬滿 `MAX_RETRY` 輪才放棄**——`_is_service_reachable()`（二章）連不上服務的原因，不保證都是「這一輪剛好有 task 寫壞了程式碼」；也可能是 Docker 網路、資料庫連線這類跟這一輪程式碼異動完全無關的環境問題。這兩種原因從 HTTP 層級看完全無法分辨（連線被拒絕的表面現象一樣），**能分辨的地方只有容器 log**：真正的程式碼崩潰，log 裡幾乎必然有明確的 Python traceback；純環境問題的 log 通常沒有這種內容（可能是連 `docker logs` 本身都連不上、或只有網路／資料庫層級的錯誤訊息，跟任何一個 task 的程式碼都對不上），上面步驟 3 的驗證會自然篩掉這種情況（找不到落在 `task_list` 裡的 `task_id`）。若放任這種情況每一輪都重新跑一次「呼叫 Claude API 分析 log、找不到答案、退回被動記錄」，會讓一個純基礎設施問題也要熬滿 `MAX_RETRY` 輪才觸發 give up，跟真正可能修得好的程式碼崩潰耗費同樣的重試預算，不合理。
-
-**判斷依據：連續兩輪都退回被動記錄（步驟 6），就代表這不是這套機制能處理的問題，直接 give up，不必等到第三輪**——不是看單一一輪的結果就下定論（避免把「這一輪剛好容器 log 還沒寫完、暫時撈不到有效內容」這種偶發的瞬間狀態誤判成「確定沒救」，給一次重試的機會），但兩輪都是同一個結論，已經足夠：
-
-```python
-previous_rounds = state.get("debug_rounds", [])
-previously_also_unfixable_no_signal = (
-    bool(previous_rounds)
-    and previous_rounds[-1]["origin"] == "no_signal"
-    and not previous_rounds[-1]["fixable"]
-)
-give_up_early = this_round_fell_back_to_passive_record and previously_also_unfixable_no_signal
-```
-
-**這裡是這份文件裡唯一一處會讀取 `state["debug_rounds"]`（累積歷史）的地方，且是刻意的、跟七章「絕不能讀累積歷史」的規則不衝突**：七章那條規則是針對「同一個 module 的 `fixable` 判斷」——同一個 module 在不同輪次可能因為不同原因（一次翻譯失敗、一次業務邏輯錯誤）被分析出不同結論，用歷史判斷會被過期資料卡死。這裡要看的是完全不同的問題：「連續幾輪都完全定位不到任何 task」這件事本身有沒有重複發生——這不是針對某個特定 module 的結論，是針對「這整套 crash-log 機制這一次到底管不管用」的判斷，兩者性質不同，不是同一條規則的例外，是兩個不同的判斷各自該用的資料來源本來就不一樣。
-
-**為什麼不是第一輪就 fail-fast**：09a 三章已經指出，容器重啟本身需要時間，`docker logs --tail 200` 讀到的內容可能因為時序關係還沒完整（例如崩潰訊息還在寫入緩衝區）——給第一輪一次「可能只是暫時撈不到」的容錯空間，跟四章 4.4「API 暫時故障重試一次」是同一種精神：偶發的基礎設施雜訊不該被誤判成「確定沒救」，但連續兩次同樣的結果，已經足夠排除「單純運氣不好」的可能性。
-
-**與 `ModuleScheduler` 的銜接：讓被鎖定的 module 重新變成可排程**——`ModuleScheduler` 目前只有 `flag_for_reverify()`（01 六章既有方法，`check_upstream_regression()` 偵測到已驗證 module 被觸及時呼叫，把狀態打回 `"needs_reverify"`）能讓一個 `"verified"` 的 module 重新進入排程考量，但 `"needs_reverify"` 這個狀態本身**不會**讓它的 task 重新被 `get_ready_tasks()` 排入（`get_ready_tasks()` 只認 `"pending"`／`"in_progress"`，`"needs_reverify"` 是給「驗證」用的狀態，不是給「排程 task」用的狀態，兩者是不同的機制，見 09a 三章「批次執行」對 `needs_reverify` 觸發重驗、不是重新排程 task 的既有區分）。這個子情境需要的是更直接的「把這個 module 重新打回 `pending`，讓它的 task 重新可以被排」——`ModuleScheduler` 目前沒有這個方法，**這是 10a 對 `graph/scheduler.py`（01 六章既有、已通過驗證的程式碼）新增的一個方法**，不是修改既有方法的行為：
-
-```python
-# graph/scheduler.py（新增方法，不改動既有方法）
-def force_reschedule(self, module: str):
-    """由 ⑦ Debug Agent 的 no_signal／crash-log 分析路徑呼叫（見 10a 三章）：
-    把一個 module 強制打回 "pending"，讓它底下已完成的 task 重新變成可以
-    被排程——這跟 flag_for_reverify() 的 needs_reverify 不同，needs_reverify
-    只觸發重新跑驗證，不會讓 task 重新進 get_ready_tasks()；這裡要解決的
-    問題是 task 本身要重新被排入佇列、用新的 fix_instruction 重新填空。
-    """
-    self.module_status[module] = "pending"
-```
-
-`implement_node.run()`（09b 二章既有邏輯）需要在 `is_first_entry` 之後、建構完 `scheduler` 之後，新增一小段：讀取 `state.get("pending_fix_instructions", {})` 裡每個 task_id 對應的 module（透過 `task_list` 反查），對每個涉及的 module 呼叫 `scheduler.force_reschedule(module)`——見九章「介面異動」完整清單。
-
-**這不會造成無限循環**：`retry_count` 仍然每輪無條件遞增（六章），`should_debug_or_done()`（02b，七章已修正）的 `retry_count` 上限檢查不受這個機制影響——即使 crash-log 分析給出的 `fix_instruction` 沒有真的修好問題（下一輪還是崩潰），最多也只是重複這個流程直到 `MAX_RETRY` 用盡，跟其他任何一種「重試但沒修好」的情境結果一致，不會比原本的機制更差；差別只在於這一次至少有真正嘗試修復的機會，不是確定什麼都不做。
-
-**為什麼不無差別把 `module_list` 全部原始碼送 LLM 試試看**：即使有了 crash-log 這個訊號，也刻意只送 task 清單的 metadata（不含原始碼），不是整個專案的原始碼——log 裡的 traceback 通常已經包含足夠精確的檔案／行號資訊，讓 LLM 定位到具體 task；若這樣還是找不到，代表這份 log 本身沒有提供有用線索（可能是更早的錯誤被截斷、或崩潰訊息不夠明確），這時候送整個專案的原始碼進去只是徒增 context 成本，換不到更好的判斷品質（同四章「刻意不放的輸入」一貫的訊噪比判斷）——退回被動記錄，交給人工用 log 全文自己判斷，比 LLM 在完全沒有目標的情況下瞎猜整個專案更務實。
+這種情況代表 Newman 完全沒機會執行、⑤ 也沒有標記任何失敗 module，這一輪連「哪個 module 可能有問題」的最基本線索都沒有——沒有真實案例佐證這種情況會發生（`09b_bug_trace.md` 記錄的 `service_unreachable` 案例都伴隨非空的 `failed_modules`，見上方「`service_unreachable` 分支」），發生機率本身就低。即使發生，比起另外設計一套專屬的全專案 crash-log 分析管道（對著 metadata-only 的 task 清單猜測要修哪個 task，準確度本來就沒有保證），直接 give up、讓人工從已經寫進 `state["service_diagnostics"]` 的容器崩潰 log（見二章）著手排查，是更省成本、也不會更差的做法——`give_up` 是通知人工的節點（01 五章），不是直接結束，人工介入之後想怎麼修都可以，不需要 Debug Agent 自動化這一步。
 
 ### 3.3 逐 module 分類：值不值得叫 LLM
 
@@ -192,7 +155,7 @@ module 在 blocked_modules 裡？
   → origin = "blocked"，不呼叫 LLM。
     這個 module 自己的 task 從未被排程器排到（09a 七章：blocked 代表
     「上游沒過，這個 module 的程式碼多半還是骨架 pass」，不是「翻譯錯」），
-    對它自己的 task 生成 fix_instruction 沒有意義——即使生成了，下一輪
+    對它自己的 task 生成 fixed_body 沒有意義——即使生成了，下一輪
     排程器也不會排到它（依賴的上游仍未 verified）。真正該分析的是
     blocked_reasons[module] 指向的上游 module，那個上游 module 必然也
     在 modules_with_failures 裡（否則它不會是導致下游 blocked 的原因），
@@ -268,7 +231,7 @@ class ModuleFailureContext(TypedDict):
 
 - **資料形狀（明確釘死，避免誤讀）**：`partial_reports` 的每一筆元素固定是 `{"module": <str>, "report": {...}}` 這個外層包裝——`module` 鍵**在外層**，`report` 鍵底下才是 `{"status", "reason", "regression"}` 這幾個欄位（見 09b 二章 `implement_node.py::run()` 全部 `partial_reports.append({"module": module, "report": {...}})` 呼叫點，逐字皆如此，沒有例外）。09a 三章行文中出現的 `{"status": "fail", "reason": "batch_reload_timeout"}` 只是**內層** `report` 物件的示意，不是整筆元素——三章開頭「`special_reason`」一節與這裡都是對外層 `entry["module"]` 取值、對 `entry["report"].get("reason")` 取值，不存在「`partial_reports` 沒有 module 鍵所以取不到」的問題。
 
-**「最新一筆記錄」若不綁定輪次，會抓到跨輪次的過期資料——這是本文件校對時發現、必須修正的問題**：`partial_reports` 是 `Annotated[list[dict], operator.add]`，從整條 graph run 第一次進 `implement` 開始逐輪累加，永不清空。若 module A 在第 1 輪遇到 `batch_reload_timeout`，但第 2 輪完全沒有任何 task 動到它（例如它的上游依然被卡住，或它已經完工只是還沒被重新驗證），A 在 `partial_reports` 裡就不會有第 2 輪的新紀錄——這時候若「最新一筆」的判斷不分輪次、單純取「A 在整個累積清單裡最後出現的那一筆」，會直接沿用第 1 輪那筆過期的 `batch_reload_timeout`。假設第 3 輪某個完全無關的 module C 才第一次遇到 `batch_reload_timeout`（跟 A 在第 1 輪的那次崩潰毫無關係），C 的 `batch_sibling_modules` 若照這種「不分輪次的最新一筆」算法，會誤把 A 也算進去（A 的「最新」紀錄剛好還停留在 `batch_reload_timeout`，即使那是兩輪以前的事）——LLM 因此會被誤導去懷疑一個早就跟這次崩潰無關的 module。
+**「最新一筆記錄」必須綁定輪次，否則會抓到跨輪次的過期資料**：`partial_reports` 是 `Annotated[list[dict], operator.add]`，從整條 graph run 第一次進 `implement` 開始逐輪累加，永不清空。若 module A 在第 1 輪遇到 `batch_reload_timeout`，但第 2 輪完全沒有任何 task 動到它（例如它的上游依然被卡住，或它已經完工只是還沒被重新驗證），A 在 `partial_reports` 裡就不會有第 2 輪的新紀錄——這時候若「最新一筆」的判斷不分輪次、單純取「A 在整個累積清單裡最後出現的那一筆」，會直接沿用第 1 輪那筆過期的 `batch_reload_timeout`。假設第 3 輪某個完全無關的 module C 才第一次遇到 `batch_reload_timeout`（跟 A 在第 1 輪的那次崩潰毫無關係），C 的 `batch_sibling_modules` 若照這種「不分輪次的最新一筆」算法，會誤把 A 也算進去（A 的「最新」紀錄剛好還停留在 `batch_reload_timeout`，即使那是兩輪以前的事）——LLM 因此會被誤導去懷疑一個早就跟這次崩潰無關的 module。
 
 **修正：`partial_reports` 每一筆新增 `"round"` 鍵，標記寫入當下的 `retry_count`，`special_reason`／`batch_sibling_modules` 的計算只看「這一輪」的紀錄，不看跨輪次的累積歷史**：
 
@@ -296,7 +259,7 @@ def _latest_reasons_by_module(partial_reports: list[dict], current_round: int) -
 
 `current_round` 傳入 `state["retry_count"]`——`run_debug_analysis()` 讀取這個值時，retry_count 尚未被這一輪的六章邏輯遞增，恰好等於「剛結束的那次 `implement()` 呼叫」看到的 `state["retry_count"]`，兩邊用的是同一個數字，不需要額外傳遞或比對其他識別碼。**`special_reason`（3.5 前半段，單一 module 自己的最新狀態）與 `batch_sibling_modules`（同一批的其他 module）共用同一個輪次過濾後的字典，處理方式一致，不是只修 `batch_sibling_modules` 那一半**——一個 module 若這一輪完全沒被 ⑤ 碰過（沒有新的 `partial_reports` 紀錄），`special_reason` 也會正確地變成 `None`（沒有本輪的新訊號），而不是沿用兩輪以前的舊狀態，跟 `batch_sibling_modules` 的推理是同一件事的兩面。
 
-- 計算方式：先用上面的 `_latest_reasons_by_module(partial_reports, state["retry_count"])` 算出「這一輪」每個有新紀錄的 module 對應的 reason，再取 `{module for module, reason in ... if reason == "batch_reload_timeout"}`，即所有「這一輪最新狀態是 batch_reload_timeout」的 module 集合。這仍然是一個**近似值，不是精確的批次分組**——`partial_reports` 本身沒有記錄「哪幾個 module 屬於同一次 `_wait_for_service_reload()` 呼叫」這個批次識別碼（見 09b 二章 `run()`：同一輪迴圈內 `verify_needs_wait`／`reverify_needs_wait` 一起判定逾時，但沒有寫出一個共同的 batch id），只能用「同一輪最新 reason 仍是這個值」做代理——多數情況下這已經足夠精確（同一輪逾時的 module 集合本來就是同一次批次等待造成的），且加上輪次過濾後，不會再被更早輪次的過期資料汙染，比修正前更精確（見十二章）
+- 計算方式：先用上面的 `_latest_reasons_by_module(partial_reports, state["retry_count"])` 算出「這一輪」每個有新紀錄的 module 對應的 reason，再取 `{module for module, reason in ... if reason == "batch_reload_timeout"}`，即所有「這一輪最新狀態是 batch_reload_timeout」的 module 集合。這仍然是一個**近似值，不是精確的批次分組**——`partial_reports` 本身沒有記錄「哪幾個 module 屬於同一次 `_wait_for_service_reload()` 呼叫」這個批次識別碼（見 09b 二章 `run()`：同一輪迴圈內 `verify_needs_wait`／`reverify_needs_wait` 一起判定逾時，但沒有寫出一個共同的 batch id），只能用「同一輪最新 reason 仍是這個值」做代理——多數情況下這已經足夠精確（同一輪逾時的 module 集合本來就是同一次批次等待造成的），且加上輪次過濾後，不會再被更早輪次的過期資料汙染，比修正前更精確（已知限制見十三章）
 - 對每個 `special_reason == "batch_reload_timeout"` 的 module，`batch_sibling_modules` 是上述集合扣掉自己，供四章 prompt 明確告知 LLM「這幾個 module 上一輪是同一批被牽連的，若在自己的 `related_files` 裡找不到明顯的業務邏輯錯誤，根因很可能在這些 sibling module 裡，不要勉強在自己的程式碼裡找一個不存在的 bug」（見四章 prompt 片段）
 
 ---
@@ -313,27 +276,37 @@ def _latest_reasons_by_module(partial_reports: list[dict], current_round: int) -
 |---|---|
 | `module_list[module].summary` | 業務語境 |
 | `harness_failures` | 這個 module 的失敗清單（`case_id`／`failure_type`／`expected_status`／`actual_status`／`body_diff`／`related_files`／`debug_hint`），**逐字轉發**，不做摘要或篩選——DeepDiff 的精確路徑對 LLM 定位問題至關重要 |
-| `task_failures`（`reason=="fill_failed"` 的子集） | 已知確定翻譯失敗的 task，附 `error` 訊息，是最直接的線索 |
+| `task_failures`（`reason=="fill_failed"` 的子集） | 已知確定翻譯失敗的 task，附 `error` 訊息——**這些 task 一律要求 ⑦ 直接輸出完整 `fixed_body`，不是選擇性的參考資訊**，見下方「`known_fill_failures`：一旦失敗過一次，不再退回本地模型」 |
 | `scaffold_gap_task_ids`（若非空） | 明確告知這些 task 骨架缺失、不要嘗試建議修正它們（見四章 prompt 片段） |
 | 這個 module 全部 task 的清單（`id`／`function_name`／`class_name`／`target_files`／`description`） | 不是只給失敗的 task——LLM 需要**完整**清單才能從 `related_files`／程式碼內容反推「是哪個 task 造成這個 case 失敗」，見五章 |
 | 相關原始碼的目前實際內容 | `harness_failures` 裡所有 `related_files`，**與**「這個 module 全部 task 的 `target_files` 裡、父目錄是 `schemas/` 或 `models/` 的檔案」取**聯集**（不是整份 `target_files` 無差別聯集——見下方「為什麼要限縮成只取 `schemas`／`models`」）。**只給 `related_files` 不夠**：見下方「為什麼要疊加 `target_files`，不能只給 `related_files`」。**`harness_failures` 為空時（`service_unreachable`）例外放寬成整份 `target_files` 不過濾**：見下方「例外」 |
 | `special_reason`（若非空） | 3.5 的補充背景文字 |
 | `batch_sibling_modules`（若非空） | 3.5：只給 module 名稱清單（不附程式碼——附程式碼會讓 context 大小失去 module 邊界的收斂效果，違反上一行的設計精神），prompt 明確指示「若在自己的 related_files 裡找不到明顯錯誤，很可能是這些 sibling module 造成的，寫進 unfixable_reasons 建議一併檢查，不要在自己的程式碼裡勉強找一個不存在的 bug」 |
-| `state.get("service_diagnostics")`（若非空） | 見下方「`service_diagnostics` 不能只留給 `no_signal` 用」——這一輪 ⑥ 判定 `service_unreachable` 時讀到的容器崩潰 log 全文，`None`（正常情境）以外的所有 `origin=="root_cause"` module 呼叫都統一傳入，不限於三章「子情境」那個 `no_signal` 分支 |
+| `state.get("service_diagnostics")`（若非空） | 見下方「`service_diagnostics` 要傳給所有 `root_cause` module」——這一輪 ⑥ 判定 `service_unreachable` 時讀到的容器崩潰 log 全文，`None`（正常情境）以外的所有 `origin=="root_cause"` module 呼叫都統一傳入 |
 
-**`service_diagnostics` 不能只留給 `no_signal` 用**——這是本文件校對時發現、必須修正的核心設計缺陷：三章原本只在 `no_signal`（`service_unreachable` 且 `failed_modules` 也是空）這個較窄的子情境讀取容器崩潰 log；但 `service_unreachable` 且 `failed_modules` 非空（最常見的 `batch_reload_timeout` 情境，⑤ 已經把受牽連的 module 標記進 `failed_modules`）時，這些 module 一樣會被 3.2 的 `service_unreachable` 分支納入 `modules_with_failures`（`harness_failures` 一樣是空清單），一樣會被分類成 `root_cause`、送進**正常**的 `_analyze_root_cause_module()` 呼叫——但這條路徑原本完全不讀 `service_diagnostics`，只給 `special_reason="batch_reload_timeout"` 這句人類可讀文字，讓 LLM 在完全沒看到 traceback 的情況下對著（放寬過濾後的）整份 module 原始碼做靜態分析、憑空猜測是哪一行造成崩潰。Python 服務因模組層級 `ImportError`／`SyntaxError` 崩潰時，容器 log 幾乎必然含有精確的 traceback 與行號（見三章「修正：用容器崩潰當下的 log 當作訊號」對這一點的完整說明）——這份訊號存在（`state["service_diagnostics"]` 已經寫好），卻只在較罕見的 `no_signal` 分支被使用，較常見的正常路徑反而看不到，是本末倒置。
+### `known_fill_failures`：一旦失敗過一次，不再退回本地模型
+
+**這是本文件的正式決策，補記一條先前只在口頭討論中確認、卻沒有被準確寫進 10a/10b 的規則**：一個 task 只要在 `task_failures` 裡出現過一筆 `reason=="fill_failed"`（⑤ 本地模型完全沒能產生可用的函式本體），從下一輪 debug 開始，這個 task 就**永久**由 ⑦ 直接負責寫出完整 `fixed_body`，`implement_node.py` 的排程器**不再把它排回 ⑤ 本地模型重新翻譯**——本地模型已經證明處理不了這個函式，繼續讓排程器把它當成一般 task 重新丟給本地模型，只是重複燒 `TRANSLATOR_CLI_TIMEOUT_SECONDS`／格式修正重試預算，不會有不同結果。
+
+**真實環境重跑才發現這個落差**（2026-08-27，run_id `20260827_015722_639ebd`）：`app/services/exam_service.py` 底下 6 個 task 連續 3 輪、每輪最多 3 次 attempt，9/9 全部失敗，成功率 0%（其中一次真實回應完全答非所問，生出一整段無關的 SQLAlchemy model 定義，耗時近 10 分鐘）——查證發現 `implement_node.py::_run_one_task()` 的既有機制（`pending_fixed_bodies.get(task["id"])`，見八章）只在 ⑦ 這一輪**明確**針對這個 task_id 開出修正時才跳過本地模型；`known_fill_failures` 雖然已經被傳給 ⑦ 當背景資訊（見上表），但 `DEBUG_SYSTEM_PROMPT`（見 `debug_agent/prompts.py`）原本只把它當成「已知確定翻譯失敗的task，附error訊息，是最直接的線索」這種參考性質的背景資料，沒有明確要求 ⑦ 一定要對它輸出 `task_fixes`——這正是 09a 五章 `task_failures` 定案時「`"fill_failed"`（可能重試修好）」這句措辭留下的缺口：沒說清楚「重試」的執行者該是 ⑤ 還是 ⑦，兩者被含糊地當成同一件事。
+
+**修法**：`DEBUG_SYSTEM_PROMPT` 新增明確的任務指示（見四章 prompt 片段第 0 點）：對 `known_fill_failures` 裡的每一個 task，⑦ 一律要求輸出 `task_fixes`（除非 `description` 本身真的不足以判斷該寫什麼，才誠實回報 `unfixable_reasons`）——且明講這是「從零生成」，不是「修正既有程式碼裡的 bug」，`source_files` 對應內容可能是殘缺骨架或半成品，不該被當成可信的起點，只根據 `tasks` 清單裡的 `description`／`class_name`／`target_files` 重新寫。**底層驗證機制原本就撐得住這個決策，不需要新的資料管道或驗證邏輯**——`_validate_task_fixes()` 的 `valid_task_ids` 本來就是整個 module 扣掉 `scaffold_gap_task_ids` 的全部 task（`analysis.py`），`fill_failed` 的 task_id 從來就在合法集合內，只是 prompt 沒把「一定要對這些 task 出手」講成硬性要求。
+
+**這個修正不需要 triage.py／state.py 有任何結構性異動**——`ModuleFailureContext.task_failures` 本來就已經逐 module 帶著完整的 `fill_failed` 子集，`_build_user_prompt()`（`analysis.py`）本來就已經把 `known_fill_failures` 跟 `tasks`（含 `description`）一併送進同一次呼叫，缺的純粹是 prompt 文字裡「這是強制動作」這句話。單元測試見 `tests/debug_agent/test_prompts.py::TestKnownFillFailuresMandatoryRewrite`。**尚未真實環境端對端重跑確認**這個修正能不能真的讓這批 task 收斂——只驗證了 prompt 文字本身包含正確的強制性指示。
+
+**`service_diagnostics` 要傳給所有 `root_cause` module，不能只在 `special_reason=="batch_reload_timeout"` 時才傳**：`service_unreachable` 且 `failed_modules` 非空（`batch_reload_timeout` 情境，⑤ 已經把受牽連的 module 標記進 `failed_modules`）時，這些 module 會被 3.2 的 `service_unreachable` 分支納入 `modules_with_failures`（`harness_failures` 是空清單），分類成 `root_cause`、送進**正常**的 `_analyze_root_cause_module()` 呼叫——但這條路徑原本完全不讀 `service_diagnostics`，只給 `special_reason="batch_reload_timeout"` 這句人類可讀文字，讓 LLM 在完全沒看到 traceback 的情況下對著（放寬過濾後的）整份 module 原始碼做靜態分析、憑空猜測是哪一行造成崩潰。Python 服務因模組層級 `ImportError`／`SyntaxError` 崩潰時，容器 log 幾乎必然含有精確的 traceback 與行號（`python_service/process.py::PythonServiceContainer.diagnostics`，09b 四章既有屬性，`docker logs --tail 200`）——⑥ 判定不可達的當下已經把這份 log 讀出來寫進 `state["service_diagnostics"]`（見二章），這份訊號原本卻只停在 State 裡沒被接到任何 LLM 呼叫，是本末倒置。
 
 **修正**：`run_debug_analysis()`（十章）呼叫每一個 `origin=="root_cause"` module 的 `_analyze_root_cause_module()` 時，一律多傳入 `state.get("service_diagnostics")`（正常情境下是 `None`，不影響非 `service_unreachable` 的一般失敗案例）；`DEBUG_SYSTEM_PROMPT`（四章）新增一個欄位說明，指示 LLM「若這個欄位非空，優先核對 log 裡的 traceback 檔案路徑是不是落在這個 module 的 `target_files` 裡；若是，這比純粹的靜態程式碼比對更精確，直接依 log 內容判斷；若 traceback 指向的檔案不在自己的 `target_files` 裡，根因很可能在 `batch_sibling_modules` 列出的其他 module，比照既有指示處理」。**這不是新開一條資料管道，是把三章已經寫進 State 的既有資料接到另一個原本沒接上的呼叫點**——`service_diagnostics` 本身的產生（⑥ 判定不可達時讀取）完全不用改，只需要在 `_analyze_root_cause_module()` 的呼叫端多傳一個既有的 State 值。
 
 **為什麼不是只在 `special_reason=="batch_reload_timeout"` 的 module 才傳，而是這一輪所有 `root_cause` module 都傳**：`service_diagnostics` 是**全域**的（整個 Python 服務崩潰只有一份 log，不是逐 module 各自一份），而 `special_reason` 只反映**這個 module 自己**上一輪 `partial_reports` 的最新狀態（見 3.5）——一個 module 這一輪若剛好因為其他原因（例如 mutation-only 失敗，跟本輪這次崩潰無關）被歸類成 `root_cause`，但 `service_diagnostics` 剛好非空（代表**這一輪** ⑥ 也遇到了 `service_unreachable`），統一傳入不會有害：log 裡的 traceback 若跟這個 module 完全無關，LLM 依既有 4.1 prompt 設計本來就只會就事論事地看 `harness_failures`／程式碼本身，不會因為多了一段不相關的 log 就產生额外幻覺；反過來若限定只給 `special_reason=="batch_reload_timeout"` 的 module，會漏掉「這個 module 這一輪的 `partial_reports` 剛好沒有新紀錄（見 3.5「過期資料」，`special_reason` 因此是 `None`），但實際上就是這次崩潰的真正元凶」這種情況——統一傳入是更簡單、也更不會漏掉真正相關 module 的做法。
 
-**為什麼要疊加 `target_files`，不能只給 `related_files`**：`related_files` 的來源是 `RouteMapper.resolve_related_files()`，回傳的是 `route_to_file_mapping` 這個 key 底下的檔案清單——而 `route_to_file_mapping` 依 05a 三章「Python 專案分層與命名慣例」的既有設計，**只涵蓋 `routers`／`services`／`repositories` 三層**（02a 十一章的範例就只有這三層檔案），不包含 `schemas/{module}.py`（Pydantic model，定義 API 回應的欄位結構）或 `models/{module}.py`（SQLAlchemy model，定義資料表對應）——這兩類檔案從來就不是任何一個 endpoint 的「route 對應檔案」，`route_to_file_mapping` 從設計上就沒有機會收進它們。02a 九章 `failure_type` 分類表列出的 `missing_fields`（Response 缺少欄位）／`type_mismatch`（欄位型別不符）兩種失敗，根因大機率就落在這兩類檔案裡——若 Debug Agent 看不到 `schemas/{module}.py` 的欄位定義，既無法判斷「這個欄位到底有沒有在 Pydantic model 裡宣告」，也無法對照「型別宣告是不是跟 golden 期待的不一致」，只能憑空猜測，容易產生幻覺或給出無效的 `fix_instruction`。
+**為什麼要疊加 `target_files`，不能只給 `related_files`**：`related_files` 的來源是 `RouteMapper.resolve_related_files()`，回傳的是 `route_to_file_mapping` 這個 key 底下的檔案清單——而 `route_to_file_mapping` 依 05a 三章「Python 專案分層與命名慣例」的既有設計，**只涵蓋 `routers`／`services`／`repositories` 三層**（02a 十一章的範例就只有這三層檔案），不包含 `schemas/{module}.py`（Pydantic model，定義 API 回應的欄位結構）或 `models/{module}.py`（SQLAlchemy model，定義資料表對應）——這兩類檔案從來就不是任何一個 endpoint 的「route 對應檔案」，`route_to_file_mapping` 從設計上就沒有機會收進它們。02a 九章 `failure_type` 分類表列出的 `missing_fields`（Response 缺少欄位）／`type_mismatch`（欄位型別不符）兩種失敗，根因大機率就落在這兩類檔案裡——若 Debug Agent 看不到 `schemas/{module}.py` 的欄位定義，既無法判斷「這個欄位到底有沒有在 Pydantic model 裡宣告」，也無法對照「型別宣告是不是跟 golden 期待的不一致」，只能憑空猜測，容易產生幻覺或給出語法看似合法但邏輯不對的 `fixed_body`。
 
 **修法**：把 `related_files` 跟這個 module 全部 task 的 `target_files`（不只 `target_files[0]`）取聯集，再一起讀取。這不是新開一條資料管道——`schemas/{module}.py`／`models/{module}.py`（含 09a 五章新增的 `_enums.py`）本身就是 06a 七章「`target_files` 組裝規則」既有設計裡，`routers` 層 task（需要知道回應該長什麼樣）與 `services`／`repositories` 層 task（需要操作 ORM model）的**唯讀 context** 組成部分，早就存在於 `task_list` 裡，只是四章第一版沒有把它們一併讀進來。`schemas`／`models` 檔案本身不對應任何一個 `TaskSpec`（它們是④骨架階段機械渲染的資料結構定義，不是⑤逐函式填空的對象，見 08a／09a），因此不會出現在 `related_files` 或 `task_list.target_files[0]`（各 task 自己的寫入目標）裡——**只能**透過既有 task 的唯讀 context 這條路徑取得。
 
 **為什麼要限縮，不是整份 `target_files` 無差別聯集**：06a 七章「`target_files` 組裝規則」允許 `target_files` 帶入的唯讀 context 不只 `schemas`／`models`，還包含 `referenced_interfaces`——這個 task 業務邏輯上會呼叫到的其他 module 的 router／service／repository 檔案（同 module 內或跨 module 皆可能）。若對「這個 module 全部 task」的 `target_files` 做無差別聯集，一個依賴關係複雜、task 數量多的 module，實際讀進來的檔案集合可能遠遠超出「這個失敗案例牽涉到的範圍」，稀釋 LLM 對真正相關程式碼的注意力，也增加不必要的 token 成本——這正是最初把 `related_files`（Harness 精確算出、只涵蓋這次失敗案例呼叫鏈的檔案）當作主要輸入來源的理由（四章開頭），疊加 `target_files` 的本意只是補上 `route_to_file_mapping` 結構性看不到的缺口，不是要擴大成整個 module 的依賴閉包。
 
-**過濾規則不能只列 `schemas`／`models`，還必須涵蓋 `core`**：05a 三章「全域基礎設施檔案」定案的 `app/core/database.py`／`app/core/exception_handlers.py`，性質上跟 `schemas`／`models`完全一樣——都是機械產生、不對應任何 `TaskSpec`（不是⑤逐函式填空的對象）、只會以「唯讀 context」的形式出現在其他 task 的 `target_files` 裡，因此也不會出現在 `related_files`（`route_to_file_mapping` 只涵蓋 `routers`／`services`／`repositories` 三層，見 05a 三章、02a 十一章）。若過濾規則只列 `schemas`／`models`，任何一個 task 若透過 `app/core/exception_handlers.py`（例如呼叫某個共用的錯誤處理輔助函式）出問題，會因為這個檔案剛好落在既不是 `related_files`、又不是 `schemas`／`models` 的位置而完全看不到——這是本文件校對時發現、原本沒有涵蓋到的除錯盲區，因此聯集時取 `target_files` 裡父目錄落在 `schemas`／`models`／`core` 任一個的項目：
+**過濾規則不能只列 `schemas`／`models`，還必須涵蓋 `core`**：05a 三章「全域基礎設施檔案」定案的 `app/core/database.py`／`app/core/exception_handlers.py`，性質上跟 `schemas`／`models`完全一樣——都是機械產生、不對應任何 `TaskSpec`（不是⑤逐函式填空的對象）、只會以「唯讀 context」的形式出現在其他 task 的 `target_files` 裡，因此也不會出現在 `related_files`（`route_to_file_mapping` 只涵蓋 `routers`／`services`／`repositories` 三層，見 05a 三章、02a 十一章）。若過濾規則只列 `schemas`／`models`，任何一個 task 若透過 `app/core/exception_handlers.py`（例如呼叫某個共用的錯誤處理輔助函式）出問題，會因為這個檔案剛好落在既不是 `related_files`、又不是 `schemas`／`models` 的位置而完全看不到，因此聯集時取 `target_files` 裡父目錄落在 `schemas`／`models`／`core` 任一個的項目：
 
 ```python
 def _is_global_infra_file(path: str) -> bool:
@@ -341,7 +314,24 @@ def _is_global_infra_file(path: str) -> bool:
     return PurePosixPath(path).parent.name in ("schemas", "models", "core")
 ```
 
-**為什麼是「機械產生、無擁有 task 的全域檔案」這個特徵，不是隨機挑幾個目錄名**：`schemas`／`models`／`core` 三者共同的性質才是這條規則真正要抓的東西——它們都不對應任何 `TaskSpec`，只能透過其他 task 的唯讀 context 被看到，見上一段「本身不對應任何 TaskSpec」的既有推理，`core` 只是把同一個推理再套用到 05a 三章原本就已經定案、但四章第一版沒有連帶想到的第三個既有類別，不是新發明一條規則。**已知限制**：若日後 05a 的既有慣例新增第四類「全域基礎設施」目錄（例如假設性的 `utils/`），這個列表需要跟著同步更新——目前 05a 定案的既有類別只有這三個，這裡沒有依據新增第四個，屬於對既有慣例的隱性依賴（見十二章）。
+**為什麼是「機械產生、無擁有 task 的全域檔案」這個特徵，不是隨機挑幾個目錄名**：`schemas`／`models`／`core` 三者共同的性質才是這條規則真正要抓的東西——它們都不對應任何 `TaskSpec`，只能透過其他 task 的唯讀 context 被看到，見上一段「本身不對應任何 TaskSpec」的既有推理，`core` 只是把同一個推理再套用到 05a 三章原本就已經定案、但四章第一版沒有連帶想到的第三個既有類別，不是新發明一條規則。
+
+**這條規則仍然不夠：純目錄名判斷漏掉了「有擁有 task、但擁有它的模組自己沒有 HTTP endpoint」這一類檔案**（`docs/09b_bug_trace.md #49`，已用真實案例驗證兩次）——`common_service.py`（分派給 `common` 模組）父目錄是 `services`，不在 `schemas`／`models`／`core` 白名單內，即使它確實出現在其他模組（如 `exam`）task 的 `target_files[1:]`（真實業務邏輯明確 `import` 它，不是假設），仍然會被這條規則濾掉。這跟 `schemas`／`models`／`core` 的情況本質相同：`common` 模組自己沒有任何 route，`test_results.failures[*].module` 永遠不會出現 `common`，3.2 的模組篩選機制永遠不會選中它去分析——**唯一能看到它的機會，就是被其他模組當成 `target_files[1:]` 帶進來的這一刻，過濾規則卻恰好把它擋住了**。
+
+**修正**：`_is_global_infra_file()` 除了既有的目錄名判斷，改成「或者這個檔案的擁有模組在 `route_to_module_mapping` 裡查不到任何一個 route」——後面這個條件需要額外傳入 `module` 到 `route` 的反查資訊。`module_list` 是 State 既有欄位，但 `route_to_module_mapping` **不是**：它是③寫進 `config/harness.yaml`、由 `refactor_harness/core/route_mapper.py::RouteMapper` 讀出的既有機制（見 02a 十三章），沒有進 `RefactorState`——這裡直接建構一個 `RouteMapper()` 讀檔案，不經過任何 `graph/nodes/*.py`，維持八章「⑦ 全程不 import 任何 node」的既有邊界：
+
+```python
+def _is_global_infra_file(path: str, zero_endpoint_modules: set[str], file_to_module: dict[str, str]) -> bool:
+    from pathlib import PurePosixPath
+    if PurePosixPath(path).parent.name in ("schemas", "models", "core"):
+        return True
+    owning_module = file_to_module.get(path)
+    return owning_module is not None and owning_module in zero_endpoint_modules
+```
+
+`zero_endpoint_modules`（三章正規化時順便算出，不是新的一次性資料）：`{m["module"] for m in module_list} - {route_to_module_mapping 裡出現過的所有 module}`。`file_to_module`：`{t["target_files"][0]: t["module"] for t in task_list if t["target_files"]}`，即每個檔案的擁有模組。這一版仍然無法涵蓋「檔案從未被任何模組的 task 當成 `referenced_interfaces` 引用」的情況（見下方「`_global` 這個保留模組」）——它解決的是「被引用了、但過濾規則本身把它擋掉」，不是「從未被引用過」。
+
+**`_global` 這個保留模組（09b「全域例外處理」）是更極端的情況，需要不同的機制**：`app/core/exception_handlers.py` 分派給 `_global` 模組，但它不是被業務邏輯 `import` 呼叫的（是③機械組裝進 `app.main.py::app.add_exception_handler()`），因此**從未出現在任何模組的 `target_files[1:]`**——不管 `_is_global_infra_file()` 怎麼調整，只要判斷依據是「這個模組的 task 有沒有把它列進 `target_files`」，`_global` 就永遠不會被任何模組的 context 帶到。**修正**：`_global` 這種「機械保留、無業務呼叫關係、檔案數量少」的模組，比照四章「`service_diagnostics` 要傳給所有 `root_cause` module」的既有精神——只要這一輪有任何 `root_cause` module，`_global` 底下的檔案（`app/core/exception_handlers.py` 這類數量很少的全域例外處理檔案）就無條件當成額外唯讀 context 附加給每一個 `root_cause` module，不需要先確認有沒有被引用。這不會顯著增加 token 成本（`_global` 定義上只有機械收集的 catch-all handler，檔案數量少且小），也符合「任何一個 endpoint 的例外都可能經過這裡」的實際語意。
 
 **這個過濾規則的已知取捨**：`referenced_interfaces` 裡若真的有一個跨 module 的 service／repository 檔案是這次失敗案例的真正根因（例如：這個 module 正確呼叫了另一個 module 的函式，但那個函式本身回傳了錯誤的值），這個過濾規則不會把那個檔案的原始碼帶進來——但這種情況下，根因其實**不在這個 module**，應該在對方 module 自己的 `harness_failures`（若對方也失敗）或後續人工排查中被抓到，不是這個 module 這次 LLM 呼叫該負責的範圍；`related_files`（Harness 算出的呼叫鏈）本來就已經涵蓋這個 module 自己的 router／service／repository，這個過濾規則只是刻意不把它再往外擴大到「這個 module 可能呼叫到的所有東西」，維持四章開頭「Debug Agent 要看的是這個 module 自己的程式碼」這個既有邊界。
 
@@ -353,10 +343,14 @@ def _is_global_infra_file(path: str) -> bool:
 related_files = {rf for f in ctx["harness_failures"] for rf in f.get("related_files", [])}
 
 if related_files:
-    # 有 related_files 可用，只需要補 schemas/models/core 的缺口
-    related_files |= {
-        tf for t in all_tasks for tf in t["target_files"] if _is_global_infra_file(tf)
-    }
+    # 有 related_files 可用時，「這個 task 自己的主要寫入目標」
+    # （target_files[0]）永遠納入，不經過 _is_global_infra_file() 過濾；
+    # 只有 target_files[1:]（referenced_interfaces 帶進來的唯讀參考
+    # 檔案）才套用 schemas/models/core 過濾規則。
+    for t in all_tasks:
+        if t["target_files"]:
+            related_files.add(t["target_files"][0])
+        related_files |= {tf for tf in t["target_files"][1:] if _is_global_infra_file(tf)}
 else:
     # 不論是 harness_failures 整個是空的（service_unreachable），還是
     # harness_failures 非空但每一筆的 related_files 都剛好是空的
@@ -367,6 +361,8 @@ else:
 ```
 
 這個條件同時涵蓋了三章「`service_unreachable` 分支」（`harness_failures` 整個為空 → `related_files` 聯集必然為空，落入 `else`）與這裡新增的 `golden_not_found` 情境（`harness_failures` 非空，但聯集恰好為空，一樣落入 `else`）——不需要為兩種情況分別寫判斷式，直接檢查最終要用的那個變數本身有沒有內容，比檢查它的其中一個上游來源（`ctx["harness_failures"]`）更精確，也自然涵蓋所有「導致這個聯集為空」的成因，不需要窮舉列出。
+
+**`related_files` 分支裡為什麼 `target_files[0]` 要跳過 `_is_global_infra_file()` 過濾，不能跟 `target_files[1:]` 一視同仁**：這是接上真實環境後才發現的真實缺陷，不是理論推演——第一版曾經對 `all_tasks` 的整份 `target_files`（含 `[0]`）套用同一條過濾規則，實測時剛好有一個 task 自己的主要寫入目標是 `app/services/{module}.py`（父目錄是 `services`，不落在 `schemas`／`models`／`core` 任一類），於是這個 task 自己的程式碼被這條規則整個濾掉，導致該次呼叫完全看不到真正的根因所在檔案、只能就其他無關程式碼做出一個看似合理但錯誤的次要推論。`target_files[0]` 是 `all_tasks`（已經限定「這個 module 底下的 task」）裡每個 task 自己的寫入目標，本來就該無條件納入，跟「這個 module 看不看得到 `schemas`／`models`／`core` 這類無擁有 task 的全域檔案」是兩件不相關的事，`_is_global_infra_file()` 只對 `target_files[1:]`（`referenced_interfaces` 帶進來的唯讀參考檔案）有意義。
 
 **`tasks` 清單本身就是 task_id 的消歧根據，不需要額外編碼成單一字串**：每個 task 條目已經帶 `class_name`／`target_files`，同名函式散落在不同 class／檔案時（如 `UserRepository.get_by_id` 與 `OrderRepository.get_by_id`），LLM 判斷「是哪個 task」時本來就要對照程式碼實際內容（`source_files` 已經是以檔案路徑為 key），`task_id` 本身在 `task_list` 裡就是唯一值（06a：「`id`：task 唯一識別碼」），不存在「同名函式導致 `task_id` 本身有歧義」的問題——真正的風險是「LLM 選錯了一個存在但不是真正根因的 task_id」，這是任何除錯推理都無法用輸出格式消除的風險，4.3 的驗證只能也只需要擋「引用不存在的 task_id」，見 4.3。
 
@@ -387,9 +383,22 @@ DEBUG_OUTPUT_SCHEMA = {
                 "properties": {
                     "task_id": {"type": "string"},
                     "diagnosis": {"type": "string"},
-                    "fix_instruction": {"type": "string"},
+                    "fixed_body": {"type": ["string", "null"]},
+                    "file_fixes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "target_file": {"type": "string"},
+                                "old_snippet": {"type": "string"},
+                                "new_snippet": {"type": "string"},
+                            },
+                            "required": ["target_file", "old_snippet", "new_snippet"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
-                "required": ["task_id", "diagnosis", "fix_instruction"],
+                "required": ["task_id", "diagnosis", "fixed_body", "file_fixes"],
                 "additionalProperties": False,
             },
         },
@@ -399,6 +408,12 @@ DEBUG_OUTPUT_SCHEMA = {
     "additionalProperties": False,
 }
 ```
+
+**`fixed_body` 是完整程式碼，不是自然語言指令**：完整理由與真實案例見八章「⑤ 端的對應改動」——簡言之，⑦ 已經讀完整份原始碼、定位到根因，直接產生修正後的函式本體（格式同 `ollama_client.get_function_body()` 既有 delimiter 契約：未縮排陳述式文字，不含 `def` 簽名行），套用時直接取代函式本體、完全跳過 ⑤ 的本地模型呼叫，不是把結論翻譯成指令再讓能力較弱的模型重新生成一次。
+
+**`fixed_body` 可以是 `null`，`file_fixes` 補上函式本體以外的修正（phase 2）**：`fixed_body` 受限於 `fill_function()` 的 AST 函式定位機制——只能取代**函式本體**，碰不到函式簽名（參數名稱／型別標註）或模組層級的敘述（import、常數宣告）。`file_fixes` 是精確字串替換（`target_file`＋`old_snippet`＋`new_snippet`，`old_snippet` 必須在檔案裡逐字出現剛好一次），不透過 AST，因此能碰到 `fixed_body` 碰不到的任何範圍，包括函式簽名本身。兩者不互斥，同一個 task_fix 可以只有其中一個，也可以兩個都有（例如函式本體要改、簽名也要改）；至少要有一個非空，見 4.3。完整設計理由與真實案例見八章「⑤ 端的對應改動：phase 2」。
+
+**prompt 明確要求：根因確實是檔案層級問題時必須用 `file_fixes` 精確補洞，不能在 `fixed_body` 裡繞道**：真實測試發現只描述「`fixed_body` 碰不到的範圍改用 `file_fixes`」不夠——LLM 診斷對了「某個 enum／常數沒被 import」這個檔案層級根因，卻選擇在 `fixed_body` 裡把函式改寫成不再依賴那個 enum（例如原本該用具名錯誤碼的地方，換成猜測的寫死數值），繞過需要修 import 這件事。這種繞道即使剛好通過驗證，也已經悄悄偏離 `source_files`／`description` 描述的原始業務邏輯，比「誠實回報 `unfixable_reasons`」更差。因此 prompt 明確要求：根因確實是檔案層級的問題時必須用 `file_fixes` 補上缺口、讓函式繼續以原本方式引用該 enum／常數，不要改寫本體去閃避它；判斷不出正確 import 路徑時，寧可如實寫進 `unfixable_reasons`，不要用猜的數值掩蓋。
 
 **Prompt 對 `task_id` 的硬性要求**（比照 06a 五章「不要虛構或猜測不存在的 interface_id」同一種寫法）：只能從「這個 module 全部 task 的清單」裡選,不能是 `scaffold_gap_task_ids` 裡的 task（明確告知：這些函式骨架不存在,如果你判斷問題出在其中一個,把它寫進 `unfixable_reasons`,不要放進 `task_fixes`）,不要虛構不存在的 task_id。
 
@@ -424,6 +439,8 @@ valid_task_ids = {t["id"] for t in task_list if t["module"] == module} - scaffol
 
 `task_id` 不在 `valid_task_ids` 內的整筆**捨棄並記警告**（不是中止整個 module 的分析——其餘合法的 task_fix 仍然有效）。這比照 09a 六章「三元組比對」與 06a 五章「`referenced_interfaces` 只能引用...不要虛構」同一種防禦性原則：LLM 的自由文字輸出可能幻覺出看起來合理但不存在的 task_id（尤其當它把兩個相似函式名搞混時）,結構化 schema 只保證格式,不保證內容真實,這一步是內容層級的驗證。
 
+同一步也捨棄 `fixed_body`／`file_fixes` 兩者皆空的 task_fix（並記警告）——schema 只保證兩個欄位都存在，不保證至少一個非空，這種輸出沒有任何實際修正內容，留著只會在 `pending_fixed_bodies`／`pending_file_fixes` 裡製造一筆什麼都不做的空紀錄。
+
 ### 4.4 單一 module 呼叫失敗時
 
 比照 04a 四章「待重試清單」機制：失敗的 module 列入待重試清單,這一輪其餘 module 分析完後統一重試一次；仍失敗則這個 module 在這一輪**視為未分析**（不是視為 `fixable=False`）——區分「LLM 判斷這是真的修不好」與「API 暫時故障沒分析到」很重要,見七章「give_up_early 的判斷邊界」,後者不能計入不可修的證據。
@@ -438,7 +455,7 @@ valid_task_ids = {t["id"] for t in task_list if t["module"] == module} - scaffol
 
 **這個反查本質上是「給模型完整資訊,讓它做人類除錯者會做的事」,不是新演算法**——類比人類工程師看到一個 API 回傳錯誤,會開啟 router／service／repository 三個檔案,對照 commit log（這裡對應 `task.description`）判斷是哪一段邏輯出錯,Debug Agent 的 LLM 呼叫做的是同一件事,只是輸入結構化了。
 
-四章驗證失敗（4.3）與這裡的反查失敗是同一件事：如果 LLM 精準度不夠、給出的 `task_id` 常常無效,是 prompt／輸入資料的品質問題,不是這個機制本身的設計缺陷,調校方向見十二章「待決定事項」。
+四章驗證失敗（4.3）與這裡的反查失敗是同一件事：如果 LLM 精準度不夠、給出的 `task_id` 常常無效,是 prompt／輸入資料的品質問題,不是這個機制本身的設計缺陷,調校方向見十三章「尚待確認事項」。
 
 ---
 
@@ -447,18 +464,26 @@ valid_task_ids = {t["id"] for t in task_list if t["module"] == module} - scaffol
 ### 新增型別
 
 ```python
+class FileFix(TypedDict):
+    task_id: str
+    target_file: str
+    old_snippet: str
+    new_snippet: str
+
+
 class TaskFix(TypedDict):
     task_id: str
     diagnosis: str
-    fix_instruction: str
+    fixed_body: str | None  # None：這個 task 的函式本體不需要改
+    file_fixes: list[FileFix]
 
 
 class DebugRound(TypedDict):
     round: int              # 對應 state["retry_count"]（呼叫當下的值，遞增前）
-    module: str              # "no_signal" 情境固定填 "<none>"，見三章「子情境」
-    origin: Literal["blocked", "module_mismatch", "scaffold_gap", "root_cause", "no_signal"]
-    fixable: bool            # blocked/module_mismatch/scaffold_gap/no_signal 固定 False；root_cause 由 LLM 判斷（經 4.2 二次校正）
-    root_cause_summary: str  # blocked/module_mismatch/scaffold_gap/no_signal 用固定文字，不呼叫 LLM
+    module: str
+    origin: Literal["blocked", "module_mismatch", "scaffold_gap", "root_cause"]
+    fixable: bool            # blocked/module_mismatch/scaffold_gap 固定 False；root_cause 由 LLM 判斷（經 4.2 二次校正）
+    root_cause_summary: str  # blocked/module_mismatch/scaffold_gap 用固定文字，不呼叫 LLM
     task_fixes: list[TaskFix]
     unfixable_reasons: list[str]
 ```
@@ -470,27 +495,43 @@ class RefactorState(TypedDict):
     ...
     # Agent ⑦（逐輪累積寫入，需要 reducer）：每一輪 debug 對每個分析過的
     # module 的完整記錄（含 blocked/scaffold_gap 這種未呼叫 LLM 的機械
-    # 判斷），供人工事後查看「⑦ 每一輪在想什麼」，也是十二章「是否要讓
-    # LLM 看到上一輪建議」的既有資料來源。
+    # 判斷），供人工事後查看「⑦ 每一輪在想什麼」。
     debug_rounds: Annotated[list[DebugRound], operator.add]
 
-    # Agent ⑦：這一輪產出的 task 級修正指令，key 是 task_id。**不掛
-    # reducer，整包覆寫**——這是「這一輪的建議」，不是累加事件：若某個
-    # task 這一輪沒有被任何 DebugRound 提到（module 是 blocked/
-    # scaffold_gap，或 LLM 就是沒建議它），代表沒有新建議，⑤ 下一輪
-    # 直接照 task.description 原樣重試，不該沿用上上輪可能已經過時、
-    # 甚至已經被採納但沒用的舊建議。
-    pending_fix_instructions: dict[str, str]
+    # Agent ⑦：這一輪產出的 task 級修正後程式碼，key 是 task_id、value
+    # 是完整函式本體。**不掛 reducer，整包覆寫**——這是「這一輪的修正」，
+    # 不是累加事件：若某個 task 這一輪沒有被任何 DebugRound 提到（module
+    # 是 blocked/scaffold_gap，或 LLM 就是沒給它修正），代表沒有新修正，
+    # 這個 task 下一輪直接照 task.description 原樣走一般填空流程（見
+    # 八章），不該沿用上上輪可能已經過時、甚至已經套用過但沒用的舊程式碼。
+    pending_fixed_bodies: dict[str, str]
+
+    # Agent ⑦：這一輪產出的檔案層級修正（phase 2，見八章「⑤ 端的對應
+    # 改動：phase 2」）——fixed_body／fill_function() 的 AST 函式定位
+    # 機制只能碰函式本體，函式簽名（參數名稱／型別標註）與模組層級的
+    # 敘述（import 等）碰不到的部分走這裡，由
+    # translator_cli.apply_file_fix() 用精確字串替換套用，不經過排程器
+    # （這些修正不對應任何要重新生成的函式本體）。不掛 reducer，整包
+    # 覆寫，語意同 pending_fixed_bodies。
+    pending_file_fixes: list[FileFix]
 
     # Agent ⑦：見七章。這一輪分析後，若確認「所有 root_cause module
     # 都無法修」，設為 True，供 debug_node 的條件邊路由到 give_up，
     # 不進 implement 浪費一輪重試。每輪覆寫，不掛 reducer。
     give_up_early: bool
+
+    # Agent ⑦：這一輪 origin=="root_cause" 的 module 裡，Claude API
+    # 呼叫（含批次重試）仍然失敗、視為「未分析」的 module 名稱。每輪
+    # 覆寫，不掛 reducer。供 give_up_node.py 在 retry_count 用盡時分辨
+    # 「這一輪是 Claude API 打不通」還是「⑦ 判斷邏輯本身有問題」——這
+    # 兩種情況原本印出的訊息一模一樣，人工只能自己去翻 debug_rounds 或
+    # llmlog 才能分辨，見十章。
+    unanalyzed_root_cause_modules: list[str]
 ```
 
-`debug_rounds` 掛 reducer（歷史追溯，比照 `partial_reports` 的既有精神）；`pending_fix_instructions`／`give_up_early` 是「這一輪的判斷快照」，不掛 reducer（比照 `blocked_modules`／`failed_modules` 的既有精神，見 01 三章）。
+`debug_rounds` 掛 reducer（歷史追溯，比照 `partial_reports` 的既有精神）；`pending_fixed_bodies`／`pending_file_fixes`／`give_up_early` 是「這一輪的判斷快照」，不掛 reducer（比照 `blocked_modules`／`failed_modules` 的既有精神，見 01 三章）。
 
-**`pending_fix_instructions` 為什麼不需要額外的「清空」步驟**：`implement_node.py::run()` 只用 `.get()` 讀取這份字典（見八章），不修改、也不刪除它，回傳時仍以 `{**state, ...}` 原樣帶回——這代表若把 `implement` 單獨拿出來看，它確實不會主動清掉自己讀過的 instruction。但這不會造成「⑤ 在後續某一輪讀到過時建議」：graph 的邊結構保證 `implement` 永遠只有兩種前驅——初次進入（`plan`／`scaffold` 的 fan-in，此時 `pending_fix_instructions` 是 `main.py` 初始化的 `{}`，見七章）、或緊接在一次 `debug` 呼叫之後（`debug → implement`，見七章條件邊）。`debug_node` **每一輪都重新跑三章的正規化＋四章的 LLM 分析，整包覆寫**（不是合併）`pending_fix_instructions`——所以 `implement` 每次真正執行時，讀到的必然是「最近一次 `debug` 分析出的最新建議」，不可能讀到兩輪以前的舊資料。需要小心的地方只在於：`debug_node` 對某個 module 這一輪沒有重新分析到（例如它已經不在 `test_results.failures` 裡，代表已經修好），這個 module 底下的 task 就不會出現在這一輪的 `pending_fix_instructions` 裡——這是**設計上刻意的**（六章原文：「代表沒有新建議」），不是遺漏的清空邏輯。
+**`pending_fixed_bodies` 為什麼不需要額外的「清空」步驟**：`implement_node.py::run()` 只用 `.get()` 讀取這份字典（見八章），不修改、也不刪除它，回傳時仍以 `{**state, ...}` 原樣帶回——這代表若把 `implement` 單獨拿出來看，它確實不會主動清掉自己讀過的修正。但這不會造成「⑤ 在後續某一輪套用過時的程式碼」：graph 的邊結構保證 `implement` 永遠只有兩種前驅——初次進入（`plan`／`scaffold` 的 fan-in，此時 `pending_fixed_bodies` 是 `main.py` 初始化的 `{}`，見七章）、或緊接在一次 `debug` 呼叫之後（`debug → implement`，見七章條件邊）。`debug_node` **每一輪都重新跑三章的正規化＋四章的 LLM 分析，整包覆寫**（不是合併）`pending_fixed_bodies`——所以 `implement` 每次真正執行時，讀到的必然是「最近一次 `debug` 分析出的最新修正」，不可能讀到兩輪以前的舊資料。需要小心的地方只在於：`debug_node` 對某個 module 這一輪沒有重新分析到（例如它已經不在 `test_results.failures` 裡，代表已經修好），這個 module 底下的 task 就不會出現在這一輪的 `pending_fixed_bodies` 裡——這是**設計上刻意的**（六章原文：「代表沒有新修正」），不是遺漏的清空邏輯。
 
 ### `retry_count` 遞增：推翻既有 stub 邏輯，改成「每進一次 `debug` 就遞增」
 
@@ -516,8 +557,6 @@ new_retry_count = state.get("retry_count", 0) + 1
 
 ### 判斷規則
 
-**本節的判斷規則不適用於三章「子情境」的 `no_signal` 分支，這是控制流程層級的排除，不是數值層級的覆寫**：`no_signal` 分支（`contexts` 為空且 `test_results.reason=="service_unreachable"`）在三章已經定案自己的 `give_up_early` 結果（成功用 crash-log 定位到 task 時是 `False`；被動記錄退回時也是 `False`），並且在偵測到這個條件的當下就**直接 `return`**——10b 二章的實際實作裡，這個分支是 `run_debug_analysis()` 開頭一段帶有 `return` 陳述式的 `if` 區塊，一旦進入就不會再往下執行到本節這裡即將定義的 `root_cause_ctxs = [...]` 這一行。也就是說，即使 `no_signal` 分支底下的 `contexts`（本來就是空的）拿去餵給本節的 `if not root_cause_ctxs: give_up_early = True` 規則，理論上確實會算出 `True`——**但這段程式碼在 `no_signal` 分支裡根本不會被執行到**，不是「算出 `True` 之後又被 `False` 蓋掉」，是這段計算從頭到尾沒有發生過。三章與本節是**互斥的兩條分支**（`if not contexts and reason=="service_unreachable": ... return {...}` 與其後緊接著的一般路徑），不是「先套用一個規則、再套用另一個規則」的先後關係——這一點文件先前的版本沒有在本節明講，容易讓人以為兩節在描述同一段循序執行的邏輯，因而誤判成後面的規則會覆寫前面的設定。
-
 **這裡是最容易寫錯的一步：判斷「有沒有全部分析到」必須以 `origin == "root_cause"` 的 `ModuleFailureContext` 全集為準，不能只看『已經出現在 `debug_rounds` 裡』的子集**——4.4 已定案「API 呼叫失敗、重試仍失敗的 module 視為未分析，不產生 `DebugRound`」，若判斷式只從「已經有 `DebugRound` 記錄」的集合出發，一個 API 失敗、完全沒被分析到的 module 會直接從集合裡**消失**，而不是以「未分析、fixable 未知」的狀態留在集合裡——`all(...)` 對一個少了一筆的集合下判斷，等於默許「沒分析到」跟「分析後判定不可修」有同樣的效果，恰好推翻了 4.4／本章開頭一直在強調的「API 暫時故障不能算不可修的證據」這個原則。因此判斷式必須先固定住「這一輪 `root_cause` 的 module 有哪些」的完整集合，再檢查這個**完整集合**裡是不是每一個都成功分析、且都不可修：
 
 ```python
@@ -542,25 +581,25 @@ else:
     )
 ```
 
-`all_analyzed` 這個條件不能省略、也不能被「`all(r.fixable is False for r in this_round_rounds)` 剛好對非空清單成立」取代——當 `root_cause_ctxs` 有兩個 module A／B、A 分析成功判定 `fixable=False`、B 因為 API 故障未分析時，`this_round_rounds` 只有 A 一筆，`all(r.fixable is False for r in this_round_rounds)` 單獨看會是 `True`（對只含 A 的清單成立），但 `len(root_cause_ctxs)==2` 而 `len(this_round_rounds)==1`，`all_analyzed` 會是 `False`，正確擋下 `give_up_early`。**十b 章的第一版程式碼曾經漏掉這個 `all_analyzed` 檢查，只用『這一輪看得到的 root_cause 筆數』間接判斷,結果 B 因為根本沒被記錄進這一輪的清單而完全不出現在任何集合裡,`give_up_early` 因此在只有一個 module（A）被分析到、其餘全部因 API 故障未分析的情況下就被誤觸發**——這是本文件在校對時抓到並修正的實作缺陷，10b 章的程式碼已同步修正，這裡明確記錄判斷式必須長什麼樣，避免未來重新實作時重蹈覆轍。
+`all_analyzed` 這個條件不能省略、也不能被「`all(r.fixable is False for r in this_round_rounds)` 剛好對非空清單成立」取代——當 `root_cause_ctxs` 有兩個 module A／B、A 分析成功判定 `fixable=False`、B 因為 API 故障未分析時，`this_round_rounds` 只有 A 一筆，`all(r.fixable is False for r in this_round_rounds)` 單獨看會是 `True`（對只含 A 的清單成立），但 `len(root_cause_ctxs)==2` 而 `len(this_round_rounds)==1`，`all_analyzed` 會是 `False`，正確擋下 `give_up_early`。
 
-**`all_analyzed` 該直接查 `analyzed_results`（LLM 呼叫成敗的權威來源），還是改用「`len(this_round_rounds)` 是否等於 `len(root_cause_ctxs)`」比較筆數**：這兩種寫法在目前的程式碼結構下**恰好**算出同一個答案（每個 `root_cause` module 在迴圈裡，`raw is None` 就 `continue`、不產生 `DebugRound`，否則一定恰好 `append` 一筆，兩個訊號目前是同步的），但語意上不是同一件事：`analyzed_results` 直接回答「LLM 這次呼叫成功了嗎」，`this_round_rounds` 的筆數回答的是「這一輪迴圈跑到最後、成功組出並放進清單的 `DebugRound` 有幾筆」——後者除了「LLM 呼叫是否成功」，還額外承載了「後續組裝 `DebugRound` 的過程有沒有出岔子」這件事。若之後任何人在 `raw is not None` 之後、`append` 之前那段（`_validate_task_fixes()`／`unfixable_reasons` 組裝）新增一個會提前 `continue` 但不 `append` 的分支，改用筆數比對會把「API 明明成功、只是後製處理另有隱情」誤判成「未分析」，`give_up_early` 因此可能錯誤地變得更保守——用 `analyzed_results` 直接查詢，語意上更精確地對應「4.4 定義的成功／失敗」這件事本身，不會被下游組裝邏輯的變動連帶影響。**10b 二章的實作因此維持查 `analyzed_results`，但額外加一道防禦性 `assert` 確認兩個訊號目前確實一致**——用斷言而不是直接改用筆數比對，理由是斷言只在「兩者真的脫鉤」時才會發出聲音（那才是真正該被注意到的情況），日常執行不受影響；改用筆數比對則是每次都用一個語意較不精確的替代訊號，即使兩者目前同步也一樣。
+`all_analyzed` 直接查 `analyzed_results`（LLM 呼叫成敗的權威來源），不是改用「`len(this_round_rounds)` 是否等於 `len(root_cause_ctxs)`」比較筆數：`analyzed_results` 直接回答「LLM 這次呼叫成功了嗎」，語意上精確對應「4.4 定義的成功／失敗」這件事本身，不會被下游組裝 `DebugRound` 的過程（`_validate_task_fixes()`／`unfixable_reasons` 組裝）連帶影響。
 
-**為什麼一定要是這一輪、不能是累積歷史——這是另一個獨立、更嚴重的既有陷阱，同一次校對中發現**：`state["debug_rounds"]` 掛的是 `Annotated[list[DebugRound], operator.add]`（六章），代表**整條 graph run 從第一次進 `debug` 開始，每一輪的 `DebugRound` 都會被永久累加進去，不會被覆寫或清除**。若這裡的判斷式誤用累積歷史（例如寫成對 `state.get("debug_rounds", [])` 取 `origin=="root_cause"` 的全部筆數），會直接引入一個新的、比 `all_analyzed` 缺失更隱蔽的 bug：一個 module 若在**第一輪**被 LLM 判定 `fixable=True`（`task_fixes` 非空，因此沒有進一步重試——`fixable=True` 就會直接產生 `pending_fix_instructions`，理應在下一輪 `implement` 被修好），但那個修法沒有真的成功，**第二輪**這個 module 又出現、被判定 `fixable=False`——這時候累積歷史裡同時有第一輪的 `True` 記錄與第二輪的 `False` 記錄，`all(r.fixable is False for r in ...)` 會因為第一輪那筆 `True` 而**永遠**回傳 `False`，等於 `give_up_early` 從此對這個 module 永久失效，不論之後幾輪它一直被判定不可修，這個判斷式都會被那筆過期的、早已被後續輪次推翻的 `True` 記錄卡死。**這是為什麼 10b 章的實際實作裡，`debug_rounds`（函式內的區域變數）必須是每次呼叫 `run_debug_analysis()` 時從空清單重新建構、只包含這一輪產出的 `DebugRound`，回傳時才透過 `"debug_rounds"` 這個 key 交給 LangGraph 的 reducer 疊加進歷史——函式內部處理判斷邏輯時，絕不能反過來去讀 `state.get("debug_rounds", [])` 這份歷史清單**。10a 十章的程式碼片段與 10b 二章的實際實作在這一點上必須維持一致，10b 章已同步用不會與 state 欄位撞名的變數名稱明確區分，避免未來任何人（包含未來的 LLM 重新實作這份設計時）誤讀成同一份資料。
+**為什麼一定要是這一輪、不能是累積歷史**：`state["debug_rounds"]` 掛的是 `Annotated[list[DebugRound], operator.add]`（六章），代表**整條 graph run 從第一次進 `debug` 開始，每一輪的 `DebugRound` 都會被永久累加進去，不會被覆寫或清除**。若這裡的判斷式誤用累積歷史（例如寫成對 `state.get("debug_rounds", [])` 取 `origin=="root_cause"` 的全部筆數），會直接引入一個新的、比 `all_analyzed` 缺失更隱蔽的 bug：一個 module 若在**第一輪**被 LLM 判定 `fixable=True`（`task_fixes` 非空，因此沒有進一步重試——`fixable=True` 就會直接產生 `pending_fixed_bodies`，理應在下一輪 `implement` 被修好），但那個修法沒有真的成功，**第二輪**這個 module 又出現、被判定 `fixable=False`——這時候累積歷史裡同時有第一輪的 `True` 記錄與第二輪的 `False` 記錄，`all(r.fixable is False for r in ...)` 會因為第一輪那筆 `True` 而**永遠**回傳 `False`，等於 `give_up_early` 從此對這個 module 永久失效，不論之後幾輪它一直被判定不可修，這個判斷式都會被那筆過期的、早已被後續輪次推翻的 `True` 記錄卡死。**因此 `run_debug_analysis()` 內部處理 `give_up_early` 判斷時，`debug_rounds` 必須是每次呼叫時從空清單重新建構、只包含這一輪產出的 `DebugRound`，回傳時才透過 `"debug_rounds"` 這個 key 交給 LangGraph 的 reducer 疊加進歷史——絕不能反過來去讀 `state.get("debug_rounds", [])` 這份歷史清單**，變數命名也要跟 state 欄位明確區分，避免誤用。
 
 **為什麼只看 `root_cause` 的 module，不看 `blocked`／`module_mismatch`／`scaffold_gap`**：這三種 origin 各自的結論（`blocked` 待上游、`module_mismatch` 待人工核對資料、`scaffold_gap` 待重新 scaffold）本身都已經確定，**單獨**存在不足以判斷整條 pipeline 該放棄——09a 七章的顧慮完全成立：可能只有一個 module 卡在骨架缺口，其他 module 都還救得回來。只有當**所有**送進 LLM 分析的 `root_cause` module 都成功分析、且都被判定 `fixable=False`，才代表這一輪已經沒有任何一個「可能透過重試修好」的東西了——這時候不論其餘三種 origin 的 module 有幾個，它們的命運已經跟著 `root_cause` module 一起確定：`blocked` 永遠等不到上游 verified，`module_mismatch`／`scaffold_gap` 本來就不可能靠重試修。
 
-**`root_cause_ctxs` 為空時（案例二）：`give_up_early` 必須是 `True`，不是 `False`**——這是本文件校對時發現、必須修正的一處邏輯矛盾。第一版的理由是「沒有證據支持已經沒有可修的東西」，但這個理由本身是錯的：`root_cause_ctxs` 為空**恰好就是**「三章的機械規則已經證明這一輪沒有任何 module 可能透過重試修好」的直接證據，不是「還不確定」。逐一檢視三章其餘三種 origin 在到達 `debug` 這個時間點時能不能靠回 `implement` 自己解決：
+**`root_cause_ctxs` 為空時（案例二）：`give_up_early` 必須是 `True`，不是 `False`**：`root_cause_ctxs` 為空**恰好就是**「三章的機械規則已經證明這一輪沒有任何 module 可能透過重試修好」的直接證據，不是「還不確定」。逐一檢視三章其餘三種 origin 在到達 `debug` 這個時間點時能不能靠回 `implement` 自己解決：
 
 - `scaffold_gap`：定義上就是「重新生成也無用」，回 `implement` 只會被 `already_failed`（09a 七章）擋下，不會被重新嘗試
 - `module_mismatch`：`test_results` 的 module 對不上任何 task，`implement` 的排程器根本不認識這個「module」，沒有對應的 task 可以送去重試
 - `blocked`：它的命運完全綁定在 `blocked_reasons` 指向的上游 module 身上——若那個上游這一輪也在 `test_results.failures` 裡（它必然在，因為它正是造成下游被卡住的真正原因，`test_results` 對它一定測得到），它自己會被三章分進 `root_cause`／`scaffold_gap`／`module_mismatch` 三者之一；若它被分進後兩者，前面兩點已經證明「重試無用」；若它被分進 `root_cause`，它就會出現在 `root_cause_ctxs` 裡，跟這裡討論的「`root_cause_ctxs` 為空」互相矛盾。也就是說，只要 `root_cause_ctxs` 真的是空的，**不可能**有一個 `blocked` module 的上游最終仍然「有機會被修好」卻沒有出現在 `root_cause_ctxs` 裡——這條路徑上不存在被遺漏的可修母體。
 
-因此 `root_cause_ctxs` 為空這件事本身，已經是「這一輪沒有任何東西能透過重試修好」的完整證明，不需要、也不應該再送回 `implement` 跑一輪注定徒勞的 `implement → run_tests`（`09a` 的排程器會把 `scaffold_gap`／`module_mismatch` 對應的 task 全部當 `already_failed` 跳過，`blocked` 的下游依然卡在原地，這一輪除了浪費一次 Docker 容器重啟＋Newman 執行的時間，不會改變任何 module 的狀態）——這正是使用者這次回饋指出的資源浪費，本文件據此修正。
+因此 `root_cause_ctxs` 為空這件事本身，已經是「這一輪沒有任何東西能透過重試修好」的完整證明，不需要、也不應該再送回 `implement` 跑一輪注定徒勞的 `implement → run_tests`（`09a` 的排程器會把 `scaffold_gap`／`module_mismatch` 對應的 task 全部當 `already_failed` 跳過，`blocked` 的下游依然卡在原地，這一輪除了浪費一次 Docker 容器重啟＋Newman 執行的時間，不會改變任何 module 的狀態）。
 
 ### 路由方式：`retry_count` 上限檢查前移到 `should_debug_or_done()`（02b），不在下游用防禦性補丁妥協
 
-**先前版本的做法，與它的問題**：本文件先前的版本在 `should_retry_or_give_up`（`debug` 之後、`implement` 之前）另外補一道 `retry_count > MAX_RETRY` 檢查，理由是 `should_debug_or_done()`（02b）「`failed_modules` 為空即直接回傳 `"debug"`」這條既有分支完全不檢查 `retry_count`，若不補這道防線，六章「每進一次 `debug` 就無條件遞增」的修正在這條分支上可能無限循環。這個防線本身是對的，但**補的位置是下游、不是源頭**：它只能在事情已經發生之後（`debug` 已經呼叫了一次本可避免的 Claude API）才攔下來，且因為只能用 `>`（用 `>=` 會沒收 `debug` 剛分析出的最後一輪 `fix_instruction`，見下方保留的推演），在「`failed_modules` 永遠空」這個場景下還要多容許一輪才會真正攔下——等於每次觸發這條防線都白白多花一次 LLM 呼叫。
+**為什麼不在 `should_retry_or_give_up`（`debug` 之後、`implement` 之前）補一道 `retry_count > MAX_RETRY` 防禦性檢查**：`should_debug_or_done()`（02b）「`failed_modules` 為空即直接回傳 `"debug"`」這條既有分支完全不檢查 `retry_count`，六章「每進一次 `debug` 就無條件遞增」的修正若不接住這條分支就可能無限循環——但補在下游只能在事情已經發生之後（`debug` 已經呼叫了一次本可避免的 Claude API）才攔下來，且因為只能用 `>`（用 `>=` 會沒收 `debug` 剛分析出的最後一輪 `fixed_body`，見下方保留的推演），在「`failed_modules` 永遠空」這個場景下還要多容許一輪才會真正攔下——等於每次觸發這道防線都白白多花一次 LLM 呼叫。
 
 **修正：直接修正 `should_debug_or_done()`（02b）本身，把 `retry_count` 上限檢查移到最前面、對所有分支統一套用**，不再區分 `failed_modules` 是否為空：
 
@@ -610,23 +649,29 @@ builder.add_conditional_edges(
 
 ---
 
-## 八、⑤ 端的對應改動：讀取 `pending_fix_instructions`
+## 八、⑤ 端的對應改動：`pending_fixed_bodies` 直接取代函式本體，不經過本地模型
 
-`implement_node.py::_augment_task_io()`（09b 二章既有函式，目前只處理 services／repositories 層的 relationship／enum 固定提示）需要擴充第三種疊加來源：
+**⑦ 直接產生修正後程式碼，不是自然語言指令**：⑦ 已經讀完整份原始碼、精準定位到根因，直接寫出正確的程式碼，比把結論翻譯成一句指令、再丟給能力較弱的本地模型重新生成一次更可靠——真實案例：一句完全正確的指令（"參數 `list` 改名為 `items`，方法體內所有引用一併改名"）交給 ⑤ 的本地模型（qwen）執行，結果只套用了一半（改了一處內部引用，參數宣告跟 `return list(distinct_values)` 沒有跟著改），把原本的 `TypeError` 換成一個新的 `NameError`。重試不會讓本地模型突然變聰明，只是讓它重新賭一次。
+
+**修正**：`task_fixes[].fixed_body`（四章 4.2）直接是修正後的完整函式本體（跟 `ollama_client.get_function_body()` 既有的 delimiter 格式一樣：未縮排陳述式文字，不含 `def` 簽名行），`pending_fixed_bodies[task_id]` 有值時，`implement_node.py` 直接把這份程式碼傳給 `translator_cli.fill_function()` 新增的 `fixed_body` 參數，**完全跳過 ⑤ 本地模型呼叫**：
 
 ```
-若 state["pending_fix_instructions"] 裡有這個 task 的 id：
-  疊加進 context（附加在既有提示之後，另起一段，標明「上一輪除錯建議」，
-  避免跟 09a 五章的固定提示混在一起看不出是哪個來源）
+若 state["pending_fixed_bodies"] 裡有這個 task 的 id：
+  _run_one_task() 把對應的 fixed_body 傳給 fill_function(..., fixed_body=...)
+  fill_function() 內部：fixed_body 非 None 時跳過 ollama_client.get_function_body()，
+  直接拿 fixed_body 當本體，其餘既有步驟（定位函式節點、splice_body()、
+  import 解析、語法驗證、寫入＋git commit）不變
 ```
 
-**這是對 09b 既有函式的擴充，不是重新設計**——`_augment_task_io()` 目前簽名是 `(task: TaskSpec) -> tuple[str, list[str]]`，只需要新增一個 `state`（或直接是 `pending_fix_instructions: dict[str, str]`）參數；呼叫端 `_run_one_task()` 需要能拿到這份資料，目前只收 `task`／`python_project_path` 兩個引數，需要一併擴充（完整 diff 見 10b）。
+**這是對既有 `fill_function()`／`_run_one_task()` 的擴充，不是重新設計**——`translator_cli.fill_function()` 新增一個選填參數 `fixed_body: str | None = None`，非 `None` 時跳過「讀 `context_files`、呼叫 `ollama_client.get_function_body()`」這兩步，直接進入既有的 `splice_body()` 之後的所有流程；`_run_one_task()` 從 `pending_fixed_bodies` 查出對應值，原樣傳下去（完整 diff 見 10b）。`_augment_task_io()`（09b 二章既有函式）不再需要處理 ⑦ 的修正——它只剩 09a 五章「疊加規則」（services／repositories 層的 relationship／enum 固定提示）這一件事，因為 ⑦ 的修正不再是「疊加進 context 給模型參考」，是「直接取代函式本體」，兩者不是同一層次的機制，不該共用同一個疊加點。
 
-**疊加範圍不限於 services／repositories 層**——`pending_fix_instructions` 可能指向 `routers` 層的 task（例如 `#12`／`#11` 那種例外處理相關的失敗，位於 `routers` 或 `app/core/`），09a 五章的 relationship／enum 提示才是限定服務／repositories 層，`pending_fix_instructions` 的疊加邏輯獨立於那條限制，任何層級的 task 只要在這份字典裡出現就疊加。
+**這個機制不限於 services／repositories 層**——`pending_fixed_bodies` 可能指向 `routers` 層的 task（例如 `#12`／`#11` 那種例外處理相關的失敗，位於 `routers` 或 `app/core/`），任何層級的 task 只要在這份字典裡出現就直接套用，不受 09a 五章 relationship／enum 提示「限定服務／repositories 層」那條規則約束——兩者本來就是各自獨立的機制。
+
+**目前的範圍：函式本體層級的修正**——`fixed_body` 取代的是 `fill_function()` 既有機制能碰到的範圍，即單一函式的本體，不含模組層級的敘述（如 import）。若 ⑦ 判斷的修正需要動到函式本體以外的地方，`file_fixes`（見上方 phase 2）已經能覆蓋這個範圍。
 
 ### 診斷資料改走 State，不是 `debug_agent/` 直接 import `implement_node`
 
-**第一版的問題**：`debug_agent/analysis.py` 原本設計成直接 `from graph.nodes.implement_node import get_python_service_diagnostics`——這是節點與節點之間的直接互相 import，違反了本專案從 04a 到 09a 一路維持的既有慣例：node 檔案（`graph/nodes/*.py`）只做薄封裝，彼此之間不互相 import，跨節點需要共用的東西一律經由 `RefactorState` 傳遞，或下沉到雙方都能匯入的共用套件（`refactor_harness/`、`translator_cli/`、`debug_agent/` 皆是如此）。`debug_node.py` 目前唯一的 import 對象是 `debug_agent`（一個獨立套件），沒有任何一處是「`graph/nodes/X.py` import `graph/nodes/Y.py`」——`get_python_service_diagnostics()` 的第一版設計打破了這個慣例，是本文件校對時發現、必須修正的架構不一致。
+**`debug_agent/analysis.py` 不能直接 `from graph.nodes.implement_node import get_python_service_diagnostics`**——這是節點與節點之間的直接互相 import，違反了本專案從 04a 到 09a 一路維持的既有慣例：node 檔案（`graph/nodes/*.py`）只做薄封裝，彼此之間不互相 import，跨節點需要共用的東西一律經由 `RefactorState` 傳遞，或下沉到雙方都能匯入的共用套件（`refactor_harness/`、`translator_cli/`、`debug_agent/` 皆是如此）。`debug_node.py` 唯一的 import 對象是 `debug_agent`（一個獨立套件），不該有任何一處是「`graph/nodes/X.py` import `graph/nodes/Y.py`」。
 
 **修正：`_python_service` 這個單例本身不該歸屬於 `implement_node.py` 這個「node 檔案」，應該下沉到 `python_service/` 套件裡**——`python_service/`（09b 四章既有套件）本來就是「容器化服務啟動器」的正確歸屬地，`implement_node.py` 只是這個套件的其中一個使用端（⑤ 需要啟動、等待、關閉它），不該同時也是它的**擁有者**。新增 `python_service/manager.py`：
 
@@ -672,22 +717,69 @@ def get_diagnostics() -> str | None:
 
 `implement_node.py`（09b 二章既有的 `_ensure_python_service_started()`／`stop_python_service()`）改成直接呼叫 `python_service.manager.ensure_started(...)`／`python_service.manager.stop()`，不再自己持有 `_python_service` 這個變數；`main.py` 既有的 `implement_node.stop_python_service()` 呼叫點同步改成 `python_service.manager.stop()`（完整 diff 見 10b）。
 
-**⑥ 發現服務不可達時，當下就讀取診斷、寫進 State，⑦ 只從 State 讀，不呼叫任何函式**：`run_postman_tests()`（`refactor_harness/langgraph_nodes/test_nodes.py`，二章既有健康檢查邏輯）在 `_is_service_reachable()` 判定不可達的那一刻，正是診斷資料最新鮮的時間點——這裡直接呼叫 `python_service.manager.get_diagnostics()`，把結果寫進新的 `RefactorState` 欄位 `service_diagnostics: str | None`，跟既有的 `reason="service_unreachable"` 標記一起回傳。`debug_agent/analysis.py` 的 `no_signal` 分支因此改成單純讀 `state.get("service_diagnostics")`，完全不需要 import 任何一個 node 檔案，也不需要 import `python_service.manager` 本身——State 已經是完整的資料來源，符合 LangGraph 以 State 為單一真相來源的既有設計精神。
+**⑥ 發現服務不可達時，當下就讀取診斷、寫進 State，⑦ 只從 State 讀，不呼叫任何函式**：`run_postman_tests()`（`refactor_harness/langgraph_nodes/test_nodes.py`，二章既有健康檢查邏輯）在 `_is_service_reachable()` 判定不可達的那一刻，正是診斷資料最新鮮的時間點——這裡直接呼叫 `python_service.manager.get_diagnostics()`，把結果寫進新的 `RefactorState` 欄位 `service_diagnostics: str | None`，跟既有的 `reason="service_unreachable"` 標記一起回傳。`debug_agent/analysis.py` 因此單純讀 `state.get("service_diagnostics")`，完全不需要 import 任何一個 node 檔案，也不需要 import `python_service.manager` 本身——State 已經是完整的資料來源，符合 LangGraph 以 State 為單一真相來源的既有設計精神。
 
 `refactor_harness/langgraph_nodes/test_nodes.py` 因此需要新增一行 `from python_service.manager import get_diagnostics`——這不是「node import node」，是「⑥ 的 State 整合層（`langgraph_nodes/` 本來就是 Harness 與 LangGraph State 之間的既有整合層，見 02b）import 一個雙方共用的基礎設施套件」，跟 `implement_node.py` import `python_service.process` 是同一種、本專案從 09b 就有的既有依賴方向，不是新的耦合模式。
 
-### 新增：`ModuleScheduler.force_reschedule()` 的呼叫點
+### 新增：`ModuleScheduler.force_reschedule()`
 
-對應三章「與 `ModuleScheduler` 的銜接」。`implement_node.run()` 建構完 `scheduler` 之後（緊接在既有的「100% 由 `scaffold_gap_task_ids` 覆蓋的 module」那段掃描之後），新增：
+三章 3.1 已經明講「一個 module 可能被 ⑤ 標成 `verified`（readonly 通過），但 `test_results` 因為 mutation 或跨 module regression 抓到真正的問題」——這正是本文件從六章開始反覆處理的核心場景。這代表四章的正常 `root_cause` 分析路徑，只要它鎖定的 module 剛好是這種「⑤ 局部驗證誤判為 `verified`、但 ⑥ 全量驗證抓到真正問題」的情況，產生的 `pending_fixed_bodies` 會指向一個 `module_status=="verified"` 的 module——但 `ModuleScheduler.get_ready_tasks()`（01 六章既有邏輯）只回傳 `"pending"`／`"in_progress"` 的 module 底下的 task，`"verified"` 的 module 永遠不會再被排進就緒佇列，`fixed_body` 因此會被平白浪費掉：下一輪 `implement()` 對這個 module 完全不會有任何動作，直到重試預算耗盡才停下來。
+
+`ModuleScheduler` 目前只有 `flag_for_reverify()`（01 六章既有方法）能讓一個 `"verified"` 的 module 重新進入排程考量，但它打回的 `"needs_reverify"` 狀態本身**不會**讓 task 重新被 `get_ready_tasks()` 排入（`get_ready_tasks()` 只認 `"pending"`／`"in_progress"`，`"needs_reverify"` 是給「驗證」用的狀態，不是給「排程 task」用的狀態）。這裡需要更直接的「把這個 module 重新打回 `pending`」——`ModuleScheduler` 目前沒有這個方法，這是對 `graph/scheduler.py`（01 六章既有、已通過驗證的程式碼）新增的一個方法，不是修改既有方法的行為。
+
+**只改 `module_status` 不夠，還必須清掉被指名 task 的完成紀錄**：`get_ready_tasks()` 對一個 task 是否就緒，同時檢查 `module_status` 與 `task_id in self.task_done`／`task_failed` 兩道獨立的關卡（見 `get_ready_tasks()` 本文）——只把 `module_status` 打回 `"pending"`，這個 module 底下的 task 若已經在 `task_done`（`"verified"` module 的定義就是底下所有 task 都在 `task_done`）仍然會被 `get_ready_tasks()` 跳過，`fixed_body` 一樣不會有機會生效。因此 `force_reschedule()` 需要同時接收「要重開的 task_id」，只清掉這些被明確指名的 task，同一 module 底下其他已完成的 task 維持完成狀態，不被誤重新排程：
 
 ```python
-for task_id in state.get("pending_fix_instructions", {}):
-    task = next((t for t in state["task_list"] if t["id"] == task_id), None)
-    if task is not None:
-        scheduler.force_reschedule(task["module"])
+# graph/scheduler.py（新增方法，不改動既有方法）
+def force_reschedule(self, module: str, task_ids: set[str]):
+    """由 ⑦ Debug Agent 產生的 pending_fixed_bodies 指向一個
+    "verified"／"failed" module 底下的 task 時呼叫（見 10a 八章）：把該
+    module 打回 "pending"，並把 task_ids 從 task_done／task_failed
+    移除，讓 get_ready_tasks() 重新排到它們——這跟 flag_for_reverify()
+    的 needs_reverify 不同，needs_reverify 只觸發重新跑驗證，不會讓
+    task 重新進 get_ready_tasks()；這裡要解決的問題是 task 本身要重新
+    被排入佇列、直接套用新的 fixed_body。
+    """
+    self.module_status[module] = "pending"
+    self.task_done -= task_ids
+    self.task_failed -= task_ids
 ```
 
-**這一段對所有 `pending_fix_instructions` 一視同仁，不是只給 crash-log 分析路徑專用——而且這不是保險起見的順手之舉，是修正一個原本就存在、範圍比 `no_signal` 更廣的既有缺口**：三章 3.1 已經明講「一個 module 可能被 ⑤ 標成 `verified`（readonly 通過），但 `test_results` 因為 mutation 或跨 module regression 抓到真正的問題」——這正是本文件從六章開始反覆處理的核心場景。這代表**即使是四章的正常 `root_cause` 分析路徑**，只要它鎖定的 module 剛好是這種「⑤ 局部驗證誤判為 `verified`、但 ⑥ 全量驗證抓到真正問題」的情況（不需要同時符合 `failed_modules` 整體為空這個 `no_signal` 才有的額外條件——單一 module 落入這個狀態，跟其他 module 是否也在 `failed_modules` 裡完全無關），產生的 `pending_fix_instructions` 一樣會指向一個 `module_status=="verified"` 的 module，`get_ready_tasks()` 一樣不會排到它，`fix_instruction` 一樣會被平白浪費掉——這個問題原本**在四章定案時就沒有被發現**，是這次為了解決 `no_signal` 才連帶挖出來的更根本的缺口。因此 `force_reschedule()` 的呼叫點必須覆蓋**全部** `pending_fix_instructions`，不能只在偵測到 `no_signal` 分支時才呼叫。對已經是 `"pending"`／`"in_progress"`／`"failed"` 狀態的 module，這個呼叫只是把狀態原樣覆寫或把 `"failed"` 打回 `"pending"`（無害，`"failed"` 打回 `"pending"` 也正是既有設計期待「失敗過的 module 該重新有機會被排程」的效果）；只有原本是 `"verified"` 的 module，這個呼叫才會真正改變行為——但這正是需要被修正的那個缺口。
+`implement_node.run()`（09b 二章既有邏輯）需要在 `is_first_entry` 之後、建構完 `scheduler` 之後，新增一小段：讀取 `state.get("pending_fixed_bodies", {})` 裡每個 task_id 對應的 module（透過 `task_list` 反查），依 module 分組後對每組呼叫 `scheduler.force_reschedule(module, task_ids)`——緊接在既有的「100% 由 `scaffold_gap_task_ids` 覆蓋的 module」那段掃描之後：
+
+```python
+tasks_to_reopen_by_module: dict[str, set[str]] = {}
+for task_id in state.get("pending_fixed_bodies", {}):
+    task = next((t for t in state["task_list"] if t["id"] == task_id), None)
+    if task is not None:
+        tasks_to_reopen_by_module.setdefault(task["module"], set()).add(task_id)
+for module, task_ids in tasks_to_reopen_by_module.items():
+    scheduler.force_reschedule(module, task_ids)
+```
+
+這一段對所有 `pending_fixed_bodies` 一視同仁，不區分是哪一種 `origin` 產生的建議。對已經是 `"pending"`／`"in_progress"`／`"failed"` 狀態的 module，這個呼叫只是把狀態原樣覆寫（無害）；只有原本是 `"verified"` 的 module，這個呼叫才會真正改變行為——但這正是需要被修正的那個缺口。
+
+### phase 2：`file_fixes`——`fixed_body` 碰不到的範圍
+
+**動機，來自真實案例**：`fixed_body` 只能取代 `fill_function()` 用 AST 定位到的**函式本體**，碰不到函式簽名（參數名稱、型別標註）或模組層級的敘述（import、常數宣告）——第一輪真實測試的根因（`CollectionUtil.find_distinct_field` 的參數名稱 `list` 遮蔽 builtin）剛好就需要改**簽名**（把參數名稱從 `list` 改成 `items`），純函式本體替換從機制上就無法觸及這一行,只能在本體內部繞道（例如把 `for item in list:` 改成別的寫法但保留參數名不動,或者像 phase 1 真實測試裡 ⑤ 本地模型那樣改了一半)。第二輪真實測試（真實 Claude API，隔離 clone,詳見下方）證實 `file_fixes` 能真正解決這個問題。
+
+**設計**：`task_fixes[i]` 新增 `file_fixes: list[FileFix]`，`fixed_body` 允許為 `None`（見四章 4.2 schema）：
+
+```python
+class FileFix(TypedDict):
+    task_id: str
+    target_file: str
+    old_snippet: str
+    new_snippet: str
+```
+
+套用機制不透過 `fill_function()` 的 AST 函式定位（那個機制的前提是「先找到一個函式節點」，簽名／模組層級敘述不屬於任何函式節點內部，AST 定位從一開始就用不上），改用**精確字串搜尋替換**：`old_snippet` 必須在 `target_file` 目前內容裡逐字出現剛好一次（連同縮排、換行都要一致），成功找到唯一一次時原地替換成 `new_snippet`；找不到或出現不只一次都視為失敗——安全起見不做模糊匹配、不猜測該替換哪一處。寫入前後的既有關卡（clean tree 檢查、格式化、diff／commit、commit 失敗時的復原）比照 `fill_function()`，見 `translator_cli/client.py::apply_file_fix()`（10b 五章）。
+
+**`file_fixes` 不透過排程器**：跟 `fixed_body` 不同，`file_fixes` 不對應任何要重新生成的函式本體，不需要 `get_ready_tasks()` 排到任何 task，也不需要 `force_reschedule()`——`implement_node.run()` 在 `is_first_entry` 之後、排程器的 while 迴圈開始之前，直接逐筆呼叫 `apply_file_fix()`；套用失敗的記一筆 `TaskFailure(reason="file_fix_failed")`（新增到既有 `reason` 列舉）。套用成功後（只要有任何一筆成功），顯式呼叫一次 `_wait_for_service_reload()`，不依賴 while 迴圈裡「有其他 task 在跑」才會觸發的既有 reload-wait 時機——若這一輪剛好沒有其他 task 可以當「順風車」，`file_fix` 寫入磁碟後就不會有任何東西觸發 reload-wait，⑥ 下一輪的全量驗證可能讀到還沒 reload 的舊服務狀態。至於「⑥ 下一輪重新驗證這個 module 時會不會發現還沒修好」完全交給 ⑥ 的全量驗證本身判斷——不需要 `scheduler.module_status` 特地打回 `pending`：`module_status` 只是 `implement_node.run()` 這一次呼叫內部的排程簿記，`debug ↔ implement` 迴圈實際跨輪依賴的是 `test_results`（⑥ 產生）與 `partial_reports`，兩者都不依賴 `module_status` 在 `run()` 呼叫之間存活。
+
+**`fixed_body` 與 `file_fixes` 同時作用在同一段程式碼，不是無條件安全的——這條結論被 2026-08 的真實案例推翻，見 `docs/09b_bug_trace.md #52`**：早期真實測試裡 Claude 對同一個 task（`task_svc1`）同時給了兩者，`file_fixes` 整個取代了 `find_distinct_field` 的函式定義（含簽名），`fixed_body` 又給了本體的修正版本，兩者描述的最終內容剛好一致，第二次套用（`fill_function()` 的 AST body-splice）寫入的內容跟磁碟上已經 commit 的版本完全相同，`diff` 為空，觸發既有的冪等短路——**當時把這個結果解讀成「機制本身安全」，其實只是「這次剛好兩者算出一致結果」的巧合，不是結構性保證**。`task_066`（`file_router.py::image`）真實撞到兩者**不一致**的情況：`file_fixes` 已經把整個函式（含新簽名 `async def image(...)`）完整替換掉，`fixed_body` 卻又違反自己的格式契約（見四章 4.2「不要包含 `def` 簽名行」），塞了一份包含裝飾器＋`async def` 簽名行的內容——第二次套用（AST body-splice）把這段內容當成陳述式插進「`file_fixes` 剛換好的新函式」body 裡，寫出巢狀死程式碼，不是冪等短路，也不是任何一種既有的失敗檢測會攔到的情況（語法合法，只是語意錯）。**修正後的規則（`DEBUG_SYSTEM_PROMPT` 已更新，見四章）**：`file_fixes` 若已經完整替換掉這個函式的簽名＋本體，`fixed_body` 必須設為 `null`，不要重複；只有當函式簽名不變、只有內部陳述式需要修正時，才單獨用 `fixed_body`。下游同時新增了一道防線（`translator_cli/python_adapter.py::extract_body_statements()` 的巢狀同名函式檢查，見 07a 六章步驟 6b）：即使 prompt 這邊沒擋住，這段檢查也會擋下巢狀污染、記一筆 `fill_failed`，不會靜默寫入。
+
+**多輪真實環境驗證確認的設計結論**：`file_fixes` 確實能修好 `fixed_body` 結構上做不到的事（函式簽名改動）；prompt「根因是檔案層級問題時必須用 `file_fixes`，不能在 `fixed_body` 裡繞道」這條規則有效抑制了猜測寫死值的傾向；`origin="module_mismatch"` 對 `task_list` 未涵蓋的模組正確攔下，不浪費 Claude 呼叫。「⑦ 看不到某個檔案」在實測中幾乎都是輸入資料本身缺漏（如某個 task 該帶的 `target_files` 沒帶到，屬於 06a／[P] 的既有規則本來就該涵蓋），不是 ⑦ 機制本身的缺陷；真正因為程式碼從未被生成、補再多 context 也沒用的情況，屬於 ④／⑤ 階段的既有缺口，不在本文件職責範圍。
 
 ---
 
@@ -707,11 +799,9 @@ debug_agent/
                         # 的既有說明：這樣用量與 prompt/response 才會被統一
                         # 記進 llm_traces.db（見 11a 七、八章 record_llm_call()），
                         # 不會因為某個 Agent 自己另開一條呼叫路徑而漏記**
-├── prompts.py           # 四章 system prompt + DEBUG_OUTPUT_SCHEMA；
-                         # 三章「子情境」的 CRASH_LOG_SYSTEM_PROMPT
+├── prompts.py           # 四章 system prompt + DEBUG_OUTPUT_SCHEMA
 └── analysis.py            # 四、五、七章核心：逐 module 平行呼叫、
-                           # task_id 反查驗證、give_up_early 判斷；
-                           # 三章「子情境」的 crash-log 分析
+                           # task_id 反查驗證、give_up_early 判斷
 
 graph/nodes/debug_node.py  # 薄封裝：async def run() 呼叫
                            # debug_agent.run_debug_analysis()（見十章
@@ -772,6 +862,12 @@ def should_retry_or_give_up(state: RefactorState) -> str:
 
 `run_debug_analysis()`（`debug_agent/__init__.py`）本身是同步函式，內部負責：`retry_count` 遞增（六章，無條件遞增，非既有 stub 那套邏輯）＋三章正規化＋四章 LLM 分析＋七章 `give_up_early` 判斷＋組裝完整回傳字典。
 
+**`give_up_node.py` 依抵達路徑分三種訊息**：01 五章既有的「④ 骨架生成失敗」／「超過重試次數」兩種之外，`debug → give_up` 這條新邊（`give_up_early=True`）需要第三種——這條路徑不經過 `should_debug_or_done()`，`state["retry_count"]` 是正常遞增的真實次數，不是被強制設成上限，沿用「超過重試次數」的訊息會讓人工誤以為已經試滿所有次數，實際上是 ⑦ 主動判斷這一輪已無可修才提早放棄。判斷順序：`scaffold_done is False` → `give_up_early` → 其餘（retry_count 用盡）。
+
+**`retry_count` 用盡那個分支本身，還要再分辨「Claude API 打不通」跟「⑦ 判斷邏輯本身有問題」**：這兩種情況目前印出的訊息完全一樣——連續三輪都沒能真的解決問題，可能是因為每一輪 Claude API 呼叫都失敗（`analyzed_results` 全是 `None`，見四章 4.4），也可能是 API 正常、但 ⑦ 給的 `fixed_body` 一直沒用（見八章「⑦ 直接產生修正後程式碼」——`fixed_body` 本身仍要通過語法驗證等既有關卡才會真的寫入，語法合法但邏輯依然不對的情況一樣可能發生）。人工光看 `retry_count` 用盡的訊息分辨不出來，得自己去翻 `debug_rounds` 或用 `llmlog` 查對應 trace。`run_debug_analysis()` 已經算出 `analyzed_results`（哪些 `root_cause` module 這一輪完全沒能成功呼叫到 Claude），這裡只是把這個既有資料原樣往外傳，不是新的判斷邏輯：新增 `RefactorState.unanalyzed_root_cause_modules: list[str]`（這一輪快照，不掛 reducer），`give_up_node.py` 在 `retry_count` 用盡的分支若看到這個欄位非空，額外印一行提示「這幾個 module 這一輪 Claude API 呼叫（含重試）仍然失敗，建議先用 `llmlog` 查對應 trace，不要急著懷疑 ⑦ 的判斷邏輯」。
+
+**整條 graph run 結束後的制式報告**：`give_up_node.py`／`END` 只是 graph 執行流程的收尾，`debug_rounds`／`task_failures` 這些逐輪累積的完整歷史沒有 checkpointer 就留不住，process 一結束就消失。`main.py` 因此在 `graph.astream()` 跑完後呼叫 `common/run_report.py::write_run_report()`（制式 JSON）／`write_human_readable_report()`（人類可讀 Markdown），依日期分資料夾寫進 `logs/reports/{YYYY-MM-DD}/{run_id}.{json,md}`，回答「這一趟翻譯了多少函式、⑦ 修了多少、還剩什麼沒解決」。完整設計與程式碼見 10b 八章。
+
 ---
 
 ## 十一、錯誤處理範圍
@@ -787,30 +883,18 @@ def should_retry_or_give_up(state: RefactorState) -> str:
 
 ---
 
-## 十二、待決定事項
+## 十二、已定案（多輪真實環境驗證後收斂的決定）
 
-- [ ] **Java 原始碼是否要放進 LLM context**：四章已說明第一版刻意不放，`09b_bug_trace.md #23`（`.stream().distinct()` vs. `set()` 語意不同）這類需要比對 Java 語意才能發現的案例，第一版預期無法被 Debug Agent 抓到，需要接上真實環境、累積足夠案例後再評估是否值得增加這份 context 成本
-- [ ] **`debug_rounds` 歷史是否要餵回下一輪 LLM 呼叫**：目前每輪呼叫互相獨立，不知道「上一輪已經建議過什麼、⑤ 有沒有真的照做」，理論上可能導致連續幾輪對同一個 module 給出雷同或互相矛盾的建議。**機制面已經不再是阻礙**：`common/llm_trace.py::get_traces_for_task()`（見 `11a_logging_architecture.md` 七章「查詢層設計」）可以直接查到 ⑤ 上一次對某個 task 實際送出的 prompt／回應，`debug_agent/analysis.py` 可以直接呼叫，不需要另外設計介面；**待決定的只剩**要不要用、用在哪個分析路徑、怎麼避免把 context 撐爆——需要真實多輪重試的案例才能判斷這是否值得做
-- [ ] **task_id 反查（五章）的準確度**：這個機制的正確性依賴 LLM 從程式碼內容＋失敗現象精準定位到函式層級，目前只有 schema／流程層面的設計，尚未接上真實 Claude API 校準這件事本身做得好不好；4.3 的驗證只能擋住「幻覈出不存在的 task_id」，擋不住「選錯了一個存在但不是真正根因的 task_id」，後者只能靠實測累積調整 prompt
-- [ ] **`give_up_early` 機制尚未經過真實環境驗證**：七章的判斷規則是否會太保守（該放棄時沒放棄，浪費 retry_count）或太激進（不該放棄時錯放棄），需要接上真實 pipeline、真實累積幾輪 `debug → implement` 循環後才能校準
-- [ ] **mutation collection 的失敗是否需要跟 readonly 用不同的分析策略**：目前設計一視同仁（統一走 `test_results.failures`，兩者已經是同一種 schema，見 02a 九章「合併範圍」），若接上真實環境後發現 mutation 特有的失敗模式（如鏈式依賴的動態 ID 相關問題）需要額外的 prompt 引導，屆時再評估是否要拆分
-- [ ] **`give_up_node.py` 是否要為 `give_up_early` 新增第三種訊息分支**：目前 `give_up_node.py` 已依 `scaffold_done` 分兩種訊息（01 五章），`give_up_early` 這條新路徑走的是七章新增的 `debug → give_up` 直接邊，不經過 `should_debug_or_done`，目前印出的訊息無法分辨「是 retry_count 用盡」還是「⑦ 判斷已無可修」，屬於資訊呈現層面的錦上添花，十b 章列為小幅擴充項目，不影響核心機制
-- [x] **`batch_sibling_modules`（3.5）原本用「不分輪次的最新一筆 `partial_reports`」計算，會抓到跨輪次的過期資料，把早已無關的 module 誤判成同批**：已解決，見 3.5「過期資料」——`partial_reports.append(...)` 新增 `"round"` 鍵標記寫入當下的 `retry_count`，`special_reason`／`batch_sibling_modules` 都只看「這一輪」的紀錄。**這是對 09b 既有資料結構的異動**，範圍是純新增一個鍵（不改變既有欄位語意，跟二章 `module` 欄位補丁是同一種手法），已在 10b 對應章節列出完整 diff。「不是精確的批次分組」這個更根本的近似（`partial_reports` 沒有記錄真正的批次識別碼，只能用「同一輪」代理）依然存在，記錄在下一項
-- [x] **`should_debug_or_done()`（02b）「`failed_modules` 為空即直接 `"debug"`，不檢查 `retry_count`」這條既有分支，跟 09a 三章「⑤ 只做 readonly 局部驗證」疊加後可能造成的迴圈，以及下游補丁式修法會浪費一次 LLM 呼叫的問題**：已解決，兩項修正合起來：六章讓 `retry_count` 每進一次 `debug` 就無條件遞增，七章直接修正 `should_debug_or_done()`（02b）本身、把 `retry_count` 上限檢查移到最前面對所有分支統一套用，不再區分 `failed_modules` 是否為空——這比原本在 `should_retry_or_give_up` 下游補一道防禦性檢查更好：從源頭修正，不會有「第 4 次 `debug` 才被攔下來、白白多花一次 LLM 呼叫」的副作用，也不會有 `>` vs `>=` 的 off-by-one 疑慮（統一套用的位置沿用 02b 原本就正確的 `>=` 語意，見七章推演）
-- [x] **`target_files` 疊加進 Debug Agent context 後可能拉入較多跨 module 的唯讀參考檔案**：已解決，見四章「為什麼要限縮成只取 `schemas`／`models`」——不再無差別聯集整份 `target_files`，只取父目錄是 `schemas`／`models` 的項目，`referenced_interfaces` 這類跨 module 的 router／service／repository 唯讀參考不會被帶入；已知取捨（真正根因若剛好落在被排除的跨 module 檔案裡不會被看到）已在四章記錄，不在這裡重複
-- [ ] **`_is_global_infra_file()` 的路徑判斷（父目錄名稱）依賴 05a 既有的目錄命名慣例（`app/schemas/{module}.py`／`app/models/{module}.py`／`app/core/*.py`）**：若未來 05a 的目錄結構規則有調整（例如改用巢狀子目錄，或新增第四類全域基礎設施目錄），這個過濾規則需要跟著同步，屬於對既有慣例的隱性依賴，第一版不做更抽象的判斷方式（如重用 `plan_agent/module_index.py::classify()`）——待真實環境驗證後再評估是否值得換成更穩健的判斷方式
-- [x] **過濾規則原本只列 `schemas`／`models`，遺漏了 05a 三章同一類「全域基礎設施」的 `core`，導致透過 `app/core/exception_handlers.py` 之類共用輔助檔案造成的問題完全看不到原始碼**：已解決，見四章「過濾規則不能只列 schemas/models，還必須涵蓋 core」——過濾規則擴大為 `schemas`／`models`／`core` 三者的聯集，函式改名為 `_is_global_infra_file()`
-- [ ] **`origin="module_mismatch"` 目前只在真實環境接上 ③ 真實輸出、真實 `route_to_module_mapping` 後才可能被觸發**：第一版沒有真實案例可以驗證這條分支的判斷是否精確、`unfixable_reasons` 的固定文字是否對人工核對有實際幫助
-- [ ] **⑥ 健康檢查的逾時預算（二章，10b 一章預設 15 秒）未實測**：這個數字目前是憑經驗猜的初始值，需要接上真實環境校準——尤其若容器在 `debug → implement` 修好問題、重啟耗時比預期久，這個短逾時可能太早判定 `service_unreachable`、把「服務其實正在重啟中」誤判成「不可達」，見 10b 十章
-- [x] **`service_unreachable` 且 `failed_modules` 也是空時，會在零次 LLM 呼叫的情況下直接 `give_up_early=True`**：已解決，見三章「子情境」——這種情況下改為固定 `give_up_early=False`，不套用七章「`root_cause_ctxs` 為空即代表沒救」的一般規則（那條規則的前提是「已經完整分類過」，這裡則是「完全沒能蒐集任何跡象」，證據強度不對等）
-- [x] **「no_signal」情境原本只是記錄、不主動採取行動，會確定燒光整個 `retry_count` 預算卻沒有任何一輪真正嘗試修復（`ModuleScheduler.get_ready_tasks()` 不會排到已標記 `"verified"` 的 module，什麼都不做等同於原地空轉到 `MAX_RETRY` 用盡）**：已解決，見三章「修正：用容器崩潰當下的 log 當作訊號」——改用 `PythonServiceContainer.diagnostics`（09b 四章既有屬性，先前只在啟動逾時失敗時用過一次）讀取容器崩潰當下的 docker log，送進一次全專案範圍（不限單一 module）的 Claude API 呼叫，定位到具體 task 後寫入 `pending_fix_instructions`；新增 `ModuleScheduler.force_reschedule()`（見三章「與 `ModuleScheduler` 的銜接」）把對應 module 打回 `"pending"`，讓它的 task 真的能被重新排程——log 讀不到或分析不出結果時才退回原本的被動記錄，當作最後手段
-- [ ] **crash-log 分析的準確度尚未接上真實環境驗證**：這個機制的正確性依賴 log 裡的 traceback 是否足夠明確、LLM 能否從中正確反查回 `task_list` 裡的 task——第一版只有流程設計，沒有真實崩潰案例可以校準；也還沒評估「log 內容不足以定位」與「log 定位到的 task 其實不是真正根因（例如巢狀 import 鏈，第一個出現在 traceback 裡的檔案不一定是問題本身）」這兩種失效模式各自的發生機率
-- [x] **`no_signal` 情境沒有區分「純基礎設施異常」與「真正的程式碼崩潰」，即使根本不是程式碼問題，也要熬滿 `MAX_RETRY` 輪才會放棄**：已解決，見三章「Fail-fast」——連續兩輪 crash-log 分析都定位不到任何 task（退回被動記錄）時，直接 `give_up_early=True`，不必等到 `MAX_RETRY` 用盡；第一輪給一次容錯空間（容器 log 可能還沒寫完），第二輪同樣的結果才視為確認訊號。這是本文件唯一一處刻意讀取 `state["debug_rounds"]` 累積歷史的地方，與七章「絕不能用累積歷史判斷 fixable」的規則性質不同（判斷對象不同：一個是單一 module 的修復結論，一個是整套機制這次管不管用），不衝突
-- [ ] **`give_up_early` 的「連續兩輪」判斷閾值未實測**：目前選 2 是憑經驗（給一次容錯空間，兩次同樣結果才視為確認），沒有真實環境的容器重啟時序資料可以驗證這個閾值是否恰當——log 寫入延遲若比預期更常見，可能需要調高；若基礎設施問題很少誤判成暫時性的，也可能可以調成第一輪就 fail-fast
-- [ ] **`batch_sibling_modules`（3.5）加上輪次過濾後，仍然是近似值，不是精確的批次分組**：`partial_reports` 沒有記錄「哪幾個 module 屬於同一次 `_wait_for_service_reload()` 呼叫」這個精確的批次識別碼，只能用「同一輪最新 reason 仍是這個值」代理——同一輪內若有不只一次批次等待（理論上單一輪的 `implement_node.run()` while 迴圈只會做一次「批次等重啟」，見 09a 三章「批次執行」，正常情況下不會發生，但若這條既有邏輯未來被調整，這裡的近似可能需要重新檢視）
-- [x] **`debug_agent/analysis.py` 原本直接 `import` `graph.nodes.implement_node`（node 對 node 互相 import），違反本專案 node 檔案彼此不互相 import、跨節點資料一律經 State 傳遞的既有慣例**：已解決，見八章「診斷資料改走 State」——`_python_service` 單例下沉到新增的 `python_service/manager.py`（不歸屬任何 node），⑥ 判定服務不可達時直接讀取診斷、寫進新欄位 `RefactorState.service_diagnostics`，⑦ 全程只讀這個 State 欄位，不再有任何一處「node import node」
-- [x] **`related_files` 為空的放寬規則原本只涵蓋 `harness_failures` 整個為空（`service_unreachable`）的情況，遺漏了「`harness_failures` 非空、但全部案例的 `related_files` 都剛好是空清單」這種較窄但一樣真實的情況（`golden_not_found` 因 `route_to_file_mapping` 缺漏該路由造成，是這個情況最常見的成因）**：已解決，見四章「例外」——判斷條件從「`ctx["harness_failures"]` 是否非空」改成「已經算出的 `related_files` 聯集是否非空」，同一個條件自然涵蓋兩種成因，不需要分別判斷
-- [x] **`service_diagnostics`（容器崩潰 log）原本只在 `no_signal`（`service_unreachable` 且 `failed_modules` 也是空）這個較窄的子情境使用，`service_unreachable` 且 `failed_modules` 非空（更常見的 `batch_reload_timeout` 情境）反而看不到，只能對放寬過濾後的原始碼做純靜態猜測**：已解決，見四章「`service_diagnostics` 不能只留給 `no_signal` 用」——`_analyze_root_cause_module()` 的每一次呼叫（不限 `no_signal` 分支）都統一傳入 `state.get("service_diagnostics")`，`DEBUG_SYSTEM_PROMPT` 新增對應的分析指示；`no_signal` 分支自己額外的 `_analyze_from_crash_log()` 機制（三章）維持不變，兩者處理的是不同的情境（前者是「有 `harness_failures` 可看、`service_diagnostics` 作為補充加分訊號」，後者是「連 `harness_failures` 都沒有、只能靠 `service_diagnostics` 反查」）
-- [x] **`debug_agent/llm.py` 只在程式碼層面正確使用 `common.llm_client.call_claude_for_json()`，但九章模組結構規劃的文字沒有明確宣告這個約束，容易在未來重新實作時漏掉 00 六章「統一經 `common.llm_client` 呼叫」這條硬性規定**：已解決，見九章 `debug_agent/llm.py` 條目——明確補上這條約束與理由，比照 03c 一章的既有先例。（原文寫「確保 `log_usage()` 寫進 `logs/claude_api_usage.jsonl`」，該機制已被 `11a_logging_architecture.md` 取代為 `common/llm_trace.py::record_llm_call()` 寫進 `llm_traces.db`，九章條目已同步更新措辭，約束本身——一律經共用封裝呼叫——不變）
+- **Java 原始碼不放進 LLM context**：多輪真實案例裡，即使根因涉及 Java／Python 語意差異（如去重是否保序），⑦ 只靠 Python 側的事實（golden 回應順序固定、目前實作用了會打亂順序的結構）就能正確診斷，不需要比對 Java 原始碼。維持四章的決定。
+- **`debug_rounds` 歷史不餵回下一輪 LLM 呼叫**：機制面可行（`common/llm_trace.py::get_traces_for_task()` 查得到上一輪的 prompt/回應），但多輪真實迴圈測試中沒有觀察到「連續幾輪給出雷同或矛盾建議」的情況，加這個機制的成本目前不划算，不實作。
+- **`give_up_early` 已被真實案例驗證**：多輪真實迴圈測試中，`root_cause_ctxs` 為空、以及所有 `root_cause` module 分析後一致判定不可修這兩種情況都真實觸發過，行為符合七章設計。
+- **mutation／readonly 用同一套分析策略，不拆分**：多輪真實測試涵蓋大量 mutation 案例，沒有出現需要額外 prompt 引導的 mutation 特有失敗模式。
+- **`_is_global_infra_file()` 的目錄判斷擴充為「或擁有模組沒有 HTTP endpoint」，`_global` 保留模組改為無條件附加**：見四章設計，已用 `common_service.py`／`exception_handlers.py` 兩個真實案例驗證問題存在，修法已回寫進 `debug_agent/triage.py`／`analysis.py` 並補齊單元測試，尚待真實環境端對端重跑確認（見 `docs/09b_bug_trace.md #49`）。
+- **⑥ 健康檢查逾時的真正修法不是調大數字，是讓 `run_newman()` 本身能分辨「服務沒回應」與「工作做完但行程沒退出」**：見二章「前置修補之二」，已修正並回寫程式碼（`docs/09b_bug_trace.md #48`）。健康檢查本身的逾時預算（預設 15 秒）維持原值，因為真正的風險已經被這個修法接住，不再需要靠調大逾時數字硬頂。
+
+## 十三、尚待確認事項
+
+- [ ] **task_id 反查（五章）的準確度**：4.3 的驗證只能擋住「幻覈出不存在的 task_id」，擋不住「選對 task_id 但因果推理錯誤」。真實案例裡 task_id 本身從未選錯，但曾經對同一個真實壞掉的端點連續兩次給出不同診斷敘事，其中一次因果關係經查證是錯的。真實案例仍不夠多，暫不調整 prompt。
+- [ ] **`batch_sibling_modules`（3.5）仍是近似值，不是精確的批次分組**：`partial_reports` 沒有記錄「哪幾個 module 屬於同一次 `_wait_for_service_reload()` 呼叫」這個精確的批次識別碼，只能用「同一輪最新 reason 仍是這個值」代理。
 
 *各 Agent 的實作細節、演算法、程式碼一律留在對應細節文件，避免重複維護；本文件隨實作推進持續更新。*

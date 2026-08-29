@@ -32,7 +32,8 @@ class TestGraphBuild:
     def test_implement_to_run_tests_is_conditional_not_plain_edge(self, monkeypatch):
         # 對應 01 五章「scaffold 失敗時的收尾路徑」：implement → run_tests
         # 改成 conditional edge，give_up 因此多一個前驅（implement），
-        # 不是只有 run_tests 之後那一條既有路徑。
+        # 不是只有 run_tests 之後那一條既有路徑。debug → give_up（10a
+        # 七章 give_up_early）是另一條獨立新增的前驅。
         monkeypatch.setenv("JAVA_BASE_URL", "http://localhost:8080")
         from graph.builder import build_graph
 
@@ -42,4 +43,4 @@ class TestGraphBuild:
         assert implement_targets == {"run_tests", "give_up"}
 
         give_up_sources = {e.source for e in edges if e.target == "give_up"}
-        assert give_up_sources == {"run_tests", "implement"}
+        assert give_up_sources == {"run_tests", "implement", "debug"}

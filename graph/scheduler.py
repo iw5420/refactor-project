@@ -19,11 +19,26 @@ class ModuleScheduler:
         already_completed: set[str] | None = None,
         already_failed: set[str] | None = None,
         already_verified_modules: set[str] | None = None,
+        already_failed_modules: set[str] | None = None,
     ):
         """
         `already_*` 讓 scheduler 從前一輪 implement 的執行結果恢復狀態——debug → implement
         是回頭呼叫同一個 node，若每次從零建立 scheduler，module_status 會被重置成全部
         pending，regression 偵測（見 check_upstream_regression）就抓不到已驗證過的 module。
+
+        `already_failed_modules`：對應 docs/09b_bug_trace.md #41。module 一旦
+        底下所有 task 都已完成（成功或失敗），且不在 `already_verified_modules`
+        （通過）裡，就必須明確標成 "failed"，不能放著讓它預設落回 "pending"
+        ——這種 module 已經沒有剩餘的 task 可以再排進 `get_ready_tasks()`，
+        重建後的 scheduler 不會再把它排進 `touched_modules`，`module_status`
+        會永遠停在建構時的初始值。放著預設值 "pending" 會讓它被
+        `implement_node.py` 誤判成 `blocked_modules`（等上游修好會自然釋放
+        的語意），但它從來不是被上游卡住，是真的驗證沒過——`debug_node.py`
+        只在 `failed_modules` 非空時才遞增 `retry_count`，這個誤判會讓
+        `retry_count` 停止遞增，`should_debug_or_done()` 的 `if not
+        failed_modules: return "debug"` 分支沒有上限檢查，形成不會終止的
+        `debug ↔ implement` 迴圈（真實環境重跑量到：`partial_reports` 等
+        `operator.add` accumulator 每繞一圈疊加一筆，最終 `MemoryError`）。
         """
         self.modules = {m["module"]: m for m in module_list}
         self.tasks_by_module: dict[str, list[TaskSpec]] = {}
@@ -49,6 +64,8 @@ class ModuleScheduler:
         self.module_status = {m: "pending" for m in self.modules}
         for m in (already_verified_modules or ()):
             self.module_status[m] = "verified"
+        for m in (already_failed_modules or ()):
+            self.module_status[m] = "failed"
         self.task_done: set[str] = set(already_completed or ())
         self.task_failed: set[str] = set(already_failed or ())
 
@@ -67,6 +84,24 @@ class ModuleScheduler:
     def flag_for_reverify(self, module: str):
         """把已驗證 module 打回 needs_reverify——下游依賴它的 module 在重驗通過前不會被釋放。"""
         self.module_status[module] = "needs_reverify"
+
+    def force_reschedule(self, module: str, task_ids: set[str]):
+        """由 ⑦ Debug Agent 產生的 pending_fixed_bodies 指向一個
+        "verified"／"failed" module 底下的 task 時呼叫（見 10a 八章）：
+        把該 module 打回 "pending"，並把 `task_ids` 從 `task_done`／
+        `task_failed` 移除，讓 `get_ready_tasks()` 重新排到它們。
+
+        只重開 `task_ids` 指名的 task，同一 module 底下其他已完成的
+        task 維持完成狀態，不會被誤重新排程——`get_ready_tasks()` 對
+        `task_id in self.task_done` 的檢查跟 `module_status` 是各自獨立
+        的兩道關卡，只把 module_status 改回 "pending"（不動
+        task_done／task_failed）並不足以讓已完成的 task 重新被排到，這
+        跟 `flag_for_reverify()` 的 "needs_reverify"（那個狀態只觸發重新
+        跑驗證，本來就不影響 get_ready_tasks()）是不同的機制。
+        """
+        self.module_status[module] = "pending"
+        self.task_done -= task_ids
+        self.task_failed -= task_ids
 
     def _backfill_missing_task_deps(self):
         """同 module 內沒有 depends_on、也未被引用的 task，依原始順序自動串成序列依賴。

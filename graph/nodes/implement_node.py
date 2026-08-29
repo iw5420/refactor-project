@@ -13,8 +13,9 @@ context/context_files 疊加）見本檔案，對應 09a 三～七章。
 見 `python_service/process.py` docstring、`09b_implement_agent_code.md`
 十章「已知限制」——`uvicorn --reload` 在 Windows 上經常無法真正完成
 重啟（Windows 的 `CTRL_C_EVENT` 送達機制不可靠），已用真實環境重現並
-確認容器化（Linux）能穩定繞開這個問題。`_python_service`（模組層級
-單例，比照 `MODEL_SEMAPHORE` 的既有模式）在整條 graph run 第一次進入
+確認容器化（Linux）能穩定繞開這個問題。單例本身（模組層級，比照
+`MODEL_SEMAPHORE` 的既有模式）下沉在 `python_service/manager.py`（見
+10a 八章），這裡只是啟動／關閉的呼叫端：在整條 graph run 第一次進入
 `implement` 時建立，`implement`／`run_tests`／`debug → implement`
 重入期間持續共用同一個容器（見 09a 三章「Python 服務只啟動一次」），
 由 `main.py` 在 `graph.ainvoke()` 結束後呼叫 `stop_python_service()`
@@ -32,7 +33,7 @@ import yaml
 
 from graph.scheduler import ModuleScheduler
 from graph.state import RefactorState, TaskFailure, TaskSpec
-from python_service.process import PythonServiceContainer
+from python_service import manager as python_service_manager
 from refactor_harness.fixtures.db_env import DbEnvironment
 from refactor_harness.verifier.comparator import GoldenVerifier
 from translator_cli import client as translator_cli
@@ -60,6 +61,21 @@ _RELOAD_PROBE_PATH = "/__reload_probe__"
 
 # 見 09a 五章「缺口二：共用 Enum 定義檔」。
 _ENUMS_FILE = "app/models/_enums.py"
+# 對應 docs/09b_bug_trace.md：_RESULT_FACTORY_INSTANCE_METHOD_NOTICE
+# 只用文字描述 ResponseResult／Result 的正確呼叫慣例（如「範例是
+# result.msg = msg」），但這個 session 三次真實完整 pipeline 重跑，
+# `app/core/exception_handlers.py` 三次都用錯 ResponseResult.error() 的
+# 關鍵字參數名稱（如寫成 message= 而不是 msg=）——追查發現這個檔案屬於
+# 「全域」模組，不落在 _ENUMS_FILE 那個 if 分支涵蓋的 services／
+# repositories 層，context_files 裡從來沒有真的帶上 common_service.py
+# 本身，⑤ 只看得到文字提示、看不到真實原始碼可以核對確切的參數名稱，
+# 只能用常見英文詞猜（"message" 比 "msg" 更像自然語言，但這個專案的
+# 既有慣例是 "msg"）。跟 _RESULT_FACTORY_INSTANCE_METHOD_NOTICE 一樣
+# 無條件套用，不看 target_file 落在哪一層——任何層級的 task 都可能
+# 呼叫 ResponseResult／Result，提示文字既然無條件疊加，真實原始碼也該
+# 無條件一起帶，不能只顧著讓 ⑤「看得到規則」卻看不到「規則描述的對象
+# 長什麼樣子」。
+_COMMON_SERVICE_FILE = "app/services/common_service.py"
 # 見 09a 五章「缺口一：ORM relationship() 缺失」固定提示文字，逐字沿用設計文件內容。
 _RELATIONSHIP_GAP_NOTICE = (
     "本專案的 SQLAlchemy model（app/models/{module}.py）只有外鍵純量欄位，"
@@ -69,23 +85,102 @@ _RELATIONSHIP_GAP_NOTICE = (
     "repository 查詢，或在這個函式內手動用外鍵欄位值另外查詢、自行組裝回傳"
     "結構。"
 )
+# 見 docs/09b_bug_trace.md「反覆出現的翻譯模式錯誤」：Java 端
+# ResponseResult<T>/Result<T> 的 ok()／error()／success() 這些方法在
+# Java 原始碼裡是 static 工廠方法（可以直接 ResponseResult.ok(x) 呼叫），
+# 但④骨架生成階段（05a 四章「多載方法的處理」既有機制）並不區分 Java
+# 的 static／instance 修飾詞，一律渲染成帶 self 的一般 instance method
+# （見 app/services/common_service.py::ResponseResult／Result 的實際
+# 產出）——直接照 Java 原始碼的寫法呼叫 ResponseResult.ok_2(data) 在
+# Python 端會是 TypeError（缺 self），必須先實例化再呼叫，例如
+# ResponseResult().ok_2(data)。已重複出現三次獨立案例（exam_service.py
+# ::create_random() 呼叫 Result.ok(rs)；file_router.py::voice()／
+# image() 呼叫 ResponseResult.ok_2(...)／error_4(...)），跟 relationship
+# 缺口不同的是：任何層級（routers／services／repositories）的 task 都
+# 可能建構這類回應物件，不像 relationship 只在 services／repositories
+# 導覽關聯資料時才會踩到，因此下面 _augment_task_io() 對所有 task 一律
+# 疊加，不像 _RELATIONSHIP_GAP_NOTICE 只在 services／repositories 層才加。
+_RESULT_FACTORY_INSTANCE_METHOD_NOTICE = (
+    "ResponseResult／Result 這類回應包裝類別（app/services/common_service.py）"
+    "的 ok()／error()／success() 等方法在 Python 端是 instance method（帶 self"
+    "，不是 Java 原始碼裡的 static 工廠方法），呼叫前必須先建立實例，例如 "
+    "ResponseResult().ok_2(data)、Result().success(data)——不要直接寫成 "
+    "ResponseResult.ok_2(data) 或 Result.success(data)，那樣在 Python 會因為"
+    "缺少 self 引數而拋出 TypeError。"
+    "如果這個 task 正是在實作 ResponseResult／Result 自己的 ok_2()／error_2()"
+    "／success()／failure() 這些方法本體，絕對不要在方法內部呼叫"
+    "「ResponseResult().ok_2(...)」或「self.error_2(...)」這種同名／同族方法"
+    "呼叫自己（會造成無窮遞迴，永遠不會返回，任何呼叫端都會撞"
+    "RecursionError）——正確做法是直接建立一個新實例、把欄位值設好後回傳，"
+    "例如 result = ResponseResult(); result.code = code; result.msg = msg; "
+    "result.data = data; return result（見 docs/09b_bug_trace.md #53 真實案例）。"
+)
+# 見 docs/09b_bug_trace.md 新增條目：Java 端 FileController 的 voice／image
+# 上傳下載方法寫死 Windows 磁碟機代號絕對路徑 Paths.get("C:/voice")／
+# Paths.get("C:/images")，⑤ 忠實翻譯成 Python 字面字串後，在 Linux 容器
+# 內 "C:" 不是磁碟機代號、會被當成一般相對路徑目錄名稱，容器啟動時的
+# bind-mount 專案根目錄底下因此真的生出一個叫 "C:" 的資料夾，讓 git
+# 工作目錄變髒，拖垮同一輪後續所有 ⑤／⑦ 寫回動作（07a 設計的「乾淨工作
+# 樹」前置檢查正確攔下，但攔下的時機已經太晚）。只限定在這一個目標檔案
+# 才疊加——這是這個 Java 專案這兩個 method 特有的寫死路徑，不是普遍規則
+# （見決策：只修目標專案本身，不在 global_infra.py 新增通用掃描機制）。
+_FILE_ROUTER_FILE = "app/routers/file_router.py"
+_HARDCODED_UPLOAD_PATH_NOTICE = (
+    "Java 原始碼的 voice／image 上傳下載方法把儲存目錄寫死成 Windows 磁碟機"
+    "代號絕對路徑（Paths.get(\"C:/voice\")、Paths.get(\"C:/images\")）——"
+    "不要在 Python 端逐字翻譯成 \"C:/voice\"、\"C:/images\" 這種字面字串。"
+    "這個專案跑在 Linux 容器內，\"C:\" 不是磁碟機代號，會被當成一般相對"
+    "路徑目錄名稱，在容器 bind-mount 的專案根目錄下真的生出一個叫 \"C:\" "
+    "的資料夾。改成在函式內 local import（跟這個檔案裡其他讀取 app.core."
+    "config 的既有寫法一致，例如 from app.core.config import "
+    "VOICE_UPLOAD_DIR），用 VOICE_UPLOAD_DIR／IMAGE_UPLOAD_DIR 取代對應的"
+    "字面路徑字串——不要放在檔案頂層 import，那會讓 app/main.py 啟動時"
+    "就強制載入 app.core.config，任何沒有這兩個環境變數的啟動情境（例如"
+    "局部驗證工具）都會直接啟動失敗。"
+)
 
 
 def _augment_task_io(task: TaskSpec) -> tuple[str, list[str]]:
-    """對應 09a 五章「疊加規則」：只對 services／repositories 層疊加，
-    routers 層原樣返回。不修改 task 本身（[P] 的權威輸出），只回傳疊加
-    後的 context／context_files 給呼叫端傳給 fill_function()。
+    """對應 09a 五章「疊加規則」：只對 services／repositories 層疊加
+    relationship／enum 固定提示，routers 層原樣返回。不修改 task 本身
+    （[P] 的權威輸出），只回傳疊加後的 context／context_files 給呼叫端
+    傳給 fill_function()。
+
+    ⑦ Debug Agent 上一輪針對這個 task 給的修正不經過這裡——10a 八章
+    「⑦ 直接產生修正後程式碼」之後，`pending_fixed_bodies` 裡的內容是
+    完整程式碼，直接傳給 `fill_function()` 的 `fixed_body` 參數取代整個
+    函式本體，不是疊加進 context 給 ⑤ 本地模型參考（見 `_run_one_task()`）。
     """
     target_file = task["target_files"][0]
-    if not (target_file.startswith("app/repositories/") or target_file.startswith("app/services/")):
-        return task.get("context", ""), task["target_files"]
+    if target_file.startswith("app/repositories/") or target_file.startswith("app/services/"):
+        context_files = list(task["target_files"])
+        if _ENUMS_FILE not in context_files:
+            context_files.append(_ENUMS_FILE)
+        existing = task.get("context", "")
+        context = f"{existing}\n\n{_RELATIONSHIP_GAP_NOTICE}" if existing else _RELATIONSHIP_GAP_NOTICE
+    else:
+        context_files = task["target_files"]
+        context = task.get("context", "")
 
-    context_files = list(task["target_files"])
-    if _ENUMS_FILE not in context_files:
-        context_files.append(_ENUMS_FILE)
+    # 見 _RESULT_FACTORY_INSTANCE_METHOD_NOTICE：跟上面的 relationship
+    # 提示不同，任何層級的 task 都可能建構 ResponseResult／Result 回應，
+    # 無條件疊加，不看 target_file 落在哪一層。
+    context = f"{context}\n\n{_RESULT_FACTORY_INSTANCE_METHOD_NOTICE}" if context else _RESULT_FACTORY_INSTANCE_METHOD_NOTICE
 
-    existing = task.get("context", "")
-    context = f"{existing}\n\n{_RELATIONSHIP_GAP_NOTICE}" if existing else _RELATIONSHIP_GAP_NOTICE
+    # 見 _COMMON_SERVICE_FILE：跟上面的提示一樣無條件疊加，不看
+    # target_file 落在哪一層——任何 task 都可能呼叫 ResponseResult／
+    # Result，只給文字規則描述參數慣例不夠，⑤ 需要看到真實原始碼才能
+    # 核對確切的參數名稱，不能只能用猜的。這一層 services／repositories
+    # 已經把自己複製過 context_files（見上面的 if 分支），所以這裡才能
+    # 安全地直接 append，不會動到 task 本身的 target_files。
+    if target_file != _COMMON_SERVICE_FILE and _COMMON_SERVICE_FILE not in context_files:
+        context_files = list(context_files)
+        context_files.append(_COMMON_SERVICE_FILE)
+
+    # 見 _HARDCODED_UPLOAD_PATH_NOTICE：只限定 file_router.py 才疊加。
+    if target_file == _FILE_ROUTER_FILE:
+        context = f"{context}\n\n{_HARDCODED_UPLOAD_PATH_NOTICE}"
+
     return context, context_files
 
 
@@ -116,8 +211,20 @@ def _make_task_failure(task: TaskSpec, reason: str, error: str) -> TaskFailure:
     )
 
 
-async def _run_one_task(task: TaskSpec, python_project_path: str, run_id: str) -> FillResult:
+async def _run_one_task(
+    task: TaskSpec, python_project_path: str, run_id: str, pending_fixed_bodies: dict[str, str]
+) -> FillResult:
+    """`pending_fixed_bodies` 裡有這個 task 的 id 時，代表 ⑦ Debug Agent
+    已經給出修正後的完整函式本體（見 10a 八章「⑦ 直接產生修正後程式
+    碼」），直接傳給 `fill_function()` 的 `fixed_body`，完全跳過 ⑤ 本地
+    模型呼叫——不需要再組 context／context_files 給模型參考。
+    """
+    fixed_body = pending_fixed_bodies.get(task["id"])
     context, context_files = _augment_task_io(task)
+    referenced_functions = [
+        (ref["file_path"], ref["class_name"], ref["function_name"])
+        for ref in task.get("referenced_functions", [])
+    ]
     async with MODEL_SEMAPHORE:
         return await translator_cli.fill_function(
             python_project_path=python_project_path,
@@ -129,6 +236,8 @@ async def _run_one_task(task: TaskSpec, python_project_path: str, run_id: str) -
             context=context,
             context_files=context_files,
             run_id=run_id,
+            referenced_functions=referenced_functions,
+            fixed_body=fixed_body,
         )
 
 
@@ -197,41 +306,32 @@ async def _wait_for_service_reload(python_project_path: str, python_base_url: st
     return False
 
 
-# 模組層級單例，比照 MODEL_SEMAPHORE 的既有模式：整條 graph run 只跑在
-# 單一 Python process 裡（main.py 的 asyncio.run(main())），這個變數在
-# implement／run_tests／debug → implement 重入之間持續存在，對應 09a
-# 三章「Python 服務只啟動一次」。
-_python_service: PythonServiceContainer | None = None
-
-
-async def _ensure_python_service_started(python_project_path: str, python_base_url: str) -> None:
-    """真正第一次進入 implement 時呼叫：容器還沒起來就建立並啟動，已經
-    起來（同一個 process 內的後續呼叫，或 debug → implement 重入）就不
-    重複啟動。`PythonServiceContainer.start()` 內部已經包含輪詢就緒的
-    邏輯，逾時會拋出明確例外（見 python_service/process.py），不需要
-    再額外呼叫 _get_reload_probe_id() 確認一次。
-    """
-    global _python_service
-    if _python_service is not None:
-        return
-    service = PythonServiceContainer(
-        python_project_path=python_project_path,
-        base_url=python_base_url,
-        database_url=os.environ["DATABASE_URL"],
+# _python_service 單例本身下沉到 python_service/manager.py（見 10a 八章
+# 「診斷資料改走 State，不是 debug_agent/ 直接 import implement_node」）
+# ——這裡只是委派呼叫，不再自己持有這個變數；`refactor_harness/
+# langgraph_nodes/test_nodes.py`（⑥）健康檢查失敗時也需要讀取同一個
+# 容器的診斷資料，因此不能讓這個單例只屬於這個 node 檔案。
+async def _ensure_python_service_started(state: RefactorState) -> None:
+    # 對應 docs/09b_bug_trace.md #46：把③輸出的 config_env_vars（見
+    # graph/state.py PythonStructure.config_env_vars）跟 java_project_path
+    # 一併傳給 manager，讓它在真正啟動容器前解析出 Java 端 application-
+    # {profile}.properties 的實際值，當額外 -e 環境變數注入。沒有任何
+    # @Value 欄位的專案 state["python_structure"] 不會有這個 key，
+    # .get(...) 回傳 None，manager.ensure_started() 據此不做任何事，
+    # 行為等同這個機制不存在。
+    await python_service_manager.ensure_started(
+        state["python_project_path"],
+        state["python_base_url"],
+        java_project_path=state["java_project_path"],
+        config_env_vars=state["python_structure"].get("config_env_vars"),
     )
-    await asyncio.to_thread(service.start)
-    _python_service = service
 
 
 async def stop_python_service() -> None:
     """main.py 在整條 graph run 結束（不論成功或失敗）時呼叫一次，關閉
     並移除容器——Docker 容器不會隨 Python process 結束自動清理。
     """
-    global _python_service
-    if _python_service is None:
-        return
-    await asyncio.to_thread(_python_service.stop)
-    _python_service = None
+    await python_service_manager.stop()
 
 
 def should_run_tests_or_give_up(state: RefactorState) -> str:
@@ -283,6 +383,13 @@ async def run(state: RefactorState) -> RefactorState:
     already_verified_modules = {
         module for module, status in latest_module_status.items() if status == "pass"
     }
+    # 見 docs/09b_bug_trace.md #41：module 一旦所有 task 都已完成，重建
+    # scheduler 後不會再被排進 touched_modules，"failed" 狀態必須跟
+    # "verified" 一樣明確恢復，否則會預設落回 "pending" 被誤判成
+    # blocked_modules，讓 debug ↔ implement 陷入不會終止的迴圈。
+    already_failed_modules = {
+        module for module, status in latest_module_status.items() if status == "fail"
+    }
 
     # 提前排除：scaffold 缺口在排程階段就永久跳過，不等 fill_function()
     # 失敗才發現，見 09a 六章「提前排除」。
@@ -300,16 +407,53 @@ async def run(state: RefactorState) -> RefactorState:
                     )
                 )
 
+    # 見 docs/09b_bug_trace.md：09a 七章原本只把 scaffold_gap_task_ids
+    # 當成 already_failed，理由是「這次還沒重試過的翻譯品質失敗」不該被
+    # 永久排除——這條規則在 10a 落地、⑦ Debug Agent 開始接手除錯迴圈之後
+    # 沒有跟著修正，導致排程器每一輪重建時，仍然把所有 fill_failed 的
+    # task 當成全新、可以再排給 ⑤ 本地模型的 task，即使 ⑦ 這一輪完全沒
+    # 分析到它。真實環境重跑證實：這正是同一批 task 連續 3 輪、9 次
+    # attempt 全部透過 Ollama 重試、卻從未真正交給 ⑦ 的機制性原因——
+    # 不是 prompt 沒要求 ⑦ 出手，是排程器本身就會把它排回 ⑤，跟 ⑦ 有沒有
+    # 出手無關。
+    #
+    # 10a 的既有決策（⑤ 的本地模型一旦進入除錯迴圈就完全退出）優先於
+    # 09a 這條更早、範圍更窄的規則：一個 task 只要曾經在 task_failures
+    # 留下一筆 reason=="fill_failed"，就永久排除在排程器的「可排給 ⑤」
+    # 池之外，唯一能讓它重新被排到的路徑是 force_reschedule()（見下方，
+    # 只由 ⑦ 產生的 pending_fixed_bodies 觸發）——跟 scaffold_gap 同一種
+    # 「機械永久排除、只由更高權限的機制解除」的處理方式，不需要另外的
+    # 資料結構，直接併入同一個 already_failed 集合。
+    fill_failed_task_ids = {
+        f["task_id"] for f in state.get("task_failures", []) if f["reason"] == "fill_failed"
+    }
+
     scheduler = ModuleScheduler(
         state["module_list"],
         state["task_list"],
         already_completed=set(state.get("completed_tasks", [])),
-        # 見 09a 七章「修正」：改傳 scaffold_gap_task_ids，不是
-        # state["failed_tasks"]——後者是跨整條 graph run 累積的歷史清單，
-        # 混進去會把「這次還沒重試過的翻譯品質失敗」也當永久排除。
-        already_failed=scaffold_gap_task_ids,
+        already_failed=scaffold_gap_task_ids | fill_failed_task_ids,
         already_verified_modules=already_verified_modules,
+        already_failed_modules=already_failed_modules,
     )
+
+    # 見 10a 八章「新增：ModuleScheduler.force_reschedule()」：
+    # pending_fixed_bodies 可能指向一個 module_status=="verified"／
+    # "failed" 的 module（⑤ 局部驗證誤判為 verified、但 ⑥ 全量驗證抓到
+    # 真正問題；或模組已經被判定 failed，⑦ 給出可修的程式碼）——這兩種
+    # 狀態的模組，get_ready_tasks() 都不會再排到它們的 task。這裡把對應
+    # module 打回 pending，並把被指名的 task_id 從 task_done／task_failed
+    # 移除，讓它真的能被重新排程、直接套用 ⑦ 給的 fixed_body。這一段對
+    # 所有 pending_fixed_bodies 一視同仁，不區分是哪一種 origin 產生的
+    # 修正。
+    pending_fixed_bodies = state.get("pending_fixed_bodies", {})
+    tasks_to_reopen_by_module: dict[str, set[str]] = {}
+    for task_id in pending_fixed_bodies:
+        task = next((t for t in state["task_list"] if t["id"] == task_id), None)
+        if task is not None:
+            tasks_to_reopen_by_module.setdefault(task["module"], set()).add(task_id)
+    for module, task_ids in tasks_to_reopen_by_module.items():
+        scheduler.force_reschedule(module, task_ids)
 
     partial_reports: list[dict] = []
 
@@ -322,6 +466,7 @@ async def run(state: RefactorState) -> RefactorState:
             scheduler.mark_module_verified(module, passed=False)
             partial_reports.append({
                 "module": module,
+                "round": state.get("retry_count", 0),
                 "report": {
                     "status": "fail",
                     "reason": "module_entirely_scaffold_skipped",
@@ -339,10 +484,40 @@ async def run(state: RefactorState) -> RefactorState:
     # 三章原文「只在真正第一次進入時才做這次前置確認」的語意）。
     is_first_entry = not state.get("completed_tasks") and not state.get("task_failures")
     if is_first_entry:
-        await _ensure_python_service_started(state["python_project_path"], state["python_base_url"])
+        await _ensure_python_service_started(state)
 
     completed, failed = [], []
     task_failures: list[TaskFailure] = list(new_scaffold_gap_failures)
+
+    # 見 10a 八章「⑦ 直接產生程式碼機制的 phase 2」：pending_file_fixes
+    # 是檔案層級的修正（如 import 敘述），fill_function() 的 AST 函式
+    # 定位機制碰不到，改用 translator_cli.apply_file_fix() 的精確字串
+    # 替換。這些修正不對應任何要重新生成的函式本體，不透過排程器（不會
+    # 出現在 get_ready_tasks() 裡）；套用完直接顯式等一次服務重啟，不
+    # 依賴下面 while 迴圈「有其他 task 在跑」才會觸發的既有
+    # reload-wait 時機——若這裡沒有其他 task 可以當「順風車」，file_fix
+    # 寫入磁碟後就不會有任何東西觸發 reload-wait，⑥ 下一輪的全量驗證
+    # 可能讀到還沒 reload 的舊服務狀態。
+    file_fix_applied = False
+    for file_fix in state.get("pending_file_fixes", []):
+        result = await translator_cli.apply_file_fix(
+            python_project_path=state["python_project_path"],
+            task_id=file_fix["task_id"],
+            target_file=file_fix["target_file"],
+            old_snippet=file_fix["old_snippet"],
+            new_snippet=file_fix["new_snippet"],
+        )
+        if result.success:
+            file_fix_applied = True
+        else:
+            task = next((t for t in state["task_list"] if t["id"] == file_fix["task_id"]), None)
+            if task is not None:
+                task_failures.append(_make_task_failure(task, "file_fix_failed", result.error or ""))
+    if file_fix_applied:
+        # 逾時不視為這幾個 file_fix 失敗（比照 09a 三章「逾時不該讓整條
+        # pipeline 崩潰」的既有精神）——這裡只是盡量給服務重啟的時間，
+        # 「是否真的修好」交給 ⑥ 下一輪的全量驗證判斷，不是這裡的職責。
+        await _wait_for_service_reload(state["python_project_path"], state["python_base_url"])
 
     while not scheduler.all_done():
         ready = scheduler.get_ready_tasks()
@@ -350,9 +525,12 @@ async def run(state: RefactorState) -> RefactorState:
             break  # 沒有可執行的 task：全部做完、卡在失敗的上游 module，或還有 needs_reverify 待處理
 
         # 排程層可以同時把多個就緒 task 丟進 gather，
-        # 但 MODEL_SEMAPHORE(1) 保證同一時間只有一個真的在呼叫本地模型。
+        # 但 MODEL_SEMAPHORE(1) 保證同一時間只有一個真的在呼叫本地模型
+        # （pending_fixed_bodies 命中的 task 不呼叫本地模型，直接套用
+        # ⑦ 給的程式碼，但仍然共用同一個 semaphore、同一個 gather，不需要
+        # 另外分流）。
         results = await asyncio.gather(
-            *(_run_one_task(t, state["python_project_path"], state["run_id"]) for t in ready)
+            *(_run_one_task(t, state["python_project_path"], state["run_id"], pending_fixed_bodies) for t in ready)
         )
 
         touched_modules = set()
@@ -406,12 +584,14 @@ async def run(state: RefactorState) -> RefactorState:
                 for module in verify_needs_wait:
                     partial_reports.append({
                         "module": module,
+                        "round": state.get("retry_count", 0),
                         "report": {"status": "fail", "reason": "batch_reload_timeout", "regression": False},
                     })
                     scheduler.mark_module_verified(module, passed=False)
                 for module in reverify_needs_wait:
                     partial_reports.append({
                         "module": module,
+                        "round": state.get("retry_count", 0),
                         "report": {"status": "fail", "reason": "batch_reload_timeout", "regression": True},
                     })
                     scheduler.mark_module_verified(module, passed=False)
@@ -419,12 +599,12 @@ async def run(state: RefactorState) -> RefactorState:
                 for module in verify_needs_wait:
                     report = await _partial_verify(module, db, verifier)
                     report["regression"] = False
-                    partial_reports.append({"module": module, "report": report})
+                    partial_reports.append({"module": module, "round": state.get("retry_count", 0), "report": report})
                     scheduler.mark_module_verified(module, passed=report["status"] == "pass")
                 for module in reverify_needs_wait:
                     report = await _partial_verify(module, db, verifier)
                     report["regression"] = True
-                    partial_reports.append({"module": module, "report": report})
+                    partial_reports.append({"module": module, "round": state.get("retry_count", 0), "report": report})
                     scheduler.mark_module_verified(module, passed=report["status"] == "pass")
 
         if upstream_degraded:
