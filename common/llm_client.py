@@ -20,6 +20,15 @@ Schema 編譯成文法，在生成階段直接限制 token 選擇（constrained 
 `anthropic` SDK 內建 `max_retries`（預設 2、指數退避）處理，不需要應用層
 再做額外重試。
 
+**明確設定 `timeout`，不依賴 SDK 預設值**：2026-08-28 真實環境撞到一次
+單一呼叫卡住 30 分鐘以上、`status` 從未變成 `error`／`timeout` 的案例
+（見 `docs/09b_bug_trace.md` 對應條目）——沒有留下足夠證據證實 SDK 預設
+的逾時機制在這個案例裡確實失效，但既然已知會發生「呼叫卡住不返回」，
+就不該讓整條 pipeline 沒有任何保底機制陪著一起卡住。`_get_client()`
+明確傳入 `timeout=300.0`（5 分鐘），比這個專案已知最大的 prompt／回應
+量級留有餘裕，逾時後交給 SDK 既有的 `max_retries` 重試，重試後仍失敗
+才真正冒出例外，讓呼叫端既有的重試／`give_up` 機制接手，不再無限期卡死。
+
 **這個函式是同步函式，不是 `async def`**：Map 階段用
 `concurrent.futures.ThreadPoolExecutor.submit()` 呼叫它（見 00 六章），
 是被丟進執行緒池、用阻塞呼叫的方式跑的普通函式（見
@@ -68,7 +77,7 @@ def _get_client() -> anthropic.Anthropic:
     if _client is None:
         with _client_lock:
             if _client is None:  # 鎖內再檢查一次，避免重複初始化
-                _client = anthropic.Anthropic()  # 讀 ANTHROPIC_API_KEY 環境變數
+                _client = anthropic.Anthropic(timeout=300.0)  # 讀 ANTHROPIC_API_KEY 環境變數
     return _client
 
 

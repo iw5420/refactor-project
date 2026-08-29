@@ -628,4 +628,4 @@ LLM_TRACE_PAYLOAD_THRESHOLD_BYTES=100000
 
 ---
 
-*本文件是全域 log 機制（一般 log／Claude API／本地 Ollama 呼叫紀錄）的定案版本，經多輪交叉審查修正後定案，隨實作推進持續更新。*
+*本文件是全域 log 機制（一般 log／Claude API／本地 Ollama 呼叫紀錄）的定案版本，隨實作推進持續更新。*

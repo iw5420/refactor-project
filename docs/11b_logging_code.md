@@ -70,7 +70,7 @@ def adhoc_run_id() -> str:
 
 ## 二、`common/trace_context.py`（新增）
 
-對應 11a 六章「trace_id 與一般 log 的關聯」。`.set()`／`.reset()` 都發生在同一次呼叫、同一個執行緒內，不需要 `contextvars.copy_context()` 跨執行緒複製——這是 11a 八章「B1」修正過的認知：`trace_id` 是在呼叫本身內部 `.set()`，不是從父 context 繼承。
+對應 11a 六章「trace_id 與一般 log 的關聯」。`.set()`／`.reset()` 都發生在同一次呼叫、同一個執行緒內，不需要 `contextvars.copy_context()` 跨執行緒複製——`trace_id` 是在呼叫本身內部 `.set()`，不是從父 context 繼承。
 
 ```python
 # common/trace_context.py

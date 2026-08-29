@@ -248,7 +248,7 @@ class TestGetClientThreadSafety:
         barrier = threading.Barrier(8)
 
         class _FakeClientForThreadTest:
-            def __init__(self):
+            def __init__(self, **kwargs):
                 construction_count["n"] += 1
 
         monkeypatch.setattr(llm_client.anthropic, "Anthropic", _FakeClientForThreadTest)
@@ -264,3 +264,21 @@ class TestGetClientThreadSafety:
             t.join()
 
         assert construction_count["n"] == 1
+
+    def test_client_constructed_with_explicit_timeout(self, monkeypatch):
+        """對應 docs/09b_bug_trace.md：2026-08-28 真實環境撞到一次呼叫卡住
+        30 分鐘以上、狀態從未變成 error／timeout 的案例——不能再依賴 SDK
+        預設值，`_get_client()` 必須明確傳 `timeout`，才有保底機制讓卡住
+        的呼叫最終失敗、交給既有重試／give_up 機制接手，不會無限期卡死。"""
+        monkeypatch.setattr(llm_client, "_client", None)
+        captured_kwargs = {}
+
+        class _FakeClientCapturingKwargs:
+            def __init__(self, **kwargs):
+                captured_kwargs.update(kwargs)
+
+        monkeypatch.setattr(llm_client.anthropic, "Anthropic", _FakeClientCapturingKwargs)
+
+        llm_client._get_client()
+
+        assert captured_kwargs.get("timeout") == 300.0
