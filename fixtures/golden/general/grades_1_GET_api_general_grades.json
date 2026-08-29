@@ -1,15 +1,14 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-29T11:34:56.634661Z",
+    "recorded_at": "2026-08-29T06:54:06.791856Z",
     "source": "java"
   },
   "request": {
     "method": "GET",
     "path": [
       "api",
-      "registration",
-      "exam",
-      "schools"
+      "general",
+      "grades"
     ]
   },
   "response": {
@@ -18,10 +17,10 @@
       "code": 200,
       "msg": "操作成功",
       "data": {
-        "school": [
-          "北投國小",
-          "萬里國小",
-          "淡水國小"
+        "grade": [
+          "高中",
+          "國小",
+          "國中"
         ]
       }
     }

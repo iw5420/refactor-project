@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-21T08:53:22.981215Z",
+    "recorded_at": "2026-08-29T11:34:59.161529Z",
     "source": "java"
   },
   "request": {
@@ -22,19 +22,19 @@
             "id": "<<MASKED>>",
             "created": null,
             "updated": null,
-            "school": "",
+            "school": "淡水國小",
             "year": "113",
             "grade": "1",
             "className": "1",
             "status": "1",
-            "userName": "王孝恩",
-            "card": "26MA-A-0504I",
+            "userName": "黃小芳",
+            "card": "26MA-A-0503X",
             "kind": "",
-            "randomId": "poCWH",
+            "randomId": "<<MASKED>>",
             "finishTime": null,
             "score": null,
             "comment": null,
-            "email": "test4@gmail.com.tw",
+            "email": "test3@gmail.com.tw",
             "registrationDate": null,
             "registrationSession": null,
             "cellPhone": null,
@@ -44,7 +44,7 @@
             "gtptPassed": false,
             "gtptCertificate": null,
             "questionRelated": null,
-            "isReviewer": true,
+            "isReviewer": false,
             "testNumber": null
           }
         ],

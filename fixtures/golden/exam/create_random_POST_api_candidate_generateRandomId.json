@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-21T08:53:22.981166Z",
+    "recorded_at": "2026-08-29T11:34:59.161452Z",
     "source": "java"
   },
   "request": {
@@ -17,7 +17,7 @@
       "code": 200,
       "msg": "操作成功",
       "data": {
-        "randomId": "poCWH",
+        "randomId": "<<MASKED>>",
         "result": "true"
       }
     }

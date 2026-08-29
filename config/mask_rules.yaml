@@ -13,8 +13,34 @@ masked_fields_mutation_only:
   - id
   - order_id
   - user_id
+  # candidate/generateRandomId 每次呼叫都用 CodeUtil.generateRandomCode()
+  # 現生一組 5 碼英數亂碼（見 docs/09b_bug_trace.md「golden 對隨機欄位
+  # 無法比對」）——golden 錄製當下的值必然跟每次重新驗證時不同，跟 id 一樣
+  # 只在 mutation 情境（剛建立的資源）才會遇到，readonly 精確查詢的
+  # randomId 是查詢正確性的一部分，不能遮。
+  - randomId
 
 masked_patterns:
   - "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}"   # ISO datetime
   - "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"          # UUID v4
   - "^Bearer\\s"                                       # Bearer token
+
+# 見 docs/09b_bug_trace.md「golden 對隨機欄位無法比對」：voice 上傳成功
+# 訊息把 randomId 包在檔案路徑字串裡（如 "上傳成功: C:\voice\2025\
+# macuhau\TAA\xMpIV\1_1.wav"），不是獨立欄位，masked_fields 擋不住；
+# masked_patterns 是 re.match 整個字串值，這裡只想換掉字串裡的一小段，
+# 兩者都不合用，改用 re.sub() 子字串替換。只在 mutation 情境套用，
+# 理由同 masked_fields_mutation_only。
+#
+# **不能只靠「前後都是路徑分隔符的 5 碼英數字段」判斷**：實測發現這樣
+# 會連 "voice" 本身（剛好也是 5 個字母、也卡在兩個分隔符之間）一起誤遮
+# ——CodeUtil.CODE_LENGTH=5、字元集 [A-Za-z0-9]（見
+# lang-exam-api-refactor 的 com.teachLanguage.utils.CodeUtil）純粹用長度
+# 判斷不足以跟路徑裡其他剛好 5 碼的合法片段區分。改成錨定檔名這個更獨特
+# 的結構特徵：randomId 在這個訊息格式裡固定緊接在檔名（`{partNumber}_
+# {questionNumber}.{副檔名}`，如 `1_1.wav`）前面一個路徑分隔符——用零寬
+# lookahead 只匹配「後面緊接著『反斜線＋數字_數字.副檔名』」的那一段，
+# 只動到隨機碼本身，不影響路徑其他部分，也不會誤傷 "voice" 這類固定
+# 路徑關鍵字（它們後面接的不是這個檔名格式）。
+masked_value_substring_patterns_mutation_only:
+  - '[A-Za-z0-9]{5}(?=\\\d+_\d+\.\w+$)'

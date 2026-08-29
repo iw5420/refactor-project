@@ -1,14 +1,14 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-29T11:34:59.161634Z",
+    "recorded_at": "2026-08-29T06:54:06.791829Z",
     "source": "java"
   },
   "request": {
-    "method": "POST",
+    "method": "GET",
     "path": [
       "api",
-      "file",
-      "voice"
+      "general",
+      "language"
     ]
   },
   "response": {
@@ -16,7 +16,10 @@
     "body": {
       "code": 200,
       "msg": "操作成功",
-      "data": "上傳成功: C:\\voice\\2025\\macuhau\\TAA\\<<MASKED>>\\1_1.wav"
+      "data": {
+        "code": "macuhau",
+        "displayName": "馬祖語"
+      }
     }
   }
 }

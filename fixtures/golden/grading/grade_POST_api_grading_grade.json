@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-21T08:53:22.983321Z",
+    "recorded_at": "2026-08-29T11:34:59.161612Z",
     "source": "java"
   },
   "request": {
@@ -14,8 +14,8 @@
   "response": {
     "status_code": 200,
     "body": {
-      "code": 1300,
-      "msg": "分數格式錯誤",
+      "code": 1303,
+      "msg": "查無作答資料，無法進行評分",
       "data": null
     }
   }

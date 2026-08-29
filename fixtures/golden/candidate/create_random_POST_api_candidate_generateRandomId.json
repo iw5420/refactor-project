@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-20T15:55:17.101811Z",
+    "recorded_at": "2026-08-28T10:38:56.440735Z",
     "source": "java"
   },
   "request": {
@@ -17,7 +17,7 @@
       "code": 200,
       "msg": "操作成功",
       "data": {
-        "randomId": "mRmN7",
+        "randomId": "<<MASKED>>",
         "result": "true"
       }
     }

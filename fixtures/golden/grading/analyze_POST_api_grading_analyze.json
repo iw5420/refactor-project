@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-21T08:53:22.981073Z",
+    "recorded_at": "2026-08-29T11:35:01.047554Z",
     "source": "java"
   },
   "request": {
@@ -44,12 +44,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 2,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 2
           },
           {
             "id": "<<MASKED>>",
@@ -75,12 +75,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "25.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 1
+            "bcount": 2,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -106,12 +106,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "25.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 1
+            "bcount": 2,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -137,12 +137,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 2,
-            "ccount": 2,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 2
           },
           {
             "id": "<<MASKED>>",
@@ -168,12 +168,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -199,12 +199,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "25.00%",
             "dcount": 0,
-            "ccount": 3,
-            "acount": 1
+            "bcount": 0,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 3
           },
           {
             "id": "<<MASKED>>",
@@ -230,12 +230,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -261,12 +261,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 3,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 3
           },
           {
             "id": "<<MASKED>>",
@@ -292,12 +292,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 3,
             "brate": "75.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 3,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -323,12 +323,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 3,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 3
           },
           {
             "id": "<<MASKED>>",
@@ -354,12 +354,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 3,
             "brate": "75.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 3,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -385,12 +385,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "25.00%",
             "dcount": 1,
-            "ccount": 2,
-            "acount": 1
+            "bcount": 0,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 2
           },
           {
             "id": "<<MASKED>>",
@@ -416,12 +416,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 3,
             "brate": "75.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 3,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -447,12 +447,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "25.00%",
             "dcount": 0,
-            "ccount": 3,
-            "acount": 1
+            "bcount": 0,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 3
           },
           {
             "id": "<<MASKED>>",
@@ -478,12 +478,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -509,12 +509,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 2,
-            "ccount": 2,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 2
           },
           {
             "id": "<<MASKED>>",
@@ -540,12 +540,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -571,12 +571,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 2,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 2
           },
           {
             "id": "<<MASKED>>",
@@ -602,12 +602,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "50.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 2
+            "bcount": 2,
+            "acount": 2,
+            "arate": "50.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -633,12 +633,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -664,12 +664,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 3,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 3
           },
           {
             "id": "<<MASKED>>",
@@ -695,12 +695,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -726,12 +726,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 3,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 3
           },
           {
             "id": "<<MASKED>>",
@@ -757,12 +757,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "25.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 1
+            "bcount": 2,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -788,12 +788,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 2,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 2
           },
           {
             "id": "<<MASKED>>",
@@ -819,12 +819,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 2,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 2
           },
           {
             "id": "<<MASKED>>",
@@ -850,12 +850,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "25.00%",
             "dcount": 0,
-            "ccount": 2,
-            "acount": 1
+            "bcount": 1,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 2
           },
           {
             "id": "<<MASKED>>",
@@ -881,12 +881,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 3,
             "brate": "75.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 3,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -912,12 +912,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -943,12 +943,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 2,
             "brate": "50.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 2,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -974,12 +974,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1005,12 +1005,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1036,12 +1036,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1067,12 +1067,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1098,12 +1098,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1129,12 +1129,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1160,12 +1160,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1191,12 +1191,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1222,12 +1222,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1253,12 +1253,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1284,12 +1284,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1315,12 +1315,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1346,12 +1346,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1377,12 +1377,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1408,12 +1408,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1439,12 +1439,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1470,12 +1470,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1501,12 +1501,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "25.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 1
+            "bcount": 0,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1532,12 +1532,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1563,12 +1563,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1594,12 +1594,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1625,12 +1625,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1656,12 +1656,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1687,12 +1687,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "25.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 1
+            "bcount": 0,
+            "acount": 1,
+            "arate": "25.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1718,12 +1718,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1749,12 +1749,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1780,12 +1780,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 1,
             "brate": "25.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 1,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1811,12 +1811,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 1,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 1
           },
           {
             "id": "<<MASKED>>",
@@ -1842,12 +1842,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 1,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1873,12 +1873,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1904,12 +1904,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1935,12 +1935,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1966,12 +1966,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -1997,12 +1997,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2028,12 +2028,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2059,12 +2059,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2090,12 +2090,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2121,12 +2121,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2152,12 +2152,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2183,12 +2183,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2214,12 +2214,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2245,12 +2245,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2276,12 +2276,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2307,12 +2307,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2338,12 +2338,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2369,12 +2369,12 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           },
           {
             "id": "<<MASKED>>",
@@ -2400,17 +2400,17 @@
             "answer": null,
             "score": null,
             "kind": null,
-            "bcount": 0,
             "brate": "0.00%",
-            "arate": "0.00%",
             "dcount": 0,
-            "ccount": 0,
-            "acount": 0
+            "bcount": 0,
+            "acount": 0,
+            "arate": "0.00%",
+            "ccount": 0
           }
         ],
         "studentScores": [
           {
-            "randomId": "bU4O9",
+            "randomId": "<<MASKED>>",
             "score": "57"
           }
         ]

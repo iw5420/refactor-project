@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-21T08:53:22.981144Z",
+    "recorded_at": "2026-08-29T11:35:07.750662Z",
     "source": "java"
   },
   "request": {
@@ -19,7 +19,7 @@
       "data": {
         "email": "test4@gmail.com.tw",
         "card": "26MA-A-0504I",
-        "randomId": "",
+        "randomId": "<<MASKED>>",
         "kind": "",
         "role": "老師",
         "department": null,

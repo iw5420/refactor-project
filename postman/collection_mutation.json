@@ -1,439 +1,10 @@
 {
   "item": [
     {
-      "name": "search_getSingleExam_getAllExamKind_etc_flow",
+      "name": "search_getSingleExam_save_etc_flow",
       "item": [
         {
-          "id": "4f28681b-d355-4a84-9f33-b4f5e06d12a9",
-          "name": "get All Exam Kind",
-          "request": {
-            "name": "get All Exam Kind",
-            "description": {},
-            "url": {
-              "path": [
-                "api",
-                "exam",
-                "getAllExamKind"
-              ],
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "header": [
-              {
-                "key": "Accept",
-                "value": "*/*"
-              }
-            ],
-            "method": "POST",
-            "body": {},
-            "auth": null
-          },
-          "response": [
-            {
-              "id": "332b5b1d-2015-4415-ac56-dd52f12ebbf8",
-              "name": "OK",
-              "originalRequest": {
-                "url": {
-                  "path": [
-                    "api",
-                    "exam",
-                    "getAllExamKind"
-                  ],
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "query": [],
-                  "variable": []
-                },
-                "header": [
-                  {
-                    "key": "Accept",
-                    "value": "*/*"
-                  }
-                ],
-                "method": "POST",
-                "body": {}
-              },
-              "status": "OK",
-              "code": 200,
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "*/*"
-                }
-              ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"kinds\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
-              "cookie": [],
-              "_postman_previewlanguage": "text"
-            }
-          ],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture exam_kind_voice\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_kind_voice\", json.data.kinds[0]);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture exam_kind_single_exam\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_kind_single_exam\", json.data.kinds[0]);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "protocolProfileBehavior": {
-            "disableBodyPruning": true
-          }
-        },
-        {
-          "id": "c4ecbc92-46c0-4bf8-90c8-900ddaae34ce",
-          "name": "analyze",
-          "request": {
-            "name": "analyze",
-            "description": {},
-            "url": {
-              "path": [
-                "api",
-                "grading",
-                "analyze"
-              ],
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Accept",
-                "value": "*/*"
-              }
-            ],
-            "method": "POST",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"kind\": \"2025/macuhau/TAA\"\n}",
-              "options": {
-                "raw": {
-                  "headerFamily": "json",
-                  "language": "json"
-                }
-              }
-            },
-            "auth": null
-          },
-          "response": [
-            {
-              "id": "0021f8f9-151b-49a5-8557-5452aac05103",
-              "name": "OK",
-              "originalRequest": {
-                "url": {
-                  "path": [
-                    "api",
-                    "grading",
-                    "analyze"
-                  ],
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "query": [],
-                  "variable": []
-                },
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  },
-                  {
-                    "key": "Accept",
-                    "value": "*/*"
-                  }
-                ],
-                "method": "POST",
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"kind\": \"<string>\"\n}",
-                  "options": {
-                    "raw": {
-                      "headerFamily": "json",
-                      "language": "json"
-                    }
-                  }
-                }
-              },
-              "status": "OK",
-              "code": 200,
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "*/*"
-                }
-              ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"status\": \"<string>\",\n    \"studentCount\": \"<long>\",\n    \"questionResults\": [\n      {\n        \"id\": \"<long>\",\n        \"typeNumber\": \"<string>\",\n        \"partNumber\": \"<string>\",\n        \"questionNumber\": \"<string>\",\n        \"correctAnswer\": \"<string>\",\n        \"correctRate\": \"<string>\",\n        \"correctCount\": \"<double>\",\n        \"mostChosenWrongAnswer\": \"<string>\",\n        \"mostChosenWrongCount\": \"<long>\",\n        \"a\": \"<string>\",\n        \"b\": \"<string>\",\n        \"c\": \"<string>\",\n        \"crate\": \"<string>\",\n        \"d\": \"<string>\",\n        \"drate\": \"<string>\",\n        \"noCount\": \"<long>\",\n        \"noRate\": \"<string>\",\n        \"question\": \"<string>\",\n        \"voice\": \"<string>\",\n        \"picture\": \"<string>\",\n        \"answer\": \"<string>\",\n        \"score\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"bcount\": \"<long>\",\n        \"brate\": \"<string>\",\n        \"arate\": \"<string>\",\n        \"dcount\": \"<long>\",\n        \"ccount\": \"<long>\",\n        \"acount\": \"<long>\"\n      },\n      {\n        \"id\": \"<long>\",\n        \"typeNumber\": \"<string>\",\n        \"partNumber\": \"<string>\",\n        \"questionNumber\": \"<string>\",\n        \"correctAnswer\": \"<string>\",\n        \"correctRate\": \"<string>\",\n        \"correctCount\": \"<double>\",\n        \"mostChosenWrongAnswer\": \"<string>\",\n        \"mostChosenWrongCount\": \"<long>\",\n        \"a\": \"<string>\",\n        \"b\": \"<string>\",\n        \"c\": \"<string>\",\n        \"crate\": \"<string>\",\n        \"d\": \"<string>\",\n        \"drate\": \"<string>\",\n        \"noCount\": \"<long>\",\n        \"noRate\": \"<string>\",\n        \"question\": \"<string>\",\n        \"voice\": \"<string>\",\n        \"picture\": \"<string>\",\n        \"answer\": \"<string>\",\n        \"score\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"bcount\": \"<long>\",\n        \"brate\": \"<string>\",\n        \"arate\": \"<string>\",\n        \"dcount\": \"<long>\",\n        \"ccount\": \"<long>\",\n        \"acount\": \"<long>\"\n      }\n    ],\n    \"studentScores\": [\n      {\n        \"randomId\": \"<string>\",\n        \"score\": \"<string>\"\n      },\n      {\n        \"randomId\": \"<string>\",\n        \"score\": \"<string>\"\n      }\n    ]\n  }\n}",
-              "cookie": [],
-              "_postman_previewlanguage": "text"
-            }
-          ],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture grading_question_id\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"grading_question_id\", json.data.questionResults[0].id);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture grading_student_random_id\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"grading_student_random_id\", json.data.studentScores[0].randomId);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "protocolProfileBehavior": {
-            "disableBodyPruning": true
-          }
-        },
-        {
-          "id": "c5b4821c-cc63-445a-a66e-04836a879ed4",
-          "name": "score",
-          "request": {
-            "name": "score",
-            "description": {},
-            "url": {
-              "path": [
-                "api",
-                "grading",
-                "score"
-              ],
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Accept",
-                "value": "*/*"
-              }
-            ],
-            "method": "POST",
-            "body": {
-              "mode": "raw",
-              "raw": "[\n  {\n    \"id\": \"1\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"2\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"3\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"4\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"5\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"6\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"7\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"8\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"9\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"10\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"11\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"12\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"13\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"14\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"15\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"16\",\n    \"score\": \"3\"\n  },\n  {\n    \"id\": \"17\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"18\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"19\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"20\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"21\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"22\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"23\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"24\",\n    \"score\": \"3\"\n  },\n  {\n    \"id\": \"25\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"26\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"27\",\n    \"score\": \"3\"\n  },\n  {\n    \"id\": \"28\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"29\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"30\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"31\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"32\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"33\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"34\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"35\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"36\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"37\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"38\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"39\",\n    \"score\": \"20\"\n  }\n]",
-              "options": {
-                "raw": {
-                  "headerFamily": "json",
-                  "language": "json"
-                }
-              }
-            },
-            "auth": null
-          },
-          "response": [
-            {
-              "id": "f1cfbed2-494f-4ed4-8181-0b5a1b273baf",
-              "name": "OK",
-              "originalRequest": {
-                "url": {
-                  "path": [
-                    "api",
-                    "grading",
-                    "score"
-                  ],
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "query": [],
-                  "variable": []
-                },
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  },
-                  {
-                    "key": "Accept",
-                    "value": "*/*"
-                  }
-                ],
-                "method": "POST",
-                "body": {
-                  "mode": "raw",
-                  "raw": "[\n  {\n    \"id\": \"<string>\",\n    \"score\": \"<string>\"\n  },\n  {\n    \"id\": \"<string>\",\n    \"score\": \"<string>\"\n  }\n]",
-                  "options": {
-                    "raw": {
-                      "headerFamily": "json",
-                      "language": "json"
-                    }
-                  }
-                }
-              },
-              "status": "OK",
-              "code": 200,
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "*/*"
-                }
-              ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {}\n}",
-              "cookie": [],
-              "_postman_previewlanguage": "text"
-            }
-          ],
-          "event": [],
-          "protocolProfileBehavior": {
-            "disableBodyPruning": true
-          }
-        },
-        {
-          "id": "99a97074-d31d-4f09-a75c-86ad9593f524",
-          "name": "get Candidate",
-          "request": {
-            "name": "get Candidate",
-            "description": {},
-            "url": {
-              "path": [
-                "api",
-                "candidate",
-                "search"
-              ],
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Accept",
-                "value": "*/*"
-              }
-            ],
-            "method": "POST",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"card\": \"26MA-A-0504I\"\n}",
-              "options": {
-                "raw": {
-                  "headerFamily": "json",
-                  "language": "json"
-                }
-              }
-            },
-            "auth": null
-          },
-          "response": [
-            {
-              "id": "abf8e4ac-c5f9-47ed-bc9c-ec4760dc89d3",
-              "name": "OK",
-              "originalRequest": {
-                "url": {
-                  "path": [
-                    "api",
-                    "candidate",
-                    "search"
-                  ],
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "query": [],
-                  "variable": []
-                },
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  },
-                  {
-                    "key": "Accept",
-                    "value": "*/*"
-                  }
-                ],
-                "method": "POST",
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"card\": \"<string>\"\n}",
-                  "options": {
-                    "raw": {
-                      "headerFamily": "json",
-                      "language": "json"
-                    }
-                  }
-                }
-              },
-              "status": "OK",
-              "code": 200,
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "*/*"
-                }
-              ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"email\": \"<string>\",\n    \"card\": \"<string>\",\n    \"randomId\": \"<string>\",\n    \"kind\": \"<string>\",\n    \"role\": \"<string>\",\n    \"department\": \"<string>\",\n    \"local\": \"<string>\",\n    \"school\": \"<string>\",\n    \"className\": \"<string>\",\n    \"name\": \"<string>\",\n    \"isReviewer\": \"<boolean>\"\n  }\n}",
-              "cookie": [],
-              "_postman_previewlanguage": "text"
-            }
-          ],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture candidate_card\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_card\", json.data.card);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "protocolProfileBehavior": {
-            "disableBodyPruning": true
-          }
-        },
-        {
-          "id": "26424123-b651-4e4d-8d74-e3c19b85eb0d",
+          "id": "ff899c72-1c9b-4a06-82ef-23b6d0cdfbd3",
           "name": "create Random",
           "request": {
             "name": "create Random",
@@ -463,7 +34,7 @@
             "method": "POST",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"test3@gmail.com.tw\",\n  \"card\": \"{{candidate_card}}\",\n  \"kind\": \"\",\n  \"name\": \"黃小芳\",\n  \"school\": \"淡水國小\",\n  \"grade\": \"\",\n  \"classes\": \"1\",\n  \"role\": \"老師\",\n  \"department\": \"\",\n  \"local\": \"台北市\"\n}",
+              "raw": "{\n  \"email\": \"test3@gmail.com.tw\",\n  \"card\": \"26MA-A-0503X\",\n  \"kind\": \"\",\n  \"name\": \"黃小芳\",\n  \"school\": \"淡水國小\",\n  \"grade\": \"\",\n  \"classes\": \"1\",\n  \"role\": \"老師\",\n  \"department\": \"\",\n  \"local\": \"台北市\"\n}",
               "options": {
                 "raw": {
                   "headerFamily": "json",
@@ -475,7 +46,7 @@
           },
           "response": [
             {
-              "id": "b2040533-ba65-450b-b2a7-33ece44022aa",
+              "id": "b56cc7d3-71cc-4875-b616-739af7d55320",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -543,9 +114,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"capture candidate_random_id_voice_upload\", function () {",
+                  "pm.test(\"capture candidate_random_id_for_voice_upload\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_voice_upload\", json.data.randomId);",
+                  "    pm.environment.set(\"candidate_random_id_for_voice_upload\", json.data.randomId);",
                   "});"
                 ]
               }
@@ -555,9 +126,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"capture candidate_random_id_image\", function () {",
+                  "pm.test(\"capture candidate_random_id_for_image\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_image\", json.data.randomId);",
+                  "    pm.environment.set(\"candidate_random_id_for_image\", json.data.randomId);",
                   "});"
                 ]
               }
@@ -567,9 +138,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"capture candidate_random_id_grade\", function () {",
+                  "pm.test(\"capture candidate_random_id_for_grade\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_grade\", json.data.randomId);",
+                  "    pm.environment.set(\"candidate_random_id_for_grade\", json.data.randomId);",
                   "});"
                 ]
               }
@@ -579,9 +150,33 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"capture candidate_random_id_exam_search\", function () {",
+                  "pm.test(\"capture candidate_random_id_for_exam_search\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_exam_search\", json.data.randomId);",
+                  "    pm.environment.set(\"candidate_random_id_for_exam_search\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_random_id_for_answer_search\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_random_id_for_answer_search\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_random_id_for_answer_save\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_random_id_for_answer_save\", json.data.randomId);",
                   "});"
                 ]
               }
@@ -592,7 +187,7 @@
           }
         },
         {
-          "id": "91cd18c3-e718-4d5a-80f8-39d9bcdc7daf",
+          "id": "e340c275-7612-444a-bd05-50a74bcc3e83",
           "name": "search",
           "request": {
             "name": "search",
@@ -622,7 +217,7 @@
             "method": "POST",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"card\": \"\",\n  \"classes\": \"\",\n  \"grade\": \"\",\n  \"kind\": \"\",\n  \"status\": \"\",\n  \"year\": \"113\",\n  \"randomId\": \"{{candidate_random_id_exam_search}}\"\n}",
+              "raw": "{\n  \"card\": \"\",\n  \"classes\": \"\",\n  \"grade\": \"\",\n  \"kind\": \"\",\n  \"status\": \"\",\n  \"year\": \"113\",\n  \"randomId\": \"{{candidate_random_id_for_exam_search}}\"\n}",
               "options": {
                 "raw": {
                   "headerFamily": "json",
@@ -634,7 +229,7 @@
           },
           "response": [
             {
-              "id": "f661ef0c-2bef-414b-86ab-14e1df2cf8dc",
+              "id": "26c35a3b-81e7-4372-9195-b1ed0e7c8d85",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -690,9 +285,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"capture exam_random_id\", function () {",
+                  "pm.test(\"capture exam_kind_for_single_exam\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_random_id\", json.data.exam[0].randomId);",
+                  "    pm.environment.set(\"exam_kind_for_single_exam\", json.data.exam[0].kind);",
                   "});"
                 ]
               }
@@ -702,9 +297,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"capture exam_random_id_save\", function () {",
+                  "pm.test(\"capture exam_kind_for_answer_search\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_random_id_save\", json.data.exam[0].randomId);",
+                  "    pm.environment.set(\"exam_kind_for_answer_search\", json.data.exam[0].kind);",
                   "});"
                 ]
               }
@@ -714,33 +309,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"capture exam_kind\", function () {",
+                  "pm.test(\"capture exam_kind_for_answer_save\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_kind\", json.data.exam[0].kind);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture exam_kind_save\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_kind_save\", json.data.exam[0].kind);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture exam_kind_get_single\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_kind_get_single\", json.data.exam[0].kind);",
+                  "    pm.environment.set(\"exam_kind_for_answer_save\", json.data.exam[0].kind);",
                   "});"
                 ]
               }
@@ -751,7 +322,7 @@
           }
         },
         {
-          "id": "d10e6923-e688-4231-880a-ffaa993e09c3",
+          "id": "4b66527e-ad53-45c3-97bd-fb9e3a44c38e",
           "name": "get Single Exam",
           "request": {
             "name": "get Single Exam",
@@ -781,7 +352,7 @@
             "method": "POST",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"kind\": \"{{exam_kind_single_exam}}\"\n}",
+              "raw": "{\n  \"kind\": \"{{exam_kind_for_single_exam}}\"\n}",
               "options": {
                 "raw": {
                   "headerFamily": "json",
@@ -793,7 +364,7 @@
           },
           "response": [
             {
-              "id": "8d961583-470a-4f34-afa3-485032e49c0e",
+              "id": "060d65db-da51-48c9-aa1e-af3b9511ddf8",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -849,7 +420,7 @@
           }
         },
         {
-          "id": "c46efc11-dbcc-4e78-bd8b-1d50595c931d",
+          "id": "295dbab1-167d-424b-95a7-f52752ed55b8",
           "name": "search Answer",
           "request": {
             "name": "search Answer",
@@ -880,7 +451,7 @@
             "method": "POST",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"card\": \"26MA-A-0501E\",\n  \"randomId\": \"{{exam_random_id}}\",\n  \"kind\": \"{{exam_kind}}\"\n}",
+              "raw": "{\n  \"card\": \"26MA-A-0501E\",\n  \"randomId\": \"{{candidate_random_id_for_answer_search}}\",\n  \"kind\": \"{{exam_kind_for_answer_search}}\"\n}",
               "options": {
                 "raw": {
                   "headerFamily": "json",
@@ -892,7 +463,7 @@
           },
           "response": [
             {
-              "id": "8d24e4b4-d5a9-4da6-8de4-e83d0e8130b8",
+              "id": "053f31f3-3d5f-4643-b9d8-11ea98388feb",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -949,7 +520,7 @@
           }
         },
         {
-          "id": "32c95cc0-7b1b-4aa6-b24e-8c78369d3748",
+          "id": "3d17cd7d-3827-46f0-883a-a4dc295076b5",
           "name": "save Answer",
           "request": {
             "name": "save Answer",
@@ -992,7 +563,7 @@
           },
           "response": [
             {
-              "id": "69351ed4-3288-4cd6-a217-a306529583d7",
+              "id": "4516fdcc-7a1d-4934-a387-4e2871def613",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1049,7 +620,7 @@
           }
         },
         {
-          "id": "e62643f6-b022-43d7-8a42-370fc3d68813",
+          "id": "ec882ee9-0510-4e11-bb86-0e6edcc7e09c",
           "name": "grade",
           "request": {
             "name": "grade",
@@ -1079,7 +650,7 @@
             "method": "POST",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"randomId\": \"{{grading_student_random_id}}\",\n  \"kind\": \"2025/macuhau/TAA\",\n  \"comment\": \"\"\n}",
+              "raw": "{\n  \"randomId\": \"{{candidate_random_id_for_grade}}\",\n  \"kind\": \"2025/macuhau/TAA\",\n  \"comment\": \"\"\n}",
               "options": {
                 "raw": {
                   "headerFamily": "json",
@@ -1091,7 +662,7 @@
           },
           "response": [
             {
-              "id": "fcda8ee7-e718-46d7-bba3-32cd9f77ccab",
+              "id": "bff5d7c1-88f6-4aa8-a19a-e4f16399e796",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1147,7 +718,7 @@
           }
         },
         {
-          "id": "3eb7d8b2-84d2-4d45-ae58-a5d724521ed3",
+          "id": "9c8a8ed5-480b-46dc-8c7c-e08556faf80d",
           "name": "voice",
           "request": {
             "name": "voice",
@@ -1178,7 +749,7 @@
                     "type": "text/plain"
                   },
                   "key": "randomId",
-                  "value": "{{candidate_random_id_voice_upload}}"
+                  "value": "{{candidate_random_id_for_voice_upload}}"
                 },
                 {
                   "disabled": false,
@@ -1230,7 +801,7 @@
           },
           "response": [
             {
-              "id": "e656e9b8-55b9-4200-83b3-ff48ba874cb1",
+              "id": "2b9ef71b-5258-4041-ae86-d2394e86dcca",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1326,7 +897,7 @@
           }
         },
         {
-          "id": "2892b76d-724e-4e08-82a6-19e355564dbf",
+          "id": "7b30eaaf-5dd6-46a5-9a1c-84b167431375",
           "name": "voice 1（鏈式依賴驗證）",
           "request": {
             "name": "voice 1",
@@ -1392,7 +963,7 @@
           },
           "response": [
             {
-              "id": "f8ade4bd-faae-4da9-abfb-c07e14083408",
+              "id": "e1495739-c6b1-45f1-8f4a-f05b70096930",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1472,7 +1043,7 @@
           }
         },
         {
-          "id": "d0ebf557-4484-492b-a226-308b4a99dbce",
+          "id": "a9324aca-3664-47b5-ae0a-6b232a59f2b5",
           "name": "image 1（鏈式依賴驗證）",
           "request": {
             "name": "image 1",
@@ -1503,7 +1074,7 @@
                     "type": "text/plain"
                   },
                   "key": "randomId",
-                  "value": "{{candidate_random_id_image}}"
+                  "value": "{{candidate_random_id_for_image}}"
                 },
                 {
                   "disabled": false,
@@ -1529,7 +1100,7 @@
           },
           "response": [
             {
-              "id": "77a3f8f9-163d-487c-9242-1824c815a569",
+              "id": "ff999208-1544-41be-853b-128b50456399",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1598,134 +1169,91 @@
           "protocolProfileBehavior": {
             "disableBodyPruning": true
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "score_analyze_flow",
+      "item": [
         {
-          "id": "2892b76d-724e-4e08-82a6-19e355564dbf",
-          "name": "voice 1（鏈式依賴驗證）",
+          "id": "08ba920c-5f6d-4d00-830c-13ed3bc0c295",
+          "name": "analyze",
           "request": {
-            "name": "voice 1",
+            "name": "analyze",
             "description": {},
             "url": {
               "path": [
                 "api",
-                "file",
-                "voice"
+                "grading",
+                "analyze"
               ],
               "host": [
                 "{{baseUrl}}"
               ],
-              "query": [
-                {
-                  "disabled": false,
-                  "description": {
-                    "content": "(Required) ",
-                    "type": "text/plain"
-                  },
-                  "key": "kind",
-                  "value": "{{exam_kind_voice}}"
-                },
-                {
-                  "disabled": false,
-                  "description": {
-                    "content": "(Required) ",
-                    "type": "text/plain"
-                  },
-                  "key": "randomId",
-                  "value": "<string>"
-                },
-                {
-                  "disabled": false,
-                  "description": {
-                    "content": "(Required) ",
-                    "type": "text/plain"
-                  },
-                  "key": "partNumber",
-                  "value": "<string>"
-                },
-                {
-                  "disabled": false,
-                  "description": {
-                    "content": "(Required) ",
-                    "type": "text/plain"
-                  },
-                  "key": "questionNumber",
-                  "value": "<string>"
-                }
-              ],
+              "query": [],
               "variable": []
             },
             "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
               {
                 "key": "Accept",
                 "value": "*/*"
               }
             ],
-            "method": "GET",
-            "body": {},
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kind\": \"2025/macuhau/TAA\"\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            },
             "auth": null
           },
           "response": [
             {
-              "id": "f8ade4bd-faae-4da9-abfb-c07e14083408",
+              "id": "4c0a6797-01b1-4cc3-90e2-dafc10660f52",
               "name": "OK",
               "originalRequest": {
                 "url": {
                   "path": [
                     "api",
-                    "file",
-                    "voice"
+                    "grading",
+                    "analyze"
                   ],
                   "host": [
                     "{{baseUrl}}"
                   ],
-                  "query": [
-                    {
-                      "disabled": false,
-                      "description": {
-                        "content": "(Required) ",
-                        "type": "text/plain"
-                      },
-                      "key": "kind",
-                      "value": "<string>"
-                    },
-                    {
-                      "disabled": false,
-                      "description": {
-                        "content": "(Required) ",
-                        "type": "text/plain"
-                      },
-                      "key": "randomId",
-                      "value": "<string>"
-                    },
-                    {
-                      "disabled": false,
-                      "description": {
-                        "content": "(Required) ",
-                        "type": "text/plain"
-                      },
-                      "key": "partNumber",
-                      "value": "<string>"
-                    },
-                    {
-                      "disabled": false,
-                      "description": {
-                        "content": "(Required) ",
-                        "type": "text/plain"
-                      },
-                      "key": "questionNumber",
-                      "value": "<string>"
-                    }
-                  ],
+                  "query": [],
                   "variable": []
                 },
                 "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
                   {
                     "key": "Accept",
                     "value": "*/*"
                   }
                 ],
-                "method": "GET",
-                "body": {}
+                "method": "POST",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"kind\": \"<string>\"\n}",
+                  "options": {
+                    "raw": {
+                      "headerFamily": "json",
+                      "language": "json"
+                    }
+                  }
+                }
               },
               "status": "OK",
               "code": 200,
@@ -1735,7 +1263,118 @@
                   "value": "*/*"
                 }
               ],
-              "body": "{}",
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"status\": \"<string>\",\n    \"studentCount\": \"<long>\",\n    \"questionResults\": [\n      {\n        \"id\": \"<long>\",\n        \"typeNumber\": \"<string>\",\n        \"partNumber\": \"<string>\",\n        \"questionNumber\": \"<string>\",\n        \"correctAnswer\": \"<string>\",\n        \"correctRate\": \"<string>\",\n        \"correctCount\": \"<double>\",\n        \"mostChosenWrongAnswer\": \"<string>\",\n        \"mostChosenWrongCount\": \"<long>\",\n        \"a\": \"<string>\",\n        \"b\": \"<string>\",\n        \"c\": \"<string>\",\n        \"crate\": \"<string>\",\n        \"d\": \"<string>\",\n        \"drate\": \"<string>\",\n        \"noCount\": \"<long>\",\n        \"noRate\": \"<string>\",\n        \"question\": \"<string>\",\n        \"voice\": \"<string>\",\n        \"picture\": \"<string>\",\n        \"answer\": \"<string>\",\n        \"score\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"acount\": \"<long>\",\n        \"arate\": \"<string>\",\n        \"bcount\": \"<long>\",\n        \"brate\": \"<string>\",\n        \"dcount\": \"<long>\",\n        \"ccount\": \"<long>\"\n      },\n      {\n        \"id\": \"<long>\",\n        \"typeNumber\": \"<string>\",\n        \"partNumber\": \"<string>\",\n        \"questionNumber\": \"<string>\",\n        \"correctAnswer\": \"<string>\",\n        \"correctRate\": \"<string>\",\n        \"correctCount\": \"<double>\",\n        \"mostChosenWrongAnswer\": \"<string>\",\n        \"mostChosenWrongCount\": \"<long>\",\n        \"a\": \"<string>\",\n        \"b\": \"<string>\",\n        \"c\": \"<string>\",\n        \"crate\": \"<string>\",\n        \"d\": \"<string>\",\n        \"drate\": \"<string>\",\n        \"noCount\": \"<long>\",\n        \"noRate\": \"<string>\",\n        \"question\": \"<string>\",\n        \"voice\": \"<string>\",\n        \"picture\": \"<string>\",\n        \"answer\": \"<string>\",\n        \"score\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"acount\": \"<long>\",\n        \"arate\": \"<string>\",\n        \"bcount\": \"<long>\",\n        \"brate\": \"<string>\",\n        \"dcount\": \"<long>\",\n        \"ccount\": \"<long>\"\n      }\n    ],\n    \"studentScores\": [\n      {\n        \"randomId\": \"<string>\",\n        \"score\": \"<string>\"\n      },\n      {\n        \"randomId\": \"<string>\",\n        \"score\": \"<string>\"\n      }\n    ]\n  }\n}",
+              "cookie": [],
+              "_postman_previewlanguage": "text"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture question_result_id_for_score\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"question_result_id_for_score\", json.data.questionResults[0].id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": {
+            "disableBodyPruning": true
+          }
+        },
+        {
+          "id": "22ad885c-2579-4556-8cab-2477412ae6b6",
+          "name": "score",
+          "request": {
+            "name": "score",
+            "description": {},
+            "url": {
+              "path": [
+                "api",
+                "grading",
+                "score"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "*/*"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"id\": \"1\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"2\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"3\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"4\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"5\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"6\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"7\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"8\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"9\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"10\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"11\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"12\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"13\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"14\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"15\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"16\",\n    \"score\": \"3\"\n  },\n  {\n    \"id\": \"17\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"18\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"19\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"20\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"21\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"22\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"23\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"24\",\n    \"score\": \"3\"\n  },\n  {\n    \"id\": \"25\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"26\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"27\",\n    \"score\": \"3\"\n  },\n  {\n    \"id\": \"28\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"29\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"30\",\n    \"score\": \"0\"\n  },\n  {\n    \"id\": \"31\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"32\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"33\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"34\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"35\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"36\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"37\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"38\",\n    \"score\": \"5\"\n  },\n  {\n    \"id\": \"39\",\n    \"score\": \"20\"\n  }\n]",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            },
+            "auth": null
+          },
+          "response": [
+            {
+              "id": "58a33fc7-fcda-4251-89ad-969a2edb4864",
+              "name": "OK",
+              "originalRequest": {
+                "url": {
+                  "path": [
+                    "api",
+                    "grading",
+                    "score"
+                  ],
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "query": [],
+                  "variable": []
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "*/*"
+                  }
+                ],
+                "method": "POST",
+                "body": {
+                  "mode": "raw",
+                  "raw": "[\n  {\n    \"id\": \"<string>\",\n    \"score\": \"<string>\"\n  },\n  {\n    \"id\": \"<string>\",\n    \"score\": \"<string>\"\n  }\n]",
+                  "options": {
+                    "raw": {
+                      "headerFamily": "json",
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "*/*"
+                }
+              ],
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {}\n}",
               "cookie": [],
               "_postman_previewlanguage": "text"
             }
@@ -1751,7 +1390,7 @@
       "name": "exam_management",
       "item": [
         {
-          "id": "096392c3-eea3-4065-8c6b-121445f33306",
+          "id": "3dfac321-9c01-4d82-be2c-f895449632bf",
           "name": "get All",
           "request": {
             "name": "get All",
@@ -1780,7 +1419,7 @@
           },
           "response": [
             {
-              "id": "a47a79b4-3130-4475-a153-fade3e84e505",
+              "id": "cbd63ec1-ad8c-4183-8fda-e8361aec6d58",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1812,7 +1451,79 @@
                   "value": "*/*"
                 }
               ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"allExams\": {\n      \"key_0\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ],\n      \"key_1\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ]\n    }\n  }\n}",
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"allExams\": {\n      \"key_0\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ],\n      \"key_1\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ],\n      \"key_2\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ]\n    }\n  }\n}",
+              "cookie": [],
+              "_postman_previewlanguage": "text"
+            }
+          ],
+          "event": [],
+          "protocolProfileBehavior": {
+            "disableBodyPruning": true
+          }
+        },
+        {
+          "id": "e0f3a262-382e-47b0-ac33-25eb25fae017",
+          "name": "get All Exam Kind",
+          "request": {
+            "name": "get All Exam Kind",
+            "description": {},
+            "url": {
+              "path": [
+                "api",
+                "exam",
+                "getAllExamKind"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "*/*"
+              }
+            ],
+            "method": "POST",
+            "body": {},
+            "auth": null
+          },
+          "response": [
+            {
+              "id": "2d477d43-a2a3-4b07-93d9-d5bb119c229e",
+              "name": "OK",
+              "originalRequest": {
+                "url": {
+                  "path": [
+                    "api",
+                    "exam",
+                    "getAllExamKind"
+                  ],
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "query": [],
+                  "variable": []
+                },
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "*/*"
+                  }
+                ],
+                "method": "POST",
+                "body": {}
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "*/*"
+                }
+              ],
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"kinds\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
               "cookie": [],
               "_postman_previewlanguage": "text"
             }
@@ -1828,7 +1539,7 @@
       "name": "grading",
       "item": [
         {
-          "id": "57371b52-88e6-4ad9-a3e4-4e443171d173",
+          "id": "d275d9d9-14f1-4a39-8d65-8050c75a55f5",
           "name": "login",
           "request": {
             "name": "login",
@@ -1870,7 +1581,7 @@
           },
           "response": [
             {
-              "id": "44483484-55b9-4aa2-b038-6f82fea3317d",
+              "id": "da6e61d1-236f-4445-9652-a33086a35976",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1931,7 +1642,7 @@
       "name": "general_schools",
       "item": [
         {
-          "id": "c0b019b5-9808-4161-97ed-9133e8e39d5f",
+          "id": "0cb3aa96-ac45-47c3-9ac3-6b0f59ac9aba",
           "name": "schools",
           "request": {
             "name": "schools",
@@ -1973,7 +1684,7 @@
           },
           "response": [
             {
-              "id": "f91fab17-060e-490e-85b2-19e661d03102",
+              "id": "8ce3898d-413f-4da0-8b76-1af2760323eb",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -2029,6 +1740,109 @@
           }
         }
       ]
+    },
+    {
+      "name": "candidate_search",
+      "item": [
+        {
+          "id": "43a326dc-9fb7-4cdc-b67e-b20cbebbdfa6",
+          "name": "get Candidate",
+          "request": {
+            "name": "get Candidate",
+            "description": {},
+            "url": {
+              "path": [
+                "api",
+                "candidate",
+                "search"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "*/*"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"card\": \"26MA-A-0504I\"\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            },
+            "auth": null
+          },
+          "response": [
+            {
+              "id": "e30e0e9a-ea06-4d32-911a-03d05701d9b9",
+              "name": "OK",
+              "originalRequest": {
+                "url": {
+                  "path": [
+                    "api",
+                    "candidate",
+                    "search"
+                  ],
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "query": [],
+                  "variable": []
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "*/*"
+                  }
+                ],
+                "method": "POST",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"card\": \"<string>\"\n}",
+                  "options": {
+                    "raw": {
+                      "headerFamily": "json",
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "*/*"
+                }
+              ],
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"email\": \"<string>\",\n    \"card\": \"<string>\",\n    \"randomId\": \"<string>\",\n    \"kind\": \"<string>\",\n    \"role\": \"<string>\",\n    \"department\": \"<string>\",\n    \"local\": \"<string>\",\n    \"school\": \"<string>\",\n    \"className\": \"<string>\",\n    \"name\": \"<string>\",\n    \"isReviewer\": \"<boolean>\"\n  }\n}",
+              "cookie": [],
+              "_postman_previewlanguage": "text"
+            }
+          ],
+          "event": [],
+          "protocolProfileBehavior": {
+            "disableBodyPruning": true
+          }
+        }
+      ]
     }
   ],
   "event": [],
@@ -2039,7 +1853,7 @@
     }
   ],
   "info": {
-    "_postman_id": "18618d43-8158-418f-aaa6-5980835078c5",
+    "_postman_id": "3deedd88-3c84-4900-91fd-b9a2de6ba0e3",
     "name": "OpenAPI definition-mutation",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "description": {

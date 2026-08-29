@@ -70,10 +70,13 @@ route_to_file_mapping:
   - app/services/exam_service.py
   POST_api_file_voice:
   - app/routers/file_router.py
+  - app/schemas/file.py
   GET_api_file_voice:
   - app/routers/file_router.py
+  - app/schemas/file.py
   GET_api_file_image:
   - app/routers/file_router.py
+  - app/schemas/file.py
   GET_api_general_language:
   - app/repositories/school_repository.py
   - app/routers/school_router.py
