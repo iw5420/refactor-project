@@ -6,15 +6,18 @@ import asyncio
 import logging
 import os
 from dotenv import load_dotenv
+
+load_dotenv()  # 必須在下面幾個 import 之前執行——graph.builder 匯入鏈
+                # 會連帶載入 refactor_harness/langgraph_nodes/test_nodes.py，
+                # 該檔案在 import 期間就讀取 os.environ["JAVA_BASE_URL"]。
+
 from common.logging_setup import configure_logging
 from common.run_context import new_run_id
+from common.run_report import write_human_readable_report, write_run_report
 from graph.builder import build_graph
 from graph.nodes import implement_node
 from graph.stream_watchdog import STUCK_REPORT_SECONDS, dump_self_stack, pump_graph_stream
 from python_service.reload_probe import ensure_reload_probe_infra
-
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,12 @@ async def main():
         "failed_modules": [],
         "blocked_reasons": {},
         "test_results": {},
+        "service_diagnostics": None,
+        "debug_rounds": [],
+        "pending_fixed_bodies": {},
+        "pending_file_fixes": [],
+        "give_up_early": False,
+        "unanalyzed_root_cause_modules": [],
         "retry_count": 0,
     }
 
@@ -99,6 +108,16 @@ async def main():
         print(f"Completed Tasks: {final_state.get('completed_tasks')}")
         print(f"Failed Tasks: {final_state.get('failed_tasks')}")
         print(f"Retry Count: {final_state.get('retry_count')}")
+
+        # 見 common/run_report.py：debug_rounds／task_failures 這些逐輪
+        # 累積的歷史，沒有 checkpointer 的情況下 process 一結束就會消失，
+        # 上面幾行 print 也沒有印出 debug_rounds——這裡落地成一份人工
+        # 事後看得到的制式報告，不論成功或 give_up 都寫。兩份各自獨立：
+        # JSON 給程式／未來工具解析，Markdown 是給人直接看的總覽。
+        report_path = write_run_report(final_state)
+        summary_path = write_human_readable_report(final_state)
+        print(f"Run Report (JSON): {report_path}")
+        print(f"Run Summary (Markdown): {summary_path}")
     finally:
         # Docker 容器不會隨 Python process 結束自動清理，不論
         # graph 執行成功或拋出例外都要收尾，見 09a 三章
