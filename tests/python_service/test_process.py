@@ -115,6 +115,129 @@ def test_start_builds_docker_run_command_with_add_host_and_rewritten_database_ur
     assert run_cmd[run_cmd.index("--name") + 1] == "test_container"
 
 
+def test_start_appends_extra_env_as_additional_e_flags(monkeypatch):
+    """對應 docs/09b_bug_trace.md #46：extra_env 逐一附加成 -e 旗標，
+    不影響既有 DATABASE_URL 那一筆。"""
+    calls = []
+
+    def _fake_run(cmd, capture_output, text):
+        calls.append(cmd)
+        return _FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr("python_service.process.subprocess.run", _fake_run)
+    monkeypatch.setattr(PythonServiceContainer, "_poll_until_ready", lambda self: True)
+
+    svc = PythonServiceContainer(
+        python_project_path="/srv/target",
+        base_url="http://127.0.0.1:18500",
+        database_url="postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM_TEST",
+        container_name="test_container",
+        extra_env={"LANGUAGE_CODE": "macuhau", "LANGUAGE_DISPLAY_NAME": "馬祖語"},
+    )
+    svc.start()
+
+    run_cmd = next(c for c in calls if c[:2] == ["docker", "run"])
+    assert "DATABASE_URL=postgresql://postgres:password@host.docker.internal:5432/MOC_MATSUEXAM_TEST" in run_cmd
+    assert "LANGUAGE_CODE=macuhau" in run_cmd
+    assert "LANGUAGE_DISPLAY_NAME=馬祖語" in run_cmd
+    # 每個 -e 旗標都要緊接在自己的值前面，不是隨便塞在指令某處。
+    assert run_cmd[run_cmd.index("LANGUAGE_CODE=macuhau") - 1] == "-e"
+    assert run_cmd[run_cmd.index("LANGUAGE_DISPLAY_NAME=馬祖語") - 1] == "-e"
+
+
+def test_start_without_extra_env_does_not_add_extra_e_flags(monkeypatch):
+    """extra_env 預設值（None）不該讓 docker run 指令多出任何東西——
+    既有沒有用到 @Value 的專案行為必須完全不變。"""
+    calls = []
+
+    def _fake_run(cmd, capture_output, text):
+        calls.append(cmd)
+        return _FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr("python_service.process.subprocess.run", _fake_run)
+    monkeypatch.setattr(PythonServiceContainer, "_poll_until_ready", lambda self: True)
+
+    svc = PythonServiceContainer(
+        python_project_path="/srv/target",
+        base_url="http://127.0.0.1:18500",
+        database_url="postgresql://postgres:password@127.0.0.1:5432/MOC_MATSUEXAM_TEST",
+        container_name="test_container",
+    )
+    svc.start()
+
+    run_cmd = next(c for c in calls if c[:2] == ["docker", "run"])
+    assert run_cmd.count("-e") == 1  # 只有 DATABASE_URL 這一筆
+
+
+def test_start_logs_the_pip_install_package_list(monkeypatch, caplog):
+    """對應 docs/09b_bug_trace.md #51：容器缺套件（python-multipart）
+    崩潰時完全沒有 log 線索能直接看出這次到底裝了哪些套件，事後只能靠
+    docker logs 反查——這裡把即將安裝的套件清單記下來，之後再缺套件，
+    第一時間就能從這行 log 核對。"""
+    monkeypatch.setattr(
+        "python_service.process.subprocess.run",
+        lambda cmd, capture_output, text: _FakeCompletedProcess(returncode=0),
+    )
+    monkeypatch.setattr(PythonServiceContainer, "_poll_until_ready", lambda self: True)
+
+    with caplog.at_level("INFO", logger="python_service.process"):
+        svc = PythonServiceContainer(
+            python_project_path="/srv/target",
+            base_url="http://127.0.0.1:18500",
+            database_url="postgresql://postgres:password@127.0.0.1:5432/db",
+        )
+        svc.start()
+
+    assert any("python-multipart" in r.message for r in caplog.records)
+    assert any("psycopg2-binary" in r.message for r in caplog.records)
+
+
+def test_start_logs_ready_confirmation_on_success(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "python_service.process.subprocess.run",
+        lambda cmd, capture_output, text: _FakeCompletedProcess(returncode=0),
+    )
+    monkeypatch.setattr(PythonServiceContainer, "_poll_until_ready", lambda self: True)
+
+    with caplog.at_level("INFO", logger="python_service.process"):
+        svc = PythonServiceContainer(
+            python_project_path="/srv/target",
+            base_url="http://127.0.0.1:18500",
+            database_url="postgresql://postgres:password@127.0.0.1:5432/db",
+            container_name="test_container",
+        )
+        svc.start()
+
+    assert any("就緒" in r.message and "test_container" in r.message for r in caplog.records)
+
+
+def test_start_logs_diagnostics_when_never_becomes_ready(monkeypatch, caplog):
+    """對應 docs/09b_bug_trace.md #51：容器啟動失敗時，docker logs 診斷
+    輸出要直接進 orchestrator.log，不用再手動 docker logs 反查。"""
+    monkeypatch.setattr(
+        "python_service.process.subprocess.run",
+        lambda cmd, capture_output, text: _FakeCompletedProcess(returncode=0),
+    )
+    monkeypatch.setattr(PythonServiceContainer, "_poll_until_ready", lambda self: False)
+    monkeypatch.setattr(
+        PythonServiceContainer, "diagnostics",
+        property(lambda self: "RuntimeError: Form data requires \"python-multipart\" to be installed"),
+    )
+    monkeypatch.setattr(PythonServiceContainer, "stop", lambda self: None)
+
+    svc = PythonServiceContainer(
+        python_project_path="/srv/target",
+        base_url="http://127.0.0.1:18500",
+        database_url="postgresql://postgres:password@127.0.0.1:5432/db",
+    )
+
+    with caplog.at_level("ERROR", logger="python_service.process"):
+        with pytest.raises(PythonServiceStartupTimeout):
+            svc.start()
+
+    assert any("python-multipart" in r.message for r in caplog.records)
+
+
 def test_start_raises_when_docker_run_fails(monkeypatch):
     def _fake_run(cmd, capture_output, text):
         if cmd[:2] == ["docker", "run"]:

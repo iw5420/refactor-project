@@ -43,7 +43,22 @@ RELOAD_PROBE_PATH = "/__reload_probe__"
 # **這是刻意簡化，不是完整的依賴管理方案**：若目標專案實際還需要更多
 # 套件（如 alembic、目標專案自己的其他第三方依賴），這裡還沒有機制能
 # 自動偵測、安裝——屬於尚未解決的缺口，見 09b 十章「已知限制」。
-BASELINE_PACKAGES = ("fastapi", "uvicorn[standard]", "sqlalchemy", "psycopg2-binary")
+#
+# `python-multipart` 提升為基線套件（不是「目標專案自己的依賴」那種
+# 未解決的一般缺口）：真實環境重跑才發現的硬性缺陷——任何一個 endpoint
+# 只要簽名帶 `File`／`Form`（multipart/form-data body，如這個專案的
+# `POST /api/file/voice`），FastAPI 在 **import 階段**（不是請求階段）
+# 就會呼叫 `ensure_multipart_is_installed()` 直接拋 `RuntimeError`，
+# 導致 `app.main` 整個 import 失敗，容器內的 uvicorn worker 完全起不來
+# ——不是這一個 endpoint 壞掉，是整個服務對所有請求都變成
+# service_unreachable，⑦ Debug Agent 拿到的 service_diagnostics 也無法
+# 修好它（根因在 Orchestrator 的容器基線設定，不在目標專案的原始碼，
+# ⑦ 只能改 python_project_path 底下的檔案）。這跟 FastAPI／SQLAlchemy／
+# psycopg2-binary 三者性質相同：只要目標技術棧用到檔案上傳這個 00 三章
+# 定案技術棧本身就支援的常見情境，這個套件就一定需要，不是專案特有的
+# 額外依賴，因此比照既有三者一併納入基線，不留給「目標專案依賴」那條
+# 尚未解決的一般缺口處理。見 docs/09b_bug_trace.md。
+BASELINE_PACKAGES = ("fastapi", "uvicorn[standard]", "sqlalchemy", "psycopg2-binary", "python-multipart")
 
 DOCKER_IMAGE = "python:3.12-slim"
 
@@ -84,6 +99,7 @@ class PythonServiceContainer:
         python_project_path: str,
         base_url: str,
         database_url: str,
+        extra_env: dict[str, str] | None = None,
         container_name: str = "refactor_python_service",
         startup_timeout: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
         poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
@@ -92,6 +108,13 @@ class PythonServiceContainer:
         self.python_project_path = str(Path(python_project_path).resolve())
         self.base_url = base_url.rstrip("/")
         self.database_url = database_url
+        # 對應 docs/09b_bug_trace.md #46：③ 決定「用環境變數」這個機制、
+        # 算出常數名稱（PythonStructure.config_env_vars），呼叫端
+        # （python_service/manager.py::ensure_started()）負責解析出實際
+        # 值（python_service/java_properties.py），這裡只負責機械把
+        # 已經解析好的 {常數名: 值} 對照表轉成額外的 -e 旗標，不在這一層
+        # 重新判斷「這個值該從哪裡來」。
+        self.extra_env = extra_env or {}
         self.container_name = container_name
         self.startup_timeout = startup_timeout
         self.poll_interval = poll_interval
@@ -108,6 +131,13 @@ class PythonServiceContainer:
         subprocess.run(["docker", "rm", "-f", self.container_name], capture_output=True, text=True)
 
         pip_install = " ".join(BASELINE_PACKAGES)
+        # 見 docs/09b_bug_trace.md #51：容器內缺少 python-multipart 曾經讓
+        # 任何帶 File／Form 的 endpoint 在 import 階段直接讓整個服務崩潰、
+        # 且完全沒有任何 log 線索能直接看出「這次容器到底裝了哪些套件」
+        # ——事後只能靠 docker logs 反查傳出的 RuntimeError 才追到根因。
+        # 這裡把即將安裝的完整套件清單記下來，之後若再缺套件，第一時間
+        # 從這行 log 就能核對，不用再重新 docker logs 一次。
+        logger.info("PythonServiceContainer 即將安裝的基線套件：%s", pip_install)
         cmd = [
             "docker", "run", "-d",
             "--name", self.container_name,
@@ -122,6 +152,14 @@ class PythonServiceContainer:
             "-w", "/srv",
             "-p", f"{self._port()}:8000",
             "-e", f"DATABASE_URL={self._container_database_url()}",
+        ]
+        # 見 docs/09b_bug_trace.md #46：③ 掃出的 @Value 屬性注入環境變數，
+        # 依 self.extra_env 逐一附加成 -e 旗標，順序固定依 dict 既有順序
+        # （Python 3.7+ dict 保序），不做額外排序——docker 對 -e 旗標的
+        # 順序沒有語意要求，這裡只求每次呼叫產出的指令穩定、方便比對測試。
+        for key, value in self.extra_env.items():
+            cmd += ["-e", f"{key}={value}"]
+        cmd += [
             DOCKER_IMAGE,
             "bash", "-c",
             f"pip install --quiet {pip_install} && "
@@ -134,12 +172,25 @@ class PythonServiceContainer:
         self._started = True
         if not self._poll_until_ready():
             diagnostics = self.diagnostics
+            # 見 docs/09b_bug_trace.md #51：容器啟動失敗時，把 docker logs
+            # 診斷輸出直接印出來（不只塞進例外物件的 diagnostics 屬性）
+            # ——之前這段資訊只有呼叫端主動讀 .diagnostics 或例外訊息才
+            # 看得到，真實重跑時得手動 docker logs 才找到根因，這裡讓它
+            # 在 orchestrator.log 就能直接看到，不用再手動查容器。
+            logger.error(
+                "PythonServiceContainer 在 %.0f 秒內未能就緒，容器診斷輸出：\n%s",
+                self.startup_timeout, diagnostics,
+            )
             self.stop()
             raise PythonServiceStartupTimeout(
                 f"Python 服務容器在 {self.startup_timeout} 秒內未能就緒"
                 f"（{self.base_url}{RELOAD_PROBE_PATH}）",
                 diagnostics=diagnostics,
             )
+        logger.info(
+            "PythonServiceContainer 就緒（container=%s, base_url=%s, extra_env keys=%s）",
+            self.container_name, self.base_url, sorted(self.extra_env),
+        )
 
     def _port(self) -> str:
         parsed = urlparse(self.base_url)

@@ -32,7 +32,7 @@
              ↓
 ⑥ 測試執行 Agent     → 【Harness 驗證端】對 Python 服務執行 Postman，比對 golden output
              ↓
-⑦ Debug Agent        → 讀取 Harness report，分析 diff，定位問題，回饋給 ⑤ 修復
+⑦ Debug Agent        → 讀取 Harness report，分析 diff，定位問題，直接寫出並套用修正後的程式碼（⑤ 的本地模型完全退出這個迴圈，見 10a）
              ↓
             ✅ 完成
 ```
@@ -52,7 +52,7 @@
 | ④ 骨架實作 Agent | 建立目錄與骨架（呼叫 translator-cli「骨架生成模式」），並從 Java entity 原始碼組出 `db_models` | `08a_scaffold_agent_architecture.md` / `08b_scaffold_agent_code.md` |
 | ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md` |
 | ⑥ 測試執行 Agent（Harness 驗證端） | 對 Python 服務執行 Postman，比對 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
-| ⑦ Debug Agent | 分析 diff、定位問題，回饋給 ⑤ | `10a_debug_agent_architecture.md` / `10b_debug_agent_code.md` |
+| ⑦ Debug Agent | 分析 diff、定位問題，直接寫出並套用修正後的程式碼（不回饋給 ⑤ 重新翻譯，⑤ 的本地模型完全退出這個迴圈） | `10a_debug_agent_architecture.md` / `10b_debug_agent_code.md` |
 
 ### 預計開發順序
 
@@ -142,7 +142,8 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 你的電腦（Orchestrator 所在機器）
 ├── LangGraph Orchestrator（輕量 Python 流程控制）
 ├── Claude API 呼叫（雲端，解析/設計/Debug Agent）
-├── Java／Python 服務（本機執行：[A] 啟動的 java -jar、日後 Python 服務同樣跑在這台機器）
+├── Java 服務（本機直接執行：[A] Spec Agent 啟動的 java -jar）
+├── Python 服務（Docker 容器內執行，非本機直接跑——見下方備註）
 └── translator-cli（Python 套件，in-process 呼叫，非獨立子行程——見 11a 六章「run_id：執行模型查證」對實際程式碼的核對）
       ├── 骨架生成模式（④）：純機械組裝，全程留在這台機器，不發出任何請求
       └── 填空模式（⑤）：HTTP（帶 Authorization: Bearer <token>）→ 另一台 Mac
@@ -152,6 +153,8 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 ```
 
 > 本地模型機器對外只曝露 nginx 的 port，ollama 自己的 port（預設 `11434`）不對外開放，只接受 nginx 轉發進來的請求；translator-cli 端的 `OLLAMA_BASE_URL` 因此指向的是 nginx，而不是 ollama 本身。這條連線只有填空模式會用到，骨架生成模式不涉及。
+>
+> **Python 服務改跑在 Docker 容器內，不是「日後同樣跑在這台機器」**：這是 09a／09b 落地 ⑤ 時才定案、比最初規劃更晚確定的環境依賴。原因是 `uvicorn --reload` 在 Windows 上經常無法真正完成重啟（Windows 的 `CTRL_C_EVENT` 送達機制不可靠，已用真實環境重現），⑤ 局部驗證依賴的熱重載同步屏障因此在 Windows 上不穩定；改成容器內的 Linux 環境後，uvicorn 走穩定的 POSIX `SIGTERM` 重啟路徑，不受這個限制影響。`python_service/process.py` 的 `PythonServiceContainer` 用 `docker run` 啟動，把 `python_project_path` bind mount 進容器（容器內固定路徑 `/srv`），由 `implement_node.run()` 在整條 graph run 第一次進入 `implement` 時啟動、`main.py` 收尾時統一關閉——不需要人工手動啟停。完整設計見 `09a_implement_agent_architecture.md` 三章「熱重載競態」、`09b_implement_agent_code.md`。
 
 ---
 
@@ -164,6 +167,7 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 - Node.js 環境，安裝 `openapi-to-postmanv2` 和 `newman`（全域安裝）
 - Claude API 金鑰，設定在環境變數
 - PostgreSQL client 工具（`psql`），用於 Harness 的 DB seed 操作
+- **Docker**（Docker Desktop 或等價的 Docker Engine）：⑤ 執行期間目標 Python 服務跑在 Docker 容器內，不是本機直接 `uvicorn`，見四章備註、下方「Python 服務端」、`09a_implement_agent_architecture.md` 三章
 
 **另一台 Mac（程式碼實作機器）**
 - ollama，已下載 `qwen2.5-coder:32b` 模型
@@ -189,6 +193,12 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 - 在 `pom.xml` 加入 `springdoc-openapi-ui 1.7.0` 依賴（**保留作為長期文件用途，不在產出 Collection 後移除**）——目前 Java 專案是 **Spring Boot 2.7.11**，springdoc-openapi v1.7.0 是最後一版支援 Spring Boot 2.x／1.x 的 OSS 版本；`springdoc-openapi-starter-webmvc-ui` 這個 artifact 是給 Spring Boot 3.x（Jakarta EE 9、Java 17+）用的，兩者不可互換，用錯會導致 `UnsupportedClassVersionError`（class file 版本不符）
 - 啟動方式：**直接 `java -jar` 執行已打包的 jar**，不需 Maven build（加入上述依賴後需先重新 `mvn package` 一次，之後才是單純 `java -jar`）
 - `fixtures/seed.sql`：**已完成**，手動撰寫的可重複套用 INSERT 腳本（非 `pg_dump` 匯出格式），供 Harness 每次驗證前 truncate + 重灌用
+
+**Python 服務端（一次性準備，Docker 容器）**
+- 不需要人工手動啟動 Python 服務——`python_service/process.py`（`PythonServiceContainer`）由 `implement_node.run()` 在整條 graph run 第一次進入 `implement` 時自動 `docker run` 啟動，`main.py` 收尾時統一關閉，見四章備註、`09a_implement_agent_architecture.md` 三章
+- `python_project_path` 底下需要先完成一次性準備，且必須排在 `generate_scaffold()`（④）第一次執行之前：新增 `.gitignore`（至少含 `_reload_probe_wrapper.py`／`_reload_token.py` 兩個檔名）並 `commit` 一次，再放入 `_reload_probe_wrapper.py`（固定樣板，掛載真正的 `app.main.app` 並額外提供 `/__reload_probe__` 熱重載同步探測端點，不需要人工編寫內容）——順序顛倒會讓 translator-cli 的 precondition 檢查（`git status --porcelain` 非空即拒絕寫入）在骨架階段就直接失敗；完整機制見 09a 三章「熱重載競態」「這兩個檔案必須排除在衝突偵測之外」
+- 容器內只安裝已知的最小基線套件集合（`fastapi`／`uvicorn[standard]`／`sqlalchemy`／`psycopg2-binary`，見 `python_service/process.py::BASELINE_PACKAGES`）——**目前仍是待解決缺口**：若目標專案實際還需要更多依賴（如 `alembic`），還沒有機制能自動偵測、安裝進容器，見 `09b_implement_agent_code.md` 九章
+- 容器啟動指令固定 `uvicorn _reload_probe_wrapper:wrapper_app --reload`，不是直接 `uvicorn app.main:app --reload`——見上一項的 wrapper 檔案
 
 **測試 DB 準備（獨立於正式/開發 DB）**
 
@@ -226,6 +236,8 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 [P] Plan Agent 產出 task list 時，必須將每個 task 切到**單一函式**的粒度（不保留「或類別」的模糊選項），讓 Agent ⑤ 每次呼叫 translator-cli 時只需傳入少量相關檔案，且輸出契約與 translator-cli 的「填空式」設計（模型只回傳單一函式本體）完全對齊。絕不能把整個專案目錄丟進去，否則 context 爆炸會導致實作品質下降。
 
 例如實作 `UserRepository.get_by_id()` 時，只需傳入 `user_repository.py` 和 `user.py` 兩個檔案，不需要傳入整個 `src/` 目錄。
+
+**「傳入哪些檔案」不等於「檔案內容整份帶入」**：真實環境端對端測試量化證實，即使已經照上述原則把 task 切到單一函式、只傳入少量相關檔案，若這些檔案本身塞滿其他無關的姊妹函式／方法，一樣會讓 context 暴增到本地模型無法穩定處理的量級（`09b_bug_trace.md` #37）。修正方案（`referenced_interfaces` 函式層級抽取，只帶被引用到的那個函式，不是整份檔案）見 `06a_plan_agent_architecture.md` 七章。
 
 ### Claude API 端的大範圍語意判斷：map-reduce 模式
 
@@ -408,7 +420,7 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 ### ⑦ Debug Agent（Claude API）
 
 - **輸入**：fail 清單 + diff 報告 + 對應 Python 原始碼（`related_files`）
-- 分析根本原因，輸出具體修正指令回饋給 Agent ⑤
+- 分析根本原因，**直接寫出並套用修正後的程式碼**（`fixed_body`／`file_fixes`），不是輸出指令交給 Agent ⑤ 重新翻譯——⑤ 的本地模型完全退出這個除錯迴圈，即使是「⑤ 本地模型完全翻譯失敗」的函式，也由 ⑦ 直接從業務描述寫出完整實作，不會被排回本地模型重試（見 `10a_debug_agent_architecture.md` 四章「一旦失敗過一次，不再退回本地模型」）。這是真實環境重跑才發現、且曾在較早的討論裡確認過、卻沒有被準確寫進本文件的既有決策——2026-08-27 之前本文件一直沿用「回饋給 ⑤」這種措辭，容易誤導成「⑤ 根據 ⑦ 的建議重新翻譯」，跟 10a 的實際設計不一致
 
 ---
 
@@ -479,6 +491,57 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 | `10b_debug_agent_code.md` | ⑦ Debug Agent 的實際程式碼實作 |
 | `11a_logging_architecture.md` | 全域 log 機制詳細設計：一般執行 log、Claude API／本地 Ollama 呼叫的 prompt/response 記錄、run_id／trace_id 等識別碼設計、`llm_traces.db` 查詢層（`llmlog` CLI 與 ⑦ Debug Agent 共用） |
 | `11b_logging_code.md` | 全域 log 機制的實際程式碼實作，含 `llmlog` CLI |
+
+---
+
+## 十二、局部真實測試 vs 完整真實測試
+
+2026-08-28 新增：先前每次要驗證一批修正（不論是 Orchestrator 自己的程式碼，還是直接修正目標專案已生成的檔案）是否真的生效，唯一的辦法是重新跑一次「完整真實測試」——`python main.py`，從 ① 解析一路跑到 ⑦ debug 迴圈，實測耗時約 2.5 小時（絕大多數時間花在 ⑤ 呼叫 Ollama 翻譯全部 task）。這個成本讓「改一行、等 2.5 小時才知道有沒有效」的回饋循環太慢，因此新增一個更快的驗證手段。
+
+### 兩種模式的定位
+
+| | 完整真實測試 | 局部真實測試 |
+|---|---|---|
+| 進入點 | `python main.py` | `python partial_verify.py` |
+| 涵蓋範圍 | ①～⑦ 全部 Agent，`postman/collection_readonly.json`／`collection_mutation.json` 全量 endpoint | 只有 ⑥（Harness 驗證），跳過 ①～⑤／⑦；只驗證從完整 collection 動態挑出的子集（`--list`／`--items`／`--batch`／`--collection`，見下方「怎麼挑案例」） |
+| 驗證的是什麼 | 整條 pipeline（含這次 ⑤／⑦ 的生成／修正品質）是否正確 | `python_project_path` 底下**目前已經存在**的程式碼，對「挑選出來的這幾個 case」是否正確——不驗證程式碼是怎麼來的 |
+| 耗時 | 約 2.5 小時（真實量測） | 約 1～2 分鐘（容器啟動 + 少量 golden 比對） |
+| 能不能驗證 Orchestrator 自己的修正（如 #52／#54 這類排程器／`test_nodes.py` 層級的修正） | 能——這些修正只在**重新生成／重新跑一輪 debug 迴圈**時才會被真正執行到 | **不能**——這類修正只有在重新跑 ①～⑤／⑦ 時才會被觸發，局部真實測試完全跳過這幾步，程式碼是舊的就是舊的 |
+| 能不能驗證直接手動修正目標專案檔案（如 #53／#55 這類） | 能，但要等整條 pipeline 跑完 | 能，而且快——這正是它存在的目的 |
+
+**結論：局部真實測試只能用來快速確認「這幾個已經手動修正／已經生成的檔案，這次是不是真的對了」，不能取代完整真實測試對整條 pipeline（尤其是 ⑤／⑦ 生成品質、排程器行為）的驗證。** 兩者互補：局部真實測試用來快速迭代「改檔案 → 驗證 → 改檔案」這個小循環，完整真實測試才是最終確認整條 pipeline 沒問題的權威手段。
+
+### 局部真實測試的運作方式
+
+`partial_verify.py`（repo 根目錄，跟 `main.py`同一層）：
+1. 呼叫 `python_service.manager.ensure_started()` 啟動 Python 服務容器——跟完整真實測試共用同一套容器基礎設施（`python_service/process.py`），差別是這裡**不傳 `java_project_path`／`config_env_vars`**，容器啟動時不會有 ③ 產出的 `@Value` 注入資料（見 09b_bug_trace.md #46）。**如果挑選的 case 依賴某個 `@Value` 設定值，這裡驗證不到，這種 case 不適合放進局部測試的 partial collection**（真實案例：`school_router.py::language()` 依賴 `LANGUAGE_CODE`／`LANGUAGE_DISPLAY_NAME` 環境變數，第一次挑錯就踩到這個限制，後來換成不依賴 `@Value` 的 `locals()`）
+2. `DbEnvironment.apply_seed()` 清空並重新灌入測試資料——跟完整真實測試同一份 `fixtures/seed.sql`
+3. `GoldenVerifier.verify_raw()` 對挑選出來的子集跑（不含 mutation，這是刻意簡化，讓「先確認服務起得來、簡單案例過不過」這件事盡量快，不驗證需要真正寫入資料的 mutation case）——子集怎麼挑，見下方「怎麼挑案例」
+4. `HarnessReporter().build_report()` 輸出跟完整真實測試同一種格式的 summary／failures，印在終端機（不落地成檔案，這點跟完整真實測試的 `logs/report_{run_id}.json` 不同——局部真實測試是互動式快速檢查，不是要留存的正式紀錄）
+5. `finally` 區塊確保容器一定會關閉，跟 `main.py` 既有的清理邏輯同構
+
+### 怎麼挑案例：`--list`／`--items`／`--batch`
+
+`postman/collection_readonly_full_backup.json` 是 `collection_readonly.json` 的完整備份（2026-08-28 建立，動 partial collection 之前的安全副本）——`collection_readonly.json`／`collection_mutation.json` 本身維持原樣，完整真實測試不受影響，`partial_verify.py` 的所有選案例模式都是從這份完整 collection 動態挑選，不需要另外維護一份固定的 partial 檔案。
+
+```bash
+python partial_verify.py --list          # 列出完整 collection 全部 case 的編號與名稱，不執行驗證
+python partial_verify.py --items 1,2     # 用編號挑子集，這次測 1、2
+python partial_verify.py --items locals,language   # 也可以用名稱，逗號分隔、可跟編號混用
+python partial_verify.py --batch 1/5     # 依原始順序切成 5 等分，跑第 1 份；測完抓到 bug 就去修，
+                                          # 修完再跑 --batch 2/5，依序把 TOTAL 份都跑過一輪
+python partial_verify.py --collection postman/my_custom.json   # 直接指定一份現成的 collection 檔案
+python partial_verify.py                 # 不帶任何旗標，退回 postman/collection_readonly_partial.json
+                                          # （目前內容是 locals／test Exception 兩個 case，當作預設快速檢查用）
+```
+
+`--items`／`--batch` 底層都是讀 `postman/collection_readonly.json`、用 `_flatten_items()` 攤平資料夾巢狀結構後依編號/名稱/切分挑出子集，寫成一份暫存 collection 檔案（`postman/partial_verify_*.json`）跑完即刪除，不會留下垃圾檔案，也不會動到 `collection_readonly.json` 本身。
+
+挑選案例時要注意：
+
+- **case 必須在 `fixtures/golden/{module}/` 已經有對應的 golden 檔案，否則會被判定 `golden_not_found` 失敗**（`GoldenVerifier` 靠 `case_id` 比對 golden）——唯一的例外是 Recorder 錄製當下就因為回應不是 JSON 而主動跳過、記進 `_skipped_case_ids` 的 case（見 02a 既有的 `excluded_cases` 機制），這種會被靜默排除、不計入 `total`，不是驗證工具的 bug（真實案例：`get Version` 這個 case 屬於這種情況）
+- **避免依賴 `@Value` 注入的 case**（見上方限制）——挑 DB 查詢或純邏輯運算的 case，不要挑讀 `os.getenv()` 的（真實案例：`school_router.py::language()` 依賴 `LANGUAGE_CODE`／`LANGUAGE_DISPLAY_NAME` 環境變數，第一次挑錯就踩到這個限制，後來換成不依賴 `@Value` 的 `locals()`）
+- `make_case_id()` 的規則是 `{item_name}_{method}_{path}`，只依賴 collection item 本身的欄位，挑出來的子集不需要保留原本的資料夾巢狀結構（`GoldenVerifier`／newman 都是攤平處理 item，不看 folder 階層）
 
 ---
 
