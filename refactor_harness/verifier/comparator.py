@@ -10,14 +10,20 @@ from refactor_harness.core.route_mapper import RouteMapper
 
 class GoldenVerifier:
     def __init__(self, python_base_url: str, golden_dir: str,
-                 config_path: str = "config/harness.yaml"):
+                 config_path: str = "config/harness.yaml",
+                 route_to_module_mapping: dict[str, str] | None = None):
+        """route_to_module_mapping：對應 docs/09b_bug_trace.md #64，留
+        None 才 fallback 讀 harness.yaml 當下版本，見 RouteMapper.__init__
+        docstring；呼叫端有 state 可用時應該直接傳 `design_agent.
+        route_mapping.build_route_to_module_mapping(state["api_to_python_target"])`。
+        """
         self.python_base_url = python_base_url
         self.golden_dir = Path(golden_dir)
         self.masker = ResponseMasker()
         self.diff_engine = DiffEngine()
         self.reporter = HarnessReporter()
         # route 解析用共用的 RouteMapper，與 MutationVerifier 共用同一套邏輯
-        self.route_mapper = RouteMapper(config_path)
+        self.route_mapper = RouteMapper(config_path, module_mapping_override=route_to_module_mapping)
         # Recorder 錄製時主動判定為非 JSON（如 text/plain 的 /version 端點）
         # 而跳過、從未寫入 golden 的 case_id 清單——見 _load_skipped_case_ids()。
         self._skipped_case_ids = self._load_skipped_case_ids()

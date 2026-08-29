@@ -114,9 +114,13 @@ class MethodEntry:
 
 @dataclass
 class ClassInfo:
-    """單一 Java class（僅限具體類別，interface 不建立這個結構——interface
-    沒有欄位/方法本體可摘要，也不是呼叫圖的節點來源，見 call_graph.py）
-    的解析結果，三章掃描階段的基礎單位。
+    """單一 Java 頂層宣告（class／interface／enum）的解析結果，三章掃描
+    階段的基礎單位——interface（`_extract_interfaces()`）、enum（見
+    `is_enum`、`_extract_enums()`，十三章）也各自建立這個結構，只是
+    `fields`／`methods` 多半是空的或不完整（沒有欄位/方法本體可摘要），
+    主要是為了讓它們能被 import 依賴閉包（四章
+    `controller_dependency_closure()`）看到、正確收進
+    `module_list.java_files`。
     """
 
     file_path: str
@@ -124,7 +128,9 @@ class ClassInfo:
     stereotype: str | None  # "RestController"/"Controller"/"Service"/"Component"/"Repository"/None
     bean_name_override: str | None  # 如 @Service("userService") 的字面 value；沒有明確指定時為 None
     implements: list[str] = field(default_factory=list)  # interface 簡單名稱清單
+    extends: str | None = None  # 父類別簡單名稱（Java 單一繼承，只有一個），沒有 extends 時為 None——見四章 _direct_deps() 對這個欄位的依賴邊處理，十四章
     is_primary: bool = False  # 是否標註 @Primary
+    is_enum: bool = False  # 是否來自 _extract_enums()。純標記，不驅動任何分支邏輯——enum 的 methods 恆為空清單，四章 needs_llm_summary() 既有規則 2 已自然覆蓋「不需要送 Map」，見十三章
     fields: list[FieldInfo] = field(default_factory=list)
     methods: list[MethodEntry] = field(default_factory=list)
     request_mapping_base: list[str] = field(default_factory=list)  # class 上 @RequestMapping 的 base path（可能多個），未標註為空清單
@@ -251,7 +257,11 @@ def parse_java_project(java_project_path: str) -> ParsedProject:
         # _uses_dynamic_query_signal() docstring），跟 file_imports 一樣
         # 整份檔案共用，供 grouping.py 判斷是否需要送 Map 摘要用。
         file_uses_dynamic_query_signal = _uses_dynamic_query_signal(tree)
-        for class_info in [*_extract_classes(tree, rel_path), *_extract_interfaces(tree, rel_path)]:
+        for class_info in [
+            *_extract_classes(tree, rel_path),
+            *_extract_interfaces(tree, rel_path),
+            *_extract_enums(tree, rel_path),  # 見十三章
+        ]:
             class_info.imports = file_imports
             class_info.uses_dynamic_query_signal = file_uses_dynamic_query_signal
             if class_info.class_name in classes:
@@ -354,6 +364,13 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
     的 summary，可能污染 Reduce 階段的模組拆分判斷。
     改用 `tree.types` 只列出頂層型別宣告，天生排除這個風險；代價見十一章
     「已知限制」。
+
+    **`extends`**：只取父類別簡單名稱（Java 單一繼承，`class_decl.extends`
+    是單一 `ReferenceType` 或 `None`，不是清單，跟 `implements` 不同）。
+    沒有這個欄位，`grouping.py::_direct_deps()` 完全沒有管道知道「這個
+    class 繼承了哪個父類別」，同套件內的 `extends`（Java 語言特性上不需要
+    import）因此連候選依賴邊都不存在，不是「解析不到」，是從一開始就沒被
+    問過——對應十四章 `extends` 依賴邊。
     """
     result: list[ClassInfo] = []
     for class_decl in tree.types:
@@ -389,6 +406,7 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
                 stereotype=stereotype,
                 bean_name_override=bean_name_override,
                 implements=[t.name for t in (class_decl.implements or [])],
+                extends=class_decl.extends.name if class_decl.extends is not None else None,
                 is_primary=is_primary,
                 fields=_extract_fields(class_decl),
                 methods=[
@@ -428,9 +446,7 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
     識別，不會被 `build_interface_implementors()` 收錄），只有查不到任何
     候選實作時才退回 `classes.get(type_name)`，這裡建的條目才會被用到，
     等同「拿 interface 自己的宣告當它唯一已知的代表」——不完美（看不到
-    Spring 動態產生的實際邏輯），但比「完全無法解析」更接近事實。已用
-    合成範例驗證：interface 有 `@Service` 實作時，欄位解析仍正確指向
-    具體實作類別，不會被 interface 自身的條目干擾。
+    Spring 動態產生的實際邏輯），但比「完全無法解析」更接近事實。
 
     `implements=[]`：interface 用 `extends` 表達繼承，不是 `implements`，
     這裡不解析 `extends` 鏈——`JpaRepository` 是外部函式庫型別，解析了也
@@ -468,6 +484,54 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
                     )
                     for m in decl.methods
                 ],
+                request_mapping_base=[],
+                routes=[],
+                annotations=[a.name for a in decl.annotations],
+            )
+        )
+    return result
+
+
+def _extract_enums(tree: javalang.tree.CompilationUnit, rel_path: str) -> list[ClassInfo]:
+    """把獨立宣告的 Java `enum`（`EnumDeclaration`）也建成 `ClassInfo`，
+    理由跟 `_extract_interfaces()` 完全對稱：沒有這個函式，enum 永遠不會
+    出現在 `project.classes`，`controller_dependency_closure()` 的 import
+    依賴邊（見 `_extract_project_imports()`）就算掃到某個檔案明確 import
+    了這個 enum，也找不到對應節點可以連——這個 enum 因此永遠無法透過既有
+    機制被任何 module 收進 `module_list.java_files`（見十三章）。
+
+    `implements`：Java enum 可以 `implements` interface（`enum
+    CommonErrorCode implements ErrorCode`），這裡如實記錄——一旦這個 enum
+    進了 `project.classes`，既有的 `build_interface_implementors()`
+    完全不用改，就能自動反查出「這個 interface 被哪些 enum 實作」。
+
+    **刻意不解析 enum 成員（`decl.body.constants`）或建構子參數**：那是
+    ④ scaffold_agent 自己要做的事（見 `08a_scaffold_agent_architecture.md`
+    四章「同時掃描 EnumDeclaration」），這裡只需要讓這個檔案「被看見」，
+    不需要重複④已經要做的完整解析。`fields=[]`：enum 沒有 instance field
+    可供依賴解析用（成員本身不是 field 宣告）。`methods=[]`：延續①
+    「不解析 enum 方法本體」的範圍界線——`is_enum` 因此固定為 `True`、
+    `methods` 恆為空，純供下游診斷用，不驅動任何分支：`grouping.py::
+    needs_llm_summary()` 既有規則 2（`not has_implementor and all(not
+    m.has_body ...)`，空清單天生滿足 `all()`）本來就會判定這種 enum
+    不需要送 Map，不需要另外新增判斷分支。`routes=[]`：enum 不會是
+    Controller。
+    """
+    result: list[ClassInfo] = []
+    for decl in tree.types:
+        if not isinstance(decl, javalang.tree.EnumDeclaration):
+            continue
+        result.append(
+            ClassInfo(
+                file_path=rel_path,
+                class_name=decl.name,
+                stereotype=None,
+                bean_name_override=None,
+                implements=[i.name for i in (decl.implements or [])],
+                is_primary=False,
+                is_enum=True,
+                fields=[],
+                methods=[],
                 request_mapping_base=[],
                 routes=[],
                 annotations=[a.name for a in decl.annotations],
@@ -737,7 +801,7 @@ def resolve_field_target_classes(
 
 javalang 對「純欄位存取的鏈（沒有被方法呼叫打斷）」常會把它折成一個點號字串塞進 `qualifier`（如 `xxxService`、`this.xxxService`）；若這段鏈後面還接著一次欄位存取才呼叫方法（如 `a.b.c()`），折疊只到「呼叫前的最後一步」為止——`MethodInvocation` 的 `qualifier="a.b"`、`member="c"`；若是 `a.b.c.method()` 這種「存取到 c 之後還要再存取一層才呼叫」，則是 `MemberReference` 的 `qualifier="a.b"`、`member="c"`，`method()` 才是掛在它 `.selectors` 上的下一步。不是每一段都拆成獨立節點；只有鏈中真的出現方法呼叫，才會從那個呼叫點開始展開成巢狀的 `.selectors`。因此解析邏輯分兩層：`_resolve_qualifier_string()` 逐段解析 qualifier 字串本身，`_continue_chain()` 接續解析 `.selectors` 裡巢狀掛著的後續呼叫。
 
-> **未驗證假設**：javalang 是否真的一律用「qualifier 字串折疊」表示純欄位存取鏈、只在遇到方法呼叫時才展開 `.selectors`，以及 `this.x.y()` 的 `this` 是否一定會出現在 qualifier 字串最前面，都還沒有真實 Java 專案跑過驗證，是本節演算法目前最大的不確定性，見十一章。
+> **驗證狀態**：單一層欄位呼叫（如 `answerRepository.findByX()`）已用真實專案驗證無誤。唯一仍未驗證的是多段純欄位鏈折疊成單一 qualifier 字串的假設——`this.serviceA.serviceB.doSomething()` 這種寫法，`_resolve_qualifier_string()` 預期 javalang 會把 qualifier 解析成 `"this.serviceA.serviceB"`，但目前接過的真實專案都沒有這種寫法，尚未實際驗證過。細節與核對方式見十一章。
 
 ```python
 # parse_agent/call_graph.py（續）
@@ -1277,6 +1341,14 @@ def controller_dependency_closure(project: ParsedProject) -> dict[str, set[str]]
         for imported_name in class_info.imports:
             if imported_name != class_info.class_name and imported_name in project.classes:
                 deps.add(imported_name)
+        # 補上 extends 這條依賴邊（見三章 _extract_classes() docstring
+        # 「extends」段、十四章）：Java 單一繼承沒有 DI 那種「多個實作選
+        # 一個」的歧義，跟 import 邊同一種確定性——甚至更確定。這條邊解決
+        # 的是父類別（尤其 @MappedSuperclass 這種共用基底類別）常常跟
+        # 子類別同一個套件、從未被任何檔案明確 import，只有 extends 這
+        # 一條資訊能發現它的情況（如 BaseEntity）。
+        if class_info.extends is not None and class_info.extends in project.classes:
+            deps.add(class_info.extends)
         return deps
 
     def _closure(start_name: str) -> set[str]:
@@ -1302,6 +1374,45 @@ def controller_dependency_closure(project: ParsedProject) -> dict[str, set[str]]
             continue
         result[class_info.class_name] = _closure(class_info.class_name)
     return result
+
+
+# Spring 全域生效、靠 component-scan 自動掃描的例外處理類別 annotation
+# ——不被任何 Controller 用欄位注入，結構上永遠進不了
+# controller_dependency_closure() 的 BFS 閉包（該函式只從
+# RestController/Controller 出發、沿欄位型別依賴展開），需要獨立於 BFS
+# 之外的第二收集路徑，見 collect_global_advice_classes()、十二章。
+_GLOBAL_ADVICE_ANNOTATIONS = frozenset({"RestControllerAdvice", "ControllerAdvice"})
+
+
+def collect_global_advice_classes(project: ParsedProject) -> set[str]:
+    """完全獨立於 `controller_dependency_closure()` 的第二收集路徑：直接
+    掃 `project.classes` 比對 `@RestControllerAdvice`／`@ControllerAdvice`
+    這兩個 annotation，不透過 BFS（這批類別不是任何 Controller 的欄位
+    依賴，永遠不會是 BFS 能走到的節點）。回傳偵測到的 class 名稱集合，
+    供 `summarize.run_map_reduce()` 送 Map 摘要、機械組成一筆保留模組
+    （不經過 Reduce 的模組歸屬 LLM 判斷，見七章）。
+    """
+    return {
+        class_info.class_name
+        for class_info in project.classes.values()
+        if set(class_info.annotations) & _GLOBAL_ADVICE_ANNOTATIONS
+    }
+
+
+def build_global_advice_units(project: ParsedProject, global_advice_class_names: set[str]) -> list[MapUnit]:
+    """比照 `build_shared_class_units()` 的批次切法（同一份字元預算切批
+    邏輯），供 `collect_global_advice_classes()` 找到的類別送 Map 摘要
+    用——這批類別數量通常很小（常見情況是單一 `GlobalExceptionHandler`），
+    但仍套用同一個安全網，不假設它一定小。
+    """
+    classes = [project.classes[name] for name in sorted(global_advice_class_names) if name in project.classes]
+    chunks = chunk_by_char_budget(
+        classes, size_of=lambda c: _class_source_chars(project.project_root, c), budget=_MAX_CHARS_PER_MAP_CHUNK
+    )
+    return [
+        MapUnit(label=f"4c:global_advice_batch_{i + 1}", classes=chunk, project_root=project.project_root)
+        for i, chunk in enumerate(chunks)
+    ]
 
 
 def find_shared_classes(controller_deps: dict[str, set[str]]) -> set[str]:
@@ -1748,8 +1859,10 @@ from parse_agent.grouping import (
     _ACCESSOR_METHOD_RE,
     MapUnit,
     build_controller_units,
+    build_global_advice_units,
     build_shared_class_units,
     classify_trivial_classes,
+    collect_global_advice_classes,
     controller_dependency_closure,
     find_shared_classes,
 )
@@ -2103,6 +2216,25 @@ def _assemble_module_drafts(
     另外也驗證 `depends_on`（見本函式最後一段）：比照 `missing_classes`
     對 `java_classes` 的處理方式，過濾掉引用不存在 module 名稱的項目並
     記警告，不讓虛構的依賴關係原樣流入最終輸出。
+
+    **`class_to_module` 同時充當「這個 class 有沒有被更早的 module_entry
+    領走」的機械防線**（`docs/09b_bug_trace.md` #50，真實案例：Reduce
+    把 `FileController` 同時分進 `file` 與 `exam` 兩個 `module_entry`，
+    導致 `voice`／`voice_2`／`image`／`image_2` 的方法在兩個 module 的
+    `java_files`／`methods` 裡各出現一次，③依此機械產生出重複、甚至路由
+    衝突的 `exam_router.py`）——`REDUCE_SYSTEM_PROMPT`（見四章）明文要求
+    「一個 class 只屬於一個 module，即使被多個 Controller 共用」，但這
+    只是文字指令；`build_reduce_output_schema()` 的 `enum` 約束只限制
+    `java_classes` 的每個元素必須是合法 class 名稱，管不到「同一個合法
+    class 出現在兩個不同 `module_entry`」——這正是 04a 四章 `enum`
+    約束那段論證本身承認的局限：文字指令能降低但不能歸零模型犯錯的
+    機率，凡是能用程式判斷的就不該只靠 prompt（00 二章）。跟
+    `missing_classes`／`unassigned`／`invalid_deps` 同一種「機械擋、不
+    重問 LLM」精神：`class_to_module` 走訪 `reduce_result["modules"]`
+    的順序天然等於 LLM 輸出的順序，第一個宣告某個 class 的 module_entry
+    先寫入 `class_to_module`；後面任何 module_entry 若再次宣告同一個
+    class，視為重複宣告，記警告並整筆捨棄（不併入 `usable_classes`／
+    `draft_methods`），只保留第一次的歸屬。
     """
     # class_name -> Map 階段對這個 class 的摘要結果（含 methods），供機械合併用
     class_to_map_result: dict[str, MapClassResult] = {r.class_name: r for r in map_results}
@@ -2137,6 +2269,19 @@ def _assemble_module_drafts(
                     "（模型可能虛構），已略過: %s",
                     module_entry["module"],
                     cls,
+                )
+                continue
+            if cls in class_to_module:
+                # 見本函式 docstring「class_to_module 同時充當…機械防線」
+                # （09b_bug_trace.md #50）：先到先得，只採用第一個宣告
+                # 這個 class 的 module_entry，捨棄後面的重複宣告。
+                logger.warning(
+                    "Reduce 把 class %s 重複分進了兩個 module（先前已分進 %s，"
+                    "這次又出現在 %s，模型分類重複，已略過這次重複宣告，"
+                    "只保留第一次的歸屬）",
+                    cls,
+                    class_to_module[cls],
+                    module_entry["module"],
                 )
                 continue
             usable_classes.append(cls)
@@ -2193,6 +2338,48 @@ def _assemble_module_drafts(
             d.depends_on = [dep for dep in d.depends_on if dep in valid_module_names]
 
     return drafts, class_to_module
+
+
+# 保留模組名稱，承接 collect_global_advice_classes() 找到的全域例外
+# 處理類別（見十二章）。前綴底線避免跟 Reduce 產出的業務模組名稱
+# （一律是 Java package／業務語意衍生的一般 snake_case 字串）撞名。
+_GLOBAL_MODULE_NAME = "_global"
+
+
+def _assemble_global_advice_draft(map_results: list[MapClassResult], project: ParsedProject) -> _ModuleDraft:
+    """機械組成一筆 `_GLOBAL_MODULE_NAME` 保留模組，承接
+    `collect_global_advice_classes()` 找到的類別的 Map 摘要結果。**不
+    經過 Reduce 的模組歸屬 LLM 判斷**——這批類別的模組歸屬是確定性的
+    （它們本來就不屬於任何業務模組），不需要再問一次 LLM，呼應 00 二章
+    「能用程式判斷的，就不要交給 LLM」。`depends_on` 固定為空：全域例外
+    處理不依賴任何業務模組完成才能開始實作，也不該讓排程器誤判成有
+    依賴關係卡住它。
+
+    組裝邏輯比照 `_assemble_module_drafts()` 內層迴圈把 `MapClassResult`
+    轉成 `_DraftMethod` 的做法，這裡是完全獨立的呼叫端（單一固定模組、
+    不需要 Reduce 決定的 class 分組），不共用該函式的迴圈本身。
+    """
+    draft_methods = [
+        _DraftMethod(
+            class_name=r.class_name,
+            file_path=project.classes[r.class_name].file_path,
+            method=MethodInfo(
+                java_method=m.method_name,
+                class_name=r.class_name,
+                description=m.description,
+                complexity=m.complexity,  # type: ignore[typeddict-item]
+            ),
+        )
+        for r in map_results
+        for m in r.methods
+    ]
+    return _ModuleDraft(
+        module=_GLOBAL_MODULE_NAME,
+        summary="；".join(f"{r.class_name}：{r.summary}" for r in map_results),
+        java_files=sorted({project.classes[r.class_name].file_path for r in map_results}),
+        depends_on=[],
+        methods=draft_methods,
+    )
 
 
 def filter_excluded_methods(drafts: list[_ModuleDraft], excluded: set[MethodId]) -> list[_ModuleDraft]:
@@ -2309,6 +2496,8 @@ def finalize_module_list(drafts: list[_ModuleDraft]) -> list[ModuleInfo]:
 ### 7.4 對外入口：`run_map_reduce()`
 
 `trivial_class_names`（`grouping.classify_trivial_classes()`，見四章）判定不需要送 Map 的類別，從 4a／4b 實際送出的批次裡剔除，省下對應的 API 呼叫；但這些類別若真的被某個 Controller 依賴到，仍要透過 `_mechanical_summary()` 補一份機械摘要，混進 Map 結果一起送進 Reduce——不這樣做的話，這些類別連 Reduce 都看不到，`module_list.java_files` 又會漏掉它們，等於把四章一開始想解決的完整性問題重新引入。
+
+**4c：全域生效類別（`@RestControllerAdvice`／`@ControllerAdvice`）獨立於 4a／4b／Reduce 之外處理**（見十二章）——`collect_global_advice_classes()` 找到的類別不在任何 Controller 的依賴閉包裡，不會被 4a／4b 任何一批次涵蓋，也刻意不送進 Reduce（`_assemble_global_advice_draft()` 機械組成一筆保留模組，模組歸屬是確定性的，不需要 LLM 判斷）。方法摘要仍呼叫 Claude API（沿用同一套重試機制），只是產出後直接機械組裝、附加進 Reduce 產出的 drafts。
 
 ```python
 # parse_agent/summarize.py（續）
@@ -2430,7 +2619,8 @@ def _mechanical_summary(class_info: ClassInfo) -> MapClassResult:
 
 def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str, str]]:
     """對應 04a 四章全節：串接分組（grouping.py）、4a→4b 兩階段 Map（見
-    「4a 在 4b 之前完成」）、Reduce、輸出組裝。回傳排除 skip 呼叫鏈之前
+    「4a 在 4b 之前完成」）、Reduce、輸出組裝，收尾再附加 4c 全域 advice
+    保留模組（見上方「4c」說明、十二章）。回傳排除 skip 呼叫鏈之前
     的 `(module_drafts, class_to_module)`——skip 排除交給呼叫端（見
     `parse_agent/__init__.py`）在這之後才做，因為排除計算（五章）跟
     Map/Reduce（四章）是兩條互不相依的資料流，分開呼叫比較清楚；回傳
@@ -2441,6 +2631,7 @@ def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str
     controller_deps = controller_dependency_closure(project)
     shared_class_names = find_shared_classes(controller_deps)
     trivial_class_names = classify_trivial_classes(project)
+    global_advice_class_names = collect_global_advice_classes(project)
 
     shared_units = build_shared_class_units(project, shared_class_names - trivial_class_names)
     map_results_4a = run_map_phase_with_retry(shared_units)
@@ -2461,7 +2652,17 @@ def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str
     all_map_results = map_results_4a + map_results_4b + mechanical_results
     reduce_result = _reduce_phase(all_map_results, controller_deps)
 
-    return _assemble_module_drafts(all_map_results, reduce_result, project)
+    drafts, class_to_module = _assemble_module_drafts(all_map_results, reduce_result, project)
+
+    if global_advice_class_names:
+        global_units = build_global_advice_units(project, global_advice_class_names)
+        global_map_results = run_map_phase_with_retry(global_units)
+        global_draft = _assemble_global_advice_draft(global_map_results, project)
+        drafts.append(global_draft)
+        for r in global_map_results:
+            class_to_module[r.class_name] = global_draft.module
+
+    return drafts, class_to_module
 ```
 
 ---
@@ -2745,7 +2946,7 @@ async def run(state: RefactorState) -> RefactorState:
 04a 十章已定案、在 04b 落地為具體行為的四項（`@RequestMapping` 非字面值解析、`@Qualifier` 消歧失敗頻率、4a 批次拆分門檻、Map/Reduce 重試仍失敗後的策略）見三章各處註解、四章 7.1 `run_map_phase_with_retry()`，不在這裡重複列出。以下是實作過程中浮現、04a 沒有點名的實作層級限制。除非特別註明，「目標專案」均指 `lang-exam-api-refactor`；「沒有觸發」不等於「已證明沒問題」，只代表這個專案剛好沒踩到，換一個專案仍可能踩到，不可因此刪除：
 
 - **Repository interface 的 `default`／`static` method body 不會被追蹤**（見三章 3.1 `_extract_interfaces()`，設計見 04a 四章「Repository interface 的補充掃描」）——這類方法本身會被正確納入 `ClassInfo.methods`（能被 `_yield_call()` 辨識成呼叫目標），但方法自己內部呼叫的東西不會被追蹤（`_build_call_graph()` 只走 `ClassDeclaration`，不含 interface）。Spring Data Repository 極少用這個寫法，目標專案沒有觸發，維持既有「連結留白、預設保留」的安全方向，留待接上真的用到這個寫法的專案再評估。
-- ~~**鏈式呼叫解析的精確度還沒有真實案例驗證過**~~——單一層欄位呼叫（`answerRepository.findByX()`）已用真實專案驗證無誤。**唯一仍未驗證**：`_resolve_qualifier_string()` 假設 javalang 會把多段純欄位鏈折成點號字串，例如：
+- **鏈式呼叫解析：單一層欄位呼叫已驗證，多段純欄位鏈仍未驗證**——單一層欄位呼叫（`answerRepository.findByX()`）已用真實專案驗證無誤。唯一仍未驗證的是 `_resolve_qualifier_string()` 對多段純欄位鏈折成點號字串的假設，例如：
   ```java
   this.serviceA.serviceB.doSomething();  // qualifier 預期解析成 "this.serviceA.serviceB"
   ```
@@ -2782,3 +2983,44 @@ async def run(state: RefactorState) -> RefactorState:
 **真實環境驗證**：對 `../lang-exam-api-refactor` 的 `GlobalExceptionHandler.java`（`@RestControllerAdvice`，含 `handleBaseException`／`handleAll`／4 個 `@Override` 的 Spring 內建驗證例外處理方法共 6 個方法）跑過完整 `run_map_reduce()`，`module_list` 正確產出 `_global` 模組，`java_files` 正確指向這個檔案，`depends_on=[]`，6 個方法皆正確送 Map 摘要（不影響 `common`／`school`／`registration`／`exam`／`grading`／`file` 其餘 6 個業務模組的既有分派結果）。
 
 單元測試見 `tests/parse_agent/test_grouping.py`（純假資料，含 mock Claude 呼叫的 `run_map_reduce()` 端對端案例，驗證 Reduce 只看得到業務類別、看不到全域生效類別）。
+
+---
+
+## 十三、獨立宣告的 Java `enum` 收集（`_extract_enums()`）
+
+對應 `04a_parse_agent_architecture.md` 十二章決策，回應 `docs/09b_bug_trace.md` #44。
+
+**`parse_agent/types.py`**：`ClassInfo` 新增 `is_enum: bool = False`（純標記，見該欄位 docstring）。
+
+**`parse_agent/call_graph.py` 新增 `_extract_enums(tree, rel_path) -> list[ClassInfo]`**：對稱於既有 `_extract_interfaces()`，掃 `tree.types` 裡的 `javalang.tree.EnumDeclaration`，建立 `ClassInfo(stereotype=None, implements=[i.name for i in (decl.implements or [])], is_enum=True, fields=[], methods=[], routes=[])`。`parse_java_project()` 主迴圈改成 `[*_extract_classes(...), *_extract_interfaces(...), *_extract_enums(...)]`。
+
+**`grouping.py` 不需要任何改動**：既有 `needs_llm_summary()` 規則 2（`not has_implementor and all(not m.has_body for m in class_info.methods)`）在 `methods=[]`（空清單天生滿足 `all()`）的情況下已經自然判定「不需要送 Map」，不用為 enum 新增判斷分支——這是實作前就確認過的既有覆蓋（見 04a 十二章）。
+
+**真實環境驗證**（`../lang-exam-api-refactor`）：
+- 直接呼叫 `parse_java_project()` 確認 `CommonErrorCode`／`AuthErrorCode`／`ExamErrorCode`／`GradingErrorCode` 都建出 `ClassInfo`（`is_enum=True`，`implements=["ErrorCode"]`），且 `ErrorCode`（`InterfaceDeclaration`）本身透過 `ResponseResult` 的既有 import 邊正確進入 `controller_dependency_closure()`（這一段修復前就已經正確，不是這次修法的範圍）。
+- 完整跑一次真實 `run_parse_agent()`（含 Claude API Map-Reduce，耗時約 106 秒）：四個 enum 分別正確分派進 `common`（`CommonErrorCode`／`ErrorCode`）、`exam`（`ExamErrorCode`）、`grading`（`AuthErrorCode`／`GradingErrorCode`）三個 module 的 `java_files`。
+
+單元測試見 `tests/parse_agent/test_extract_enums.py`：`ClassInfo` 欄位正確性、`controller_dependency_closure()` 能透過既有 import 依賴邊觸達（用貼近真實案例的 fixture：Controller 直接 import 一個只用於方法呼叫參數、不是欄位型別的 enum）、`classify_trivial_classes()` 正確判定不需要送 Map。
+
+---
+
+## 十四、`extends` 依賴邊
+
+對應 `04a_parse_agent_architecture.md` 十三章決策，回應 `docs/09b_bug_trace.md`「`@MappedSuperclass`（如 `BaseEntity`）未被任何 module 的 `java_files` 收錄」。
+
+**`parse_agent/types.py`**：`ClassInfo` 新增 `extends: str | None = None`。
+
+**`parse_agent/call_graph.py::_extract_classes()`**：`extends=class_decl.extends.name if class_decl.extends is not None else None`——單一 `ReferenceType` 或 `None`，跟 `implements=[t.name for t in (class_decl.implements or [])]` 的清單形狀不同，不能沿用同一種寫法。
+
+**`parse_agent/grouping.py::_direct_deps()`** 新增：
+
+```python
+if class_info.extends is not None and class_info.extends in project.classes:
+    deps.add(class_info.extends)
+```
+
+放在既有 import 依賴邊之後，同一個函式內，不需要新的呼叫層級。
+
+**已知限制沿用**：`implements` 用完整 package 路徑寫法時 `.name` 只抓第一段的既有限制（見十一章），`extends` 用的是同一個 javalang 節點形狀，同樣受限——目標專案的 `extends` 寫法都是簡短名稱（同套件或已 import），沒有觸發。
+
+真實環境驗證見 04a 十三章；單元測試見 `tests/parse_agent/test_extends_dependency.py`（`ClassInfo.extends` 正確性、同套件無 import 的父類別仍能進入依賴閉包、`@MappedSuperclass` 正確分類為 trivial、extends 目標不在專案內時安靜忽略不拋錯）。

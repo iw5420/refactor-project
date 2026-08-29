@@ -154,6 +154,17 @@ class EnumRecord:
     module: str
     members: list[str]
     file_path: str
+    # 建構子參數名稱，依宣告順序（如 ["code", "msg"]）；沒有建構子（或
+    # 沒有參數）時為空清單——比照 08a 四章 Literal 規則，member_args 才是
+    # 真正決定「要不要渲染成帶值的 enum」的依據，這個欄位只是提供屬性
+    # 名稱，見 entity_scan.py::scan_module()、model_builder.py 對應渲染。
+    constructor_params: list[str] = field(default_factory=list)
+    # member 名稱 -> 對應建構子引數的字面值清單，逐一對應 constructor_params
+    # 的順序。只有「引數數量跟 constructor_params 一致、且全部是 Literal」
+    # 的 member 才會出現在這裡（Literal 規則：任何引數不是 Literal，或
+    # 數量對不上，整個 member 視同沒有可用的建構子引數，退回只渲染名稱，
+    # 記一筆 warning，見 entity_scan.py）。
+    member_args: dict[str, list[object]] = field(default_factory=dict)
 
 
 # ── reference_resolver.py 產出的全域索引 ────────────────────────────

@@ -37,6 +37,18 @@ from design_agent.types import JavaClassSignature, JavaField, JavaMethodSignatur
 
 _STEREOTYPES = {"RestController", "Controller", "Service", "Component", "Repository"}
 
+# 對應 docs/09b_bug_trace.md #70：Spring 5 種 HTTP method 簡寫 annotation，
+# 直接對應到固定的 HTTP method 大寫字面字串，機械查表即可、不需要解析
+# annotation 元素值（純 `@RequestMapping(method=RequestMethod.GET)` 這種
+# 沒有搭配簡寫的寫法刻意不解析，見 _method_signature() docstring）。
+_HTTP_MAPPING_ANNOTATIONS = {
+    "GetMapping": "GET",
+    "PostMapping": "POST",
+    "PutMapping": "PUT",
+    "DeleteMapping": "DELETE",
+    "PatchMapping": "PATCH",
+}
+
 
 def scan_java_files(java_files: list[str], project_root: str) -> dict[str, JavaClassSignature]:
     """對 `java_files`（相對路徑，通常直接來自 `ModuleInfo.java_files`）
@@ -131,13 +143,26 @@ def _method_signature(class_name: str, method_decl: javalang.tree.MethodDeclarat
     獨立的一筆宣告，這裡逐筆轉換、不做任何去重或合併——見 05a 四章
     「多載方法的處理」：這裡直接讀完整 AST 節點（含參數型別），不像
     04a 的 `method_id` 只用方法名不含簽名，天生不會有多載碰撞問題。
+
+    `http_method`：對應 docs/09b_bug_trace.md #70，見
+    `JavaMethodSignature.http_method` docstring——只認 5 種 HTTP method
+    簡寫 annotation（`_HTTP_MAPPING_ANNOTATIONS`），刻意不解析純
+    `@RequestMapping(method=...)` 這種需要讀 annotation 元素值才能判斷
+    的寫法（這個真實 Java 專案目前找不到這種寫法的真實案例，範圍窄化
+    理由同 `entity_scan.py` module docstring「Literal 規則」——沒有真實
+    案例佐證的情況不猜）。
     """
+    http_method = next(
+        (_HTTP_MAPPING_ANNOTATIONS[a.name] for a in method_decl.annotations if a.name in _HTTP_MAPPING_ANNOTATIONS),
+        None,
+    )
     return JavaMethodSignature(
         class_name=class_name,
         method_name=method_decl.name,
         params=[JavaParam(name=p.name, java_type=_type_str(p.type)) for p in method_decl.parameters],
         return_type=_type_str(method_decl.return_type) if method_decl.return_type is not None else None,
         is_private="private" in method_decl.modifiers,
+        http_method=http_method,
     )
 
 

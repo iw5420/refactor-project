@@ -12,7 +12,7 @@ from collections import defaultdict
 
 from common.java_type_mapping import camel_to_snake
 from scaffold_agent.column_mapping import merge_imports, render_field, render_join_table
-from scaffold_agent.types import BuildDbModelsResult, EntityRecord, FieldRecord, ModuleInfo, ScanIndex
+from scaffold_agent.types import BuildDbModelsResult, EntityRecord, EnumRecord, FieldRecord, ModuleInfo, ScanIndex
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +229,42 @@ def _assemble_module_file(class_bodies: list[str], join_table_stmts: list[str], 
     return "\n\n\n".join(parts) + "\n"
 
 
+def _render_enum_class_body(python_name: str, record: EnumRecord) -> str:
+    """單一 Enum class 的渲染，對應四章 `_enum_constructor_values()`
+    擴充的「建構子引數還原」：`record.constructor_params` 非空、且每一個
+    `record.members` 都在 `record.member_args` 裡有對應項目（`len` 相等，
+    代表沒有任何常數在掃描階段因為 Literal 規則或引數數量對不上被跳過）
+    時，才渲染成帶值的 enum（`SUCCESS = (200, "操作成功")` ＋ `__init__`
+    把引數依建構子參數名稱賦值成同名屬性）——**刻意全有全無，不逐常數
+    各自判斷**：Python `enum.Enum` 的 `__init__` 一旦定義，所有成員的
+    賦值都必須是同一種形狀（tuple 對應多參數 `__init__`），若這個 enum
+    裡有些常數有還原出引數、有些沒有，硬要混合渲染（有引數的用 tuple、
+    沒有的退回單一字串）會讓沒有引數的那幾個常數在 `__init__` 呼叫時
+    缺參數，直接在 class body 求值階段拋 `TypeError`——比完全不渲染值
+    更嚴重（原本只是資訊遺失，這樣會整個檔案 import 失敗）。因此只要
+    有一個常數的引數還原不完整，整個 enum 退回原本「只渲染名稱」的
+    寫法，不嘗試部分渲染。
+
+    其餘情況（`constructor_params` 為空，即這個 Java enum 根本沒有帶參數
+    的建構子，如單純狀態列舉 `enum OrderStatus { PENDING, PAID }`）維持
+    修改前的既有寫法，不受影響。
+    """
+    lines = [f"class {python_name}(enum.Enum):"]
+    has_complete_args = bool(record.constructor_params) and len(record.member_args) == len(record.members)
+    if has_complete_args:
+        for member in record.members:
+            values = ", ".join(repr(v) for v in record.member_args[member])
+            lines.append(f"    {member} = ({values},)" if len(record.member_args[member]) == 1 else f"    {member} = ({values})")
+        lines.append("")
+        param_list = ", ".join(record.constructor_params)
+        lines.append(f"    def __init__(self, {param_list}):")
+        for param in record.constructor_params:
+            lines.append(f"        self.{param} = {param}")
+    else:
+        lines.extend(f'    {member} = "{member}"' for member in record.members)
+    return "\n".join(lines)
+
+
 def _render_enums_file(scan_index: ScanIndex) -> tuple[str | None, list[dict]]:
     """對應七章「Enum class 一律渲染進單一共用檔案 `app/models/_enums.py`」
     ＋九章步驟 5：逐 Enum 各自 `ast.parse()` 驗證，單一失敗不拖累其他
@@ -242,9 +278,7 @@ def _render_enums_file(scan_index: ScanIndex) -> tuple[str | None, list[dict]]:
     skipped: list[dict] = []
     for fqn, record in scan_index.enums.items():
         python_name = scan_index.enum_python_names[fqn]
-        lines = [f"class {python_name}(enum.Enum):"]
-        lines.extend(f'    {member} = "{member}"' for member in record.members)
-        text = "\n".join(lines)
+        text = _render_enum_class_body(python_name, record)
         try:
             ast.parse(text)
         except SyntaxError as exc:

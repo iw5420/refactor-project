@@ -258,3 +258,85 @@ def test_response_entity_boundary_method_gets_response_return_type_and_skips_sch
     assert iface["return_type"] == "Response"
     assert iface["file_path"] == "app/routers/file_router.py"
     assert result.directory_tree_fragment is None
+
+
+def test_same_named_overloads_with_different_http_methods_each_get_own_boundary(tmp_path):
+    """對應 docs/09b_bug_trace.md #70 真實案例：`FileController.voice()`
+    有 `@PostMapping`（上傳）／`@GetMapping`（下載）兩個同名多載。修正前
+    `_build_boundary_index()` 用 `(module, class, method_name)` 當 key，
+    兩個 ApiMapping 互相覆寫，只留得住最後一筆——另一個完全查不到
+    boundary，退回機械型別對應 Java 原始碼字面型別，翻出不合法的回傳
+    型別注記（如裸的 `ResponseResult`），讓 FastAPI 在匯入階段直接崩潰、
+    整個服務起不來。這裡直接驗證兩個 overload **都**正確拿到各自的
+    boundary／schema，不是其中一個被犧牲。
+    """
+    (tmp_path / "FileController.java").write_text(
+        """
+        package com.example;
+        import org.springframework.web.bind.annotation.RestController;
+        import org.springframework.web.bind.annotation.PostMapping;
+        import org.springframework.web.bind.annotation.GetMapping;
+        @RestController
+        public class FileController {
+            @PostMapping("/voice")
+            public VoiceRs voice(String kind) {
+                return null;
+            }
+            @GetMapping("/voice")
+            public VoiceDownloadRs voice(String location) {
+                return null;
+            }
+        }
+        """,
+        encoding="utf-8",
+    )
+    module = {
+        "module": "file", "summary": "", "java_files": ["FileController.java"], "depends_on": [],
+        "methods": [
+            {"java_method": "voice", "class_name": "FileController", "description": "上傳／下載語音檔", "complexity": "low"}
+        ],
+    }
+    api_to_python_target = [
+        {"endpoint": "/voice", "http_method": "POST", "java_controller": "FileController.voice", "module": "file"},
+        {"endpoint": "/voice", "http_method": "GET", "java_controller": "FileController.voice", "module": "file"},
+    ]
+    from design_agent.design import _build_boundary_index
+
+    boundary_index = _build_boundary_index(api_to_python_target)
+    # 對應 #70 修正：兩筆 ApiMapping 現在各自有獨立的 key，不會互相覆寫。
+    assert len(boundary_index) == 2
+
+    openapi_spec = {
+        "paths": {
+            "/voice": {
+                "post": {
+                    "responses": {
+                        "200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoiceRs"}}}}
+                    },
+                },
+                "get": {
+                    "responses": {
+                        "200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoiceDownloadRs"}}}}
+                    },
+                },
+            }
+        }
+    }
+
+    from unittest.mock import patch
+
+    with patch(
+        "design_agent.design._call_design_llm",
+        return_value=({}, {}, {"FileController::voice(String)": False}),
+    ):
+        result = _design_module(
+            module=module, boundary_index=boundary_index, openapi_spec=openapi_spec,
+            java_project_path=str(tmp_path), interfaces_by_module={},
+        )
+
+    assert len(result.interfaces) == 2
+    return_types = {iface["function_name"]: iface["return_type"] for iface in result.interfaces}
+    # 兩個 overload 都要拿到各自正確、具名的 schema 型別——不是其中一個
+    # 被犧牲成裸的、不合法的機械型別（修正前的真實崩潰案例）。
+    assert return_types["voice"] == "VoiceRs"
+    assert return_types["voice_2"] == "VoiceDownloadRs"

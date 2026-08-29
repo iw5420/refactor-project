@@ -27,10 +27,14 @@ def run_design_agent(
     職責本身。`route_to_module_mapping` 不進回傳值、也不進 State（05a
     八章已定案，只寫 yaml）。
     """
-    interfaces, directory_tree, modules_with_schema_file = design.design_all_modules(
-        module_list, api_to_python_target, openapi_spec, java_project_path
+    interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars = (
+        design.design_all_modules(module_list, api_to_python_target, openapi_spec, java_project_path)
     )
     python_structure = PythonStructure(directory_tree=directory_tree, interfaces=interfaces)
+    if config_field_mappings:
+        python_structure["config_field_mappings"] = config_field_mappings
+    if config_env_vars:
+        python_structure["config_env_vars"] = config_env_vars
     route_to_file_mapping, route_to_module_mapping = route_mapping.build_route_mappings(
         api_to_python_target, interfaces, modules_with_schema_file
     )

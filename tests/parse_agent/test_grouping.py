@@ -221,3 +221,103 @@ def test_run_map_reduce_no_global_module_when_no_advice_class_present(tmp_path, 
 
     assert {d.module for d in drafts} == {"widget"}
     assert "GlobalExceptionHandler" not in class_to_module
+
+
+# --------------------------------------------------------------------------
+# _assemble_module_drafts()：Reduce 把同一個 class 重複分進兩個 module 時
+# 的機械防線，對應 docs/09b_bug_trace.md #50 根因——REDUCE_SYSTEM_PROMPT
+# 只在文字裡要求「一個 class 只屬於一個 module」，schema 的 enum 約束擋不住
+# 同一個合法 class 出現在兩個不同 module_entry 的 java_classes 裡。
+# --------------------------------------------------------------------------
+
+
+def _fake_call_claude_for_json_duplicate_class(*, system_prompt, user_prompt, schema, model, max_tokens=4096):
+    payload = json.loads(user_prompt)
+    if system_prompt == MAP_SYSTEM_PROMPT:
+        known_methods = {
+            "FileController": ["voice", "image"],
+            "ExamController": ["search"],
+        }
+        return {
+            "classes": [
+                {
+                    "class_name": c["class_name"],
+                    "summary": f"{c['class_name']} 的摘要",
+                    "methods": [
+                        {"method_name": m, "description": f"{m} 做的事", "complexity": "low"}
+                        for m in known_methods[c["class_name"]]
+                    ],
+                    "cross_group_dependency_hints": [],
+                }
+                for c in payload["classes"]
+            ]
+        }
+    if system_prompt == REDUCE_SYSTEM_PROMPT:
+        # 模擬 Reduce 分類失手：FileController 同時被分進 file 與 exam
+        # 兩個 module_entry（09b_bug_trace.md #50 真實案例的重現）。
+        return {
+            "modules": [
+                {
+                    "module": "file",
+                    "summary": "file 業務模組",
+                    "java_classes": ["FileController"],
+                    "depends_on": [],
+                },
+                {
+                    "module": "exam",
+                    "summary": "exam 業務模組",
+                    "java_classes": ["ExamController", "FileController"],
+                    "depends_on": [],
+                },
+            ]
+        }
+    raise AssertionError(f"未預期的 system_prompt: {system_prompt!r}")
+
+
+def test_run_map_reduce_drops_class_duplicated_across_modules_keeping_first(tmp_path, monkeypatch):
+    (tmp_path / "FileController.java").write_text(
+        """
+        package com.example;
+        import org.springframework.web.bind.annotation.RestController;
+        @RestController
+        public class FileController {
+            public String voice() { return "ok"; }
+            public String image() { return "ok"; }
+        }
+        """,
+        encoding="utf-8",
+    )
+    (tmp_path / "ExamController.java").write_text(
+        """
+        package com.example;
+        import org.springframework.web.bind.annotation.RestController;
+        @RestController
+        public class ExamController {
+            public String search() { return "ok"; }
+        }
+        """,
+        encoding="utf-8",
+    )
+    project = parse_java_project(str(tmp_path))
+    monkeypatch.setattr(summarize, "call_claude_for_json", _fake_call_claude_for_json_duplicate_class)
+
+    drafts, class_to_module = summarize.run_map_reduce(project)
+
+    modules = {d.module: d for d in drafts}
+    assert set(modules) == {"file", "exam"}
+
+    # 先宣告的 file module 保留 FileController 完整的 java_files／methods。
+    file_draft = modules["file"]
+    assert file_draft.java_files == ["FileController.java"]
+    assert {dm.method["java_method"] for dm in file_draft.methods} == {"voice", "image"}
+
+    # 後宣告的 exam module 只保留自己合法擁有的 ExamController，
+    # FileController 的重複宣告被機械擋下，不會讓 voice/image 也流進
+    # exam 的 java_files／methods（對應 09b_bug_trace.md #50 的症狀：
+    # 若不擋，exam_router.py 會被④機械渲染出重複、且路由衝突的
+    # voice/voice_2/image/image_2 端點）。
+    exam_draft = modules["exam"]
+    assert exam_draft.java_files == ["ExamController.java"]
+    assert {dm.method["java_method"] for dm in exam_draft.methods} == {"search"}
+
+    assert class_to_module == {"FileController": "file", "ExamController": "exam"}

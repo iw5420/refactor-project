@@ -401,8 +401,18 @@ def extract_schema_fields(raw_schema: dict) -> list[tuple[str, str]]:
         if constraint_kwargs:
             default_arg = "..." if is_required else "default=None"
             declaration = f"{python_type} = Field({', '.join([default_arg, *constraint_kwargs])})"
-        else:
+        elif is_required:
             declaration = python_type
+        else:
+            # 對應 docs/09b_bug_trace.md：`X | None` 這個型別註記本身不會
+            # 讓 Pydantic v2 把欄位當成有預設值——沒有明確寫 `= None`，
+            # 非必填欄位一樣會被當成必填，請求方（真實 Postman collection，
+            # 對應 Java 端本來就可省略的 DTO 欄位）沒帶這個欄位就直接
+            # 422/500。這個分支之前只有純型別注記、漏了預設值，只有走
+            # 上面 `Field(...)` 那個分支的非必填欄位才有補 `default=None`，
+            # 造成同一份 schema 生成邏輯裡「有沒有驗證限制」意外決定了
+            # 「有沒有預設值」這兩件不相關的事。
+            declaration = f"{python_type} = None"
         fields.append((name, declaration))
     return fields
 

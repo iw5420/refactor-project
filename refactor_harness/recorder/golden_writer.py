@@ -21,20 +21,26 @@ class GoldenRecorder:
     """
     def __init__(self, java_base_url: str, golden_dir: str,
                  test_dsn: str | None = None,
-                 config_path: str = "config/harness.yaml"):
+                 config_path: str = "config/harness.yaml",
+                 route_to_module_mapping: dict[str, str] | None = None):
         """
         test_dsn 由呼叫端傳入（通常是 state["test_dsn"]，見下方
         langgraph_nodes/test_nodes.py 的 record_golden_output），確保
         Recorder 與 Verifier 連的是同一顆測試 DB；留 None 時才 fallback
         讀 harness.yaml 的靜態預設值，只給 stub-first 開發或單元測試等
         沒有完整 State 可用的情境使用。
+
+        route_to_module_mapping 同一個模式（見 docs/09b_bug_trace.md
+        #64）：留 None 才 fallback 讀 harness.yaml 當下的版本，呼叫端有
+        state 可用時應該直接傳 `design_agent.route_mapping.
+        build_route_to_module_mapping(state["api_to_python_target"])`。
         """
         self.java_base_url = java_base_url
         self.golden_dir = Path(golden_dir)
         self.masker = ResponseMasker()
         # module 分區用共用的 RouteMapper.resolve_module()，與 GoldenVerifier／
         # MutationVerifier 共用同一套（見 core/route_mapper.py、02a 十三章）。
-        self.route_mapper = RouteMapper(config_path)
+        self.route_mapper = RouteMapper(config_path, module_mapping_override=route_to_module_mapping)
 
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)

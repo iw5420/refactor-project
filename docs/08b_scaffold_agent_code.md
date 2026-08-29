@@ -1989,4 +1989,38 @@ async def run(state: RefactorState) -> dict:
 
 ---
 
+## Enum 建構子引數還原（對應 08a「建構子引數還原」章節、`docs/09b_bug_trace.md` #44）
+
+**`scaffold_agent/types.py::EnumRecord`** 新增兩個欄位：`constructor_params: list[str]`、`member_args: dict[str, list[object]]`（皆 `field(default_factory=...)`，向後相容既有呼叫端）。
+
+**`scaffold_agent/entity_scan.py` 新增 `_enum_constructor_values(decl) -> tuple[list[str], dict[str, list[object]]]`**：取 `decl.body.declarations` 裡的 `ConstructorDeclaration`（正常唯一，多個時取第一個並記警告），逐一比對 `decl.body.constants` 每個常數的 `.arguments`（引數數量需與建構子參數數量一致，且全部是 `javalang.tree.Literal`，複用既有 `_literal_value()`）。`scan_module()` 掃到 `EnumDeclaration` 時呼叫這個函式，結果併入 `EnumRecord`。
+
+**`scaffold_agent/model_builder.py` 新增 `_render_enum_class_body(python_name, record) -> str`**，取代原本內嵌在 `_render_enums_file()` 迴圈裡的兩行渲染：
+
+```python
+def _render_enum_class_body(python_name: str, record: EnumRecord) -> str:
+    lines = [f"class {python_name}(enum.Enum):"]
+    has_complete_args = bool(record.constructor_params) and len(record.member_args) == len(record.members)
+    if has_complete_args:
+        for member in record.members:
+            values = ", ".join(repr(v) for v in record.member_args[member])
+            lines.append(f"    {member} = ({values},)" if len(record.member_args[member]) == 1 else f"    {member} = ({values})")
+        lines.append("")
+        param_list = ", ".join(record.constructor_params)
+        lines.append(f"    def __init__(self, {param_list}):")
+        for param in record.constructor_params:
+            lines.append(f"        self.{param} = {param}")
+    else:
+        lines.extend(f'    {member} = "{member}"' for member in record.members)
+    return "\n".join(lines)
+```
+
+單一引數的 tuple 需要補逗號（`(200,)`）才是合法的單元素 tuple 語法，`len(...) == 1` 那個分支專門處理這個 Python 語法細節，不是可以省略的特殊情況。`repr(v)` 同時處理數字（`repr(200) == "200"`）與字串（`repr("操作成功")` 正確加上引號並跳脫），不需要另外分型別處理。
+
+`_render_enums_file()` 迴圈內 `lines = [...]` ＋ `lines.extend(...)` 兩行改成單一呼叫 `text = _render_enum_class_body(python_name, record)`，其餘（`ast.parse()` 驗證、`skipped_entities` 收集）不變。
+
+單元測試、真實環境驗證見 08a「建構子引數還原」章節。
+
+---
+
 *各 Agent／工具的實作細節、演算法、程式碼一律留在對應細節文件，避免重複維護；本文件隨實作推進持續更新。*

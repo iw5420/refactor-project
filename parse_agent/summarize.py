@@ -425,6 +425,28 @@ def _assemble_module_drafts(
                     cls,
                 )
                 continue
+            if cls in class_to_module:
+                # REDUCE_SYSTEM_PROMPT 明文要求「一個 class 只屬於一個
+                # module，即使被多個 Controller 共用」，但這只是文字指令，
+                # `build_reduce_output_schema()` 的 enum 約束只擋得住虛構
+                # 的 class 名稱，擋不住同一個合法 class 被重複分進兩個
+                # module_entry（docs/09b_bug_trace.md #50 真實案例：
+                # FileController 同時被分進 file 與 exam，導致
+                # voice/voice_2/image/image_2 在兩個 module 的
+                # java_files/methods 裡各出現一次，③ 依此機械產生出重複
+                # 的 router 介面）。比照 missing_classes／unassigned 既有
+                # 的「機械擋、不重問 LLM」精神：先到先得，只採用第一個
+                # 宣告這個 class 的 module_entry，後面重複宣告的一律捨棄
+                # 並記警告，不讓同一個 class 的方法流進兩個不同 module。
+                logger.warning(
+                    "Reduce 把 class %s 重複分進了兩個 module（先前已分進 %s，"
+                    "這次又出現在 %s，模型分類重複，已略過這次重複宣告，"
+                    "只保留第一次的歸屬）",
+                    cls,
+                    class_to_module[cls],
+                    module_entry["module"],
+                )
+                continue
             usable_classes.append(cls)
             class_to_module[cls] = module_entry["module"]
             for m in map_result.methods:

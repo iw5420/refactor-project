@@ -18,11 +18,34 @@ class RouteMapper:
         r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
     )
 
-    def __init__(self, config_path: str = "config/harness.yaml"):
+    def __init__(
+        self,
+        config_path: str = "config/harness.yaml",
+        module_mapping_override: dict[str, str] | None = None,
+    ):
+        """`module_mapping_override`：對應 docs/09b_bug_trace.md #64——
+        呼叫端（`record_golden_output()`／`run_postman_tests()`）若已經
+        從 `state["api_to_python_target"]`（① 的權威輸出，見
+        `design_agent/route_mapping.py::build_route_to_module_mapping()`）
+        就地算出這輪真正的 module 對照，就不該再讓這裡去讀 `config_path`
+        指向的 `config/harness.yaml`——那份檔案由 ③（`design`）寫入，跟
+        `record_tests` 是平行分支，寫入時機不保證早於 `record_tests`
+        讀取，兩個 node 各自讀到不同版本就會對同一個 route 解出不同
+        module。留 `None` 時才 fallback 回讀檔（`route_to_file_mapping`
+        永遠讀檔，不受這個參數影響——只有 module 對照有這個平行分支
+        競態問題，related_files 只是失敗診斷用的輔助資訊，沒有這個
+        風險），給 `partial_verify.py`（完全跳過 ①，沒有 state 可用）
+        跟既有單元測試這種情境使用，比照既有 `test_dsn` 的既有慣例
+        （見 `golden_writer.py::GoldenRecorder.__init__` docstring）。
+        """
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         self.route_mapping = config.get("route_to_file_mapping", {})
-        self.module_mapping = config.get("route_to_module_mapping", {})
+        self.module_mapping = (
+            module_mapping_override
+            if module_mapping_override is not None
+            else config.get("route_to_module_mapping", {})
+        )
 
     def normalize_path_key(self, method: str, url_parts: list[str]) -> str:
         """

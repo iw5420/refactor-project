@@ -160,6 +160,22 @@ def test_plan_all_modules_happy_path(monkeypatch):
         "app/models/user.py",
     ]
 
+    # referenced_functions（06a 七章新設計）：只記錄「因引用而拉進來」的
+    # 檔案裡，具體是哪個函式被引用到——不含 schemas／models（這些從來
+    # 不是 referenced_interfaces 的一部分，見三章）。
+    assert user_service_task["referenced_functions"] == [
+        {"file_path": "app/repositories/user_repository.py", "class_name": "UserRepository", "function_name": "get_by_id"},
+    ]
+    assert order_service_task["referenced_functions"] == [
+        {"file_path": "app/repositories/order_repository.py", "class_name": "OrderRepository", "function_name": "get_by_id"},
+        {"file_path": "app/services/user_service.py", "class_name": "UserService", "function_name": "get_user"},
+    ]
+    assert router_task["referenced_functions"] == [
+        {"file_path": "app/services/order_service.py", "class_name": "OrderService", "function_name": "get_order"},
+    ]
+    # 沒有 referenced_interfaces 的 task，referenced_functions 是空清單。
+    assert order_repo_task["referenced_functions"] == []
+
 
 def test_referenced_interfaces_invalid_and_self_reference_filtered(monkeypatch, caplog):
     """06a 五章「核對規則」：`referenced_interfaces` 引用不存在的
@@ -272,6 +288,103 @@ def test_duplicate_interfaces_raises_coverage_error(monkeypatch):
 
     with pytest.raises(PlanAgentCoverageError):
         planning.plan_all_modules([_module("user")], duplicated)
+
+
+def test_referenced_functions_excludes_same_file_reference(monkeypatch):
+    """06a 七章新設計：引用同一個檔案裡的另一個函式時，不該出現在
+    `referenced_functions` 裡——那個檔案是 `target_files[0]`，本來就整份
+    帶入，_read_context_files() 若對它套用函式層級抽取會把目標函式本身
+    也濾掉（見 `plan_agent/planning.py::_build_referenced_functions()`
+    docstring）。"""
+    sibling = _iface("app/services/user_service.py", "UserService", "get_user_summary",
+                      params=[{"name": "user_id", "type": "int"}], return_type="str")
+    structure = {
+        "directory_tree": "",
+        "interfaces": [USER_SERVICE, sibling],
+    }
+    responses = {
+        "user": [
+            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "",
+             "referenced_interfaces": [_ID(sibling)]},  # 引用同檔案的另一個函式
+            {"interface_id": _ID(sibling), "description": "取得使用者摘要", "context": "",
+             "referenced_interfaces": []},
+        ],
+    }
+    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
+
+    tasks = planning.plan_all_modules([_module("user")], structure)
+    by_key = {(t["class_name"], t["function_name"]): t for t in tasks}
+
+    user_service_task = by_key[("UserService", "get_user")]
+    assert user_service_task["referenced_functions"] == []
+    # target_files 仍然只有自己的檔案一份（同檔案引用不會產生重複項目）。
+    assert user_service_task["target_files"] == ["app/services/user_service.py", "app/models/user.py"]
+
+
+def test_config_field_mappings_appended_to_matching_task_context(monkeypatch):
+    """對應 docs/09b_bug_trace.md #45 修法：`python_structure.
+    config_field_mappings`（③ design_agent.global_infra 產出）裡有這個
+    task 對應檔案的項目時，機械附加一段提示進 context 尾端；沒有對應
+    項目的 task（其他 module 的檔案）不受影響，context 維持原樣。"""
+    structure = {
+        "directory_tree": "",
+        "interfaces": [USER_SERVICE],
+        "config_field_mappings": {
+            "app/services/user_service.py": {"code": "app.core.config.LANGUAGE_CODE"},
+        },
+    }
+    responses = {
+        "user": [
+            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "既有 context 文字",
+             "referenced_interfaces": []},
+        ],
+    }
+    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
+
+    tasks = planning.plan_all_modules([_module("user")], structure)
+    task = tasks[0]
+    assert "既有 context 文字" in task["context"]
+    assert "`code` 欄位改成 `from app.core.config import LANGUAGE_CODE` 後直接使用 `LANGUAGE_CODE`" in task["context"]
+    assert "app/core/config.py" in task["context"]
+
+
+def test_config_hint_explicitly_forbids_settings_object_pattern(monkeypatch):
+    """對應 docs/09b_bug_trace.md #58：⑤ 連續三次真實 pipeline run 都把
+    舊版的 `app.core.config.LANGUAGE_CODE` 點記法提示誤讀成物件屬性存取，
+    幻覺出從未存在的 `settings` 物件。新提示除了給完整 import 陳述式，
+    還要明講「沒有 settings 物件」，直接點名禁止這個最常見的錯誤。"""
+    structure = {
+        "directory_tree": "",
+        "interfaces": [USER_SERVICE],
+        "config_field_mappings": {
+            "app/services/user_service.py": {"code": "app.core.config.LANGUAGE_CODE"},
+        },
+    }
+    responses = {
+        "user": [
+            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "既有 context 文字",
+             "referenced_interfaces": []},
+        ],
+    }
+    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
+
+    tasks = planning.plan_all_modules([_module("user")], structure)
+    context = tasks[0]["context"]
+    assert "沒有 settings 物件" in context
+    assert "settings.LANGUAGE_CODE" in context
+
+
+def test_no_config_field_mappings_leaves_context_untouched(monkeypatch):
+    responses = {
+        "user": [
+            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "既有 context 文字",
+             "referenced_interfaces": []},
+        ],
+    }
+    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
+
+    tasks = planning.plan_all_modules([_module("user")], {"directory_tree": "", "interfaces": [USER_SERVICE]})
+    assert tasks[0]["context"] == "既有 context 文字"
 
 
 def test_bad_file_path_raises_module_lookup_error_before_calling_llm(monkeypatch):

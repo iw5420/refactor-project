@@ -33,6 +33,32 @@ def _execution(name: str, method: str, url_parts: list[str], status: int, body: 
     }
 
 
+def _write_harness_yaml(tmp_path) -> str:
+    """對應 docs/09b_bug_trace.md #64：不依賴真實 `config/harness.yaml`
+    當下內容（那份檔案每次真實 pipeline run 都會被 ③ 重寫，① 的模組
+    分類本身是非決定性的 LLM 判斷）——`route_to_module_mapping` 走
+    `GoldenVerifier` 的 `route_to_module_mapping` 參數明確傳入，這裡只
+    需要給 `route_to_file_mapping`（該參數目前還是只走檔案讀取，沒有
+    同等的覆寫參數，因為它只影響失敗診斷用的輔助資訊，不像 module
+    解析那樣會直接造成 golden_not_found 誤判）用的隔離設定檔。"""
+    import yaml
+
+    config_path = tmp_path / "harness.yaml"
+    config_path.write_text(
+        yaml.safe_dump({
+            "route_to_file_mapping": {
+                "GET_api_general_version": [
+                    "app/repositories/school_repository.py",
+                    "app/routers/school_router.py",
+                    "app/schemas/school.py",
+                ],
+            },
+        }),
+        encoding="utf-8",
+    )
+    return str(config_path)
+
+
 def _write_golden(tmp_path, module: str, case_id: str, status_code: int, body: dict | None) -> None:
     golden_dir = tmp_path / module
     golden_dir.mkdir(parents=True, exist_ok=True)
@@ -109,7 +135,12 @@ def test_golden_not_found_includes_module_and_related_files(tmp_path, monkeypatc
         lambda *a, **kw: {"run": {"executions": [execution]}},
     )
 
-    verifier = GoldenVerifier(python_base_url="http://localhost:8000", golden_dir=str(tmp_path))
+    verifier = GoldenVerifier(
+        python_base_url="http://localhost:8000",
+        golden_dir=str(tmp_path),
+        config_path=_write_harness_yaml(tmp_path),
+        route_to_module_mapping={"GET_api_general_version": "school"},
+    )
     raw = verifier.verify_raw("postman/collection_readonly.json")
 
     assert len(raw) == 1
@@ -143,7 +174,12 @@ def test_response_not_json_includes_module_and_related_files(tmp_path, monkeypat
         lambda *a, **kw: {"run": {"executions": [execution]}},
     )
 
-    verifier = GoldenVerifier(python_base_url="http://localhost:8000", golden_dir=str(tmp_path))
+    verifier = GoldenVerifier(
+        python_base_url="http://localhost:8000",
+        golden_dir=str(tmp_path),
+        config_path=_write_harness_yaml(tmp_path),
+        route_to_module_mapping={"GET_api_general_version": "school"},
+    )
     raw = verifier.verify_raw("postman/collection_readonly.json")
 
     assert len(raw) == 1

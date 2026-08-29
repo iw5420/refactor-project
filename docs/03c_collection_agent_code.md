@@ -1077,7 +1077,8 @@ def apply_manual_fill_to_collections(
 5. `_map_analyze_group()` × N：平行呼叫 Claude API 取候選，彙整所有候選 producer／consumer；候選 producer 依 `endpoint` 的 method 機械過濾，只保留 `MUTATION_METHODS`（見 03a 三章「候選 producer 僅限 mutation method」）
 6. 候選 producer 與 candidate consumer 皆非空？
    - 否 → 省一次 reduce 呼叫，直接回傳空 list
-   - 是 → `_reduce_phase()`：單次呼叫 Claude API 做跨 controller 最終配對，回傳 `list[ChainDependency]`
+   - 是 → `_reduce_phase()`：單次呼叫 Claude API 做跨 controller 最終配對
+7. `_exclude_self_referential()`：捨棄 `producer_endpoint == consumer_endpoint` 的配對（見 03a 三章「Reduce 輸出後過濾自我參照配對」、`docs/09b_bug_trace.md` #32），回傳最終 `list[ChainDependency]`
 
 程式碼組織補充兩點：
 
@@ -1405,6 +1406,36 @@ def _reduce_phase(
     ]
 
 
+def _exclude_self_referential(
+    dependencies: list[ChainDependency],
+) -> list[ChainDependency]:
+    """捨棄 producer_endpoint == consumer_endpoint 的鏈式依賴——同一次
+    呼叫不可能既產生某個欄位、又消費同一個欄位當自己這次呼叫的輸入參數：
+    時序上這次呼叫還沒發生，不會有任何步驟能先跑過它去產生這個值，注入的
+    capture script 永遠只能拿到 `undefined`／上一次殘留值。
+
+    真實案例：reduce 階段曾把 `POST /api/candidate/search` 自己回應的
+    `data.card` 誤判成能餵給自己 `card` 參數的來源（這個端點語意其實是
+    「用 card 查使用者」，`card` 是輸入，不是可被產出的欄位）——這次
+    重跑到真實 Java 服務才第一次真正觸發，capture script 對 `null.card`
+    丟 TypeError，見 docs/09b_bug_trace.md #32。這裡不做語意判斷，只用
+    「producer 與 consumer 是不是同一個 endpoint」這個 100% 可判定的
+    時序矛盾條件過濾，跟 Map 階段排除 GET/HEAD producer 是同一種寫法。
+    """
+    kept = []
+    for dep in dependencies:
+        if dep.producer_endpoint == dep.consumer_endpoint:
+            logger.warning(
+                "捨棄自我參照的鏈式依賴（producer 與 consumer 是同一個 "
+                "endpoint，時序上不可能成立）：endpoint=%s producer_field=%s "
+                "consumer_param=%s",
+                dep.producer_endpoint, dep.producer_field, dep.consumer_param,
+            )
+            continue
+        kept.append(dep)
+    return kept
+
+
 def detect_chain_dependencies(
     openapi_spec: OpenAPISpec,
     *,
@@ -1434,7 +1465,7 @@ def detect_chain_dependencies(
         )
         return []
 
-    return _reduce_phase(producers, consumers)
+    return _exclude_self_referential(_reduce_phase(producers, consumers))
 ```
 
 
@@ -2528,6 +2559,7 @@ def should_await_manual_fill_or_continue(state: RefactorState) -> str:
 | map 階段候選解析 | `_map_analyze_group()`（mock LLM） | `output_config.format` 已保證結構合法，不需要再逐筆檢查格式——測試涵蓋正常情況能正確轉成 `_CandidateProducer`/`_CandidateConsumer`（含缺省 `hint` 補空字串）；LLM 呼叫失敗時拋出 `ChainDependencyDetectionError` |
 | map 階段平行彙整 | `_map_phase()`（mock LLM，多個 tag） | 多個 group 的候選正確彙整成單一清單；任一 group 失敗時整個 map 階段拋出例外（其餘已完成的 group 結果不會被誤用） |
 | 省略 reduce 呼叫 | `detect_chain_dependencies()`（mock LLM） | map 階段候選 producer 或 candidate consumer 任一邊為空時，直接回傳空 list、確認 `_reduce_phase` 完全沒被呼叫到 |
+| 自我參照配對過濾 | `_exclude_self_referential()` / `detect_chain_dependencies()`（mock LLM） | `producer_endpoint == consumer_endpoint` 的依賴被捨棄；不同 endpoint 之間的依賴不受影響、原樣保留；`detect_chain_dependencies()` 端對端確認 reduce 輸出裡混雜自我參照與正常配對時，只有正常配對留在最終結果（對應真實案例 `docs/09b_bug_trace.md` #32） |
 | map 階段失敗時取消排隊中的 group | `_map_phase()`（mock LLM，worker 數設 1、多個 tag） | 其中一個 group 拋例外時，尚未開始執行的其餘 group 不會被呼叫（用呼叫紀錄確認呼叫次數少於 tag 數量） |
 | Map 階段分塊 | `_chunk_operations()` | 單一 tag 累積 payload 超過 `_MAX_CHARS_PER_MAP_CHUNK` 時正確切成多個子批次；單一 operation 本身就超過門檻時仍自成一批，不會被拆到欄位層級；未超過門檻的正常情況仍回傳單一批次（不多分）；`_map_phase()` 用 mock LLM 驗證同一個 tag 被拆成多批呼叫後，候選清單仍正確彙整成單一清單（與未分塊時的結果等價） |
 | `call_claude_for_json()` schema 組裝 | `call_claude_for_json()`（fake client） | `schema` 正確組進 `output_config`（`{"format": {"type": "json_schema", "schema": ...}}`）；回應解析成對應的 dict／array；API 呼叫失敗（`anthropic.APIError`）轉成 `LlmJsonError`；`output_config` 保證仍失效這種異常情況（回應不是合法 JSON）時 `LlmJsonError` 帶 `raw_text` 且不重試 |

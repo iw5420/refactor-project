@@ -65,6 +65,27 @@ def test_file_path_of_extracts_only_file_path_segment():
     assert module_index.file_path_of(iid) == "app/services/user_service.py"
 
 
+def test_parse_interface_id_roundtrips_with_class_name():
+    iid = module_index.interface_id("app/services/user_service.py", "UserService", "get_user")
+    assert module_index.parse_interface_id(iid) == ("app/services/user_service.py", "UserService", "get_user")
+
+
+def test_parse_interface_id_restores_none_for_empty_class_name_placeholder():
+    # 對應 06a 七章新設計：referenced_interfaces 函式層級抽取需要完整
+    # 三元組，routers 層編碼時的空字串佔位要正確還原成 None。
+    iid = module_index.interface_id("app/routers/order_router.py", None, "get_order_endpoint")
+    assert module_index.parse_interface_id(iid) == ("app/routers/order_router.py", None, "get_order_endpoint")
+
+
+def test_parse_interface_id_function_name_may_contain_no_further_delimiters():
+    file_path, class_name, function_name = module_index.parse_interface_id(
+        "app/repositories/exam_repository.py::ExamSpecification::with_card"
+    )
+    assert file_path == "app/repositories/exam_repository.py"
+    assert class_name == "ExamSpecification"
+    assert function_name == "with_card"
+
+
 def test_schema_and_model_file_path_naming():
     assert module_index.schema_file_path("order") == "app/schemas/order.py"
     assert module_index.model_file_path("order") == "app/models/order.py"

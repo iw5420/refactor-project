@@ -63,6 +63,17 @@ def controller_dependency_closure(project: ParsedProject) -> dict[str, set[str]]
         for imported_name in class_info.imports:
             if imported_name != class_info.class_name and imported_name in project.classes:
                 deps.add(imported_name)
+        # 補上 extends 這條依賴邊（見 call_graph._extract_classes()
+        # docstring「extends」段）：Java 單一繼承沒有 DI 那種「多個實作
+        # 選一個」的歧義，跟 import 邊同一種確定性——甚至更確定，比對
+        # target 是否真的在 project.classes 裡（同套件父類別沒有 import
+        # 陳述式可查，`extends` 是唯一能發現這條邊的地方）。這條邊解決的
+        # 是 docs/09b_bug_trace.md「新發現：@MappedSuperclass（如
+        # BaseEntity）未被任何 module 的 java_files 收錄」：父類別（尤其
+        # @MappedSuperclass 這種共用基底類別）常常跟子類別同一個套件、
+        # 從未被任何檔案明確 import，只有 extends 這一條資訊能發現它。
+        if class_info.extends is not None and class_info.extends in project.classes:
+            deps.add(class_info.extends)
         return deps
 
     def _closure(start_name: str) -> set[str]:

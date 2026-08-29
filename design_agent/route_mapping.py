@@ -59,6 +59,30 @@ def normalize_path_key(http_method: str, endpoint: str) -> str:
     return f"{http_method.upper()}_{path}"
 
 
+def build_route_to_module_mapping(api_to_python_target: list[ApiMapping]) -> dict[str, str]:
+    """對應 docs/09b_bug_trace.md #64：`route_to_module_mapping` 的值就是
+    `ApiMapping.module` 本尊，不是新的判斷（見 `build_route_mappings()`
+    docstring），只需要 ①（parse）的輸出就能算出來，不依賴 ③ 才有的
+    `interfaces`／`modules_with_schema_file`（那兩者只有 `route_to_file_
+    mapping` 那半才需要，見 `build_route_mappings()` 內部組裝）。
+
+    獨立成這個函式，讓 `record_tests`／`run_tests` 這兩個 node 可以在
+    ① 完成、③ 還沒跑完（甚至根本不會跑，如 `run_tests` 在 debug↔implement
+    重試迴圈裡重複呼叫）時，直接用 `state["api_to_python_target"]` 就地
+    算出當下這次 run 真正的 module 對照，不用透過 `config/harness.yaml`
+    這個由 ③ 寫入、且跟 ②（`record_tests`）是平行分支、寫入時機不保證
+    早於 ② 讀取的中介檔案——`record_tests`／`design` 平行觸發（05a 十一
+    章），先前 ② 用 `RouteMapper` 讀 `config/harness.yaml` 拿到的可能是
+    上一輪殘留的舊版（這輪 ③ 還沒寫完），而 `run_tests` 稍後讀到的是
+    這輪 ③ 已經寫完的新版——只要①這輪的模組分類跟上一輪不同，兩個 node
+    對同一個 route 解出不同 module，golden 寫錯資料夾、永遠讀不到。
+    """
+    return {
+        normalize_path_key(api["http_method"], api["endpoint"]): api["module"]
+        for api in api_to_python_target
+    }
+
+
 def build_route_mappings(
     api_to_python_target: list[ApiMapping],
     interfaces: list[InterfaceSpec],
@@ -66,9 +90,9 @@ def build_route_mappings(
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
     """對應 05a 八章全節（`related_files` 的組成、route_to_module_mapping
     的存在理由，詳見該章，這裡不重複）。回傳
-    `(route_to_file_mapping, route_to_module_mapping)`——共用同一個
-    `normalize_path_key()` 迴圈一次產出，`route_to_module_mapping` 的值
-    就是這筆 `ApiMapping.module` 本尊，不是新的判斷。
+    `(route_to_file_mapping, route_to_module_mapping)`——`route_to_module_
+    mapping` 直接委派給 `build_route_to_module_mapping()`（同一份邏輯，
+    不重複維護兩份），這裡只另外組 `route_to_file_mapping`。
 
     **`schemas/{module}.py` 是否存在的判定，必須用 `modules_with_schema_
     file` 精確比對，不能用「這個 module 有沒有 router 檔案」猜測**：同一
@@ -86,15 +110,15 @@ def build_route_mappings(
         module = _module_of(iface["file_path"])
         files_by_module.setdefault(module, set()).add(iface["file_path"])
 
+    module_mapping = build_route_to_module_mapping(api_to_python_target)
+
     file_mapping: dict[str, list[str]] = {}
-    module_mapping: dict[str, str] = {}
     for api in api_to_python_target:
         key = normalize_path_key(api["http_method"], api["endpoint"])
         related = set(files_by_module.get(api["module"], set()))
         if api["module"] in modules_with_schema_file:
             related.add(schema_file_path(api["module"]))
         file_mapping[key] = sorted(related)
-        module_mapping[key] = api["module"]
     return file_mapping, module_mapping
 
 

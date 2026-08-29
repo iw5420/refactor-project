@@ -153,20 +153,86 @@ masked_patterns:
   - "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}"   # ISO datetime
   - "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"          # UUID v4
   - "^Bearer\\s"                                       # Bearer token
+
+# 跟上面三種不同：這裡遮的不是整個欄位值，是字串裡的一小段子字串
+# （見 docs/09b_bug_trace.md「golden 對隨機欄位無法比對」的 voice 案例：
+# 隨機碼包在一段更長的訊息文字裡，不是獨立欄位）。只在 mutation 情境套用。
+masked_value_substring_patterns_mutation_only:
+  - "..."   # 依實際訊息格式錨定，不要只用長度／字元集判斷——容易誤傷
+            # 剛好長度相符的固定關鍵字，範例見本文件 core/masker.py 一節
 ```
 
 ---
 
 ## core/postman_runner.py
 
-> **這個模組在 09b 端對端驗證中發現並修正了三個既有缺陷**（`shutil.which()` 路徑解析、`baseUrl` 變數名稱、`extract_response_body()` 讀對 newman 真實欄位），完整重現方式與影響範圍見 `09b_bug_trace.md` #1／#3／#20。以下是修正後的權威版本。
+> **這個模組在 09b 端對端驗證中發現並修正了六個既有缺陷**：`shutil.which()` 路徑解析、`baseUrl` 變數名稱、`extract_response_body()` 讀對 newman 真實欄位（#1／#3／#20），newman exit code 不是唯一成敗判準、優先信任已寫出的報表（#33），對半死不活的目標服務沒有真正逾時上限、Windows 上單純 `kill()` 砍不乾淨 `newman.cmd` 底下的 `node.exe` 子行程（#34／#36）。完整重現方式與影響範圍見對應編號的 `09b_bug_trace.md` 條目。以下是修正後的權威版本。
 
 ```python
 import json
+import logging
+import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+
+logger = logging.getLogger(__name__)
+
+# newman 打的目標服務可能處於「socket 還開著、但 app 沒真的載入」這種
+# 半死不活狀態（例如容器內 uvicorn --reload 的 app import 階段拋
+# SyntaxError，reload watcher 仍在監聽，連進去的請求會一直掛著不回應，
+# 不是乾脆的 connection refused）——這種情況下 newman 本身也會卡住不
+# 結束，若 `subprocess.run()` 沒設 timeout，Python 會無界等下去，見
+# docs/09b_bug_trace.md #34（真實重跑卡了一個多小時，用 py-spy dump
+# 活行程才抓到卡在這裡）。可用環境變數覆蓋，預設值遠大於一般 collection
+# 的正常執行時間，只是拿來擋「目標服務死掉」這種異常情境。
+NEWMAN_TIMEOUT_SECONDS = float(os.environ.get("NEWMAN_TIMEOUT_SECONDS", "180"))
+
+
+def _spawn(cmd: list[str]) -> subprocess.Popen:
+    """啟動子行程時讓它自成一個獨立的行程群組／session，見
+    `_kill_process_tree()` docstring——逾時要砍的時候才砍得到整棵行程樹，
+    不會漏殺孫行程。
+    """
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs
+    )
+
+
+def _kill_process_tree(pid: int) -> None:
+    """對應 docs/09b_bug_trace.md #36：Windows 上 `newman` 實際執行的是
+    `newman.cmd`（npm batch wrapper），這個 `.cmd` 檔案內部會再啟動一個
+    真正在做事的 `node.exe` 子行程。`Popen.kill()`／`subprocess.run(timeout=)`
+    逾時時只會砍掉 Python 直接持有 handle 的那個行程（`cmd.exe`／
+    `newman.cmd` wrapper 本身），**不會連帶砍掉這個 wrapper 底下的
+    `node.exe` 子行程**——Windows 沒有 POSIX 那種預設的行程群組／session
+    語意。結果是 wrapper 被砍了，但 `node.exe` 還活著、還占著
+    `capture_output` 開的 stdout/stderr 管線沒放手，讓
+    `communicate(timeout=...)` 逾時後續的收尾等待永遠等不到 EOF，即使
+    設了 `timeout=` 整個呼叫實際上還是沒有真正的上限（真實重跑卡了
+    24 分鐘以上才被 py-spy＋netstat 查出來）。
+
+    改用 `taskkill /T /F` 對整棵行程樹下手（`/T` 是關鍵：連子行程、孫
+    行程一起砍），是 Windows 上唯一可靠的做法；POSIX 對應 `_spawn()`
+    用 `start_new_session=True` 建立的整個 session 用 `os.killpg()` 處理。
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True, text=True,
+        )
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # 行程樹已經自己結束了，不是錯誤
 
 
 def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
@@ -216,18 +282,53 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
     if folder:
         cmd += ["--folder", folder]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
+    process = _spawn(cmd)
+    try:
+        stdout, stderr = process.communicate(timeout=NEWMAN_TIMEOUT_SECONDS)
+        returncode = process.returncode
+    except subprocess.TimeoutExpired:
+        # 見 _kill_process_tree() docstring、docs/09b_bug_trace.md #36：
+        # 光是 process.kill() 砍不乾淨 newman.cmd 底下真正在跑的
+        # node.exe，會讓下面這次收尾用的 communicate() 也卡住——所以
+        # 逾時後一定要先把整棵行程樹砍乾淨，才能安全地做收尾讀取。
+        _kill_process_tree(process.pid)
+        process.communicate()  # 收尾：確認管線真的關閉，避免留下殭屍行程
         raise RuntimeError(
-            f"newman 執行失敗（return code {result.returncode}）\n"
+            f"newman 執行逾時（timeout={NEWMAN_TIMEOUT_SECONDS}s）：目標服務可能處於"
+            "「socket 還開著但沒有真的回應」的異常狀態（如容器內 app 載入時就掛掉，"
+            "reload watcher 仍在監聽）\n"
             f"collection: {collection_path}\n"
-            f"base_url: {base_url}\n"
-            f"stderr: {result.stderr[:500]}"
+            f"base_url: {base_url}"
+        ) from None
+
+    # newman 的 exit code 只反映「collection 裡的 test script 斷言是否全部
+    # 通過」，不是「這次執行本身有沒有成功產生報表」——鏈式依賴注入的
+    # capture script 斷言失敗時 exit code 也會是非 0，但 JSON reporter仍
+    # 正常寫出完整報表（已用真實案例核對過：POST /api/candidate/search
+    # 的斷言失敗、exit code=1，報表檔案仍含完整 executions，見
+    # docs/09b_bug_trace.md #32）。呼叫端（GoldenVerifier／MutationVerifier／
+    # GoldenRecorder）都是自己重新比對 response 內容，從不依賴 newman 自身
+    # 的斷言結果，所以只要報表存在且是合法 JSON 就該當成執行成功回傳，讓
+    # 斷言失敗與否交給呼叫端自己的邏輯判斷（如 record_mutation() 的
+    # tainted-folder 機制）；報表根本沒產生（服務沒起來、collection 路徑
+    # 錯誤等真正的執行失敗）才是這裡要擋下的硬性錯誤。
+    if returncode != 0:
+        logger.warning(
+            "newman exit code=%s（collection 內部斷言失敗，非執行本身失敗），"
+            "仍嘗試讀取報表: collection=%s base_url=%s",
+            returncode, collection_path, base_url,
         )
 
-    with open(output_path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(output_path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        raise RuntimeError(
+            f"newman 執行失敗（return code {returncode}），且未產生有效報表\n"
+            f"collection: {collection_path}\n"
+            f"base_url: {base_url}\n"
+            f"stderr: {(stderr or '')[:500]}"
+        )
 
 
 def extract_response_body(response: dict) -> str | None:
@@ -325,6 +426,8 @@ def get_module(url_parts: list[str]) -> str:
 
 ## core/masker.py
 
+> **`masked_value_substring_patterns_mutation_only` 是 09b 端對端驗證才補上的第三種遮罩機制**（`docs/09b_bug_trace.md`「golden 對隨機欄位無法比對」）：`masked_fields`／`masked_patterns` 都假設「動態值本身就是一個完整的欄位值」，但 `voice` 上傳成功訊息把隨機碼包在一段更長的訊息字串裡（如 `"上傳成功: C:\voice\2025\macuhau\TAA\xMpIV\1_1.wav"`）——隨機碼既不是獨立欄位（`masked_fields` 擋不住），也不是整個字串值（`masked_patterns` 是 `re.match` 整個字串，符合就整個值換成 `<<MASKED>>`，會連同前後的固定訊息文字一起吃掉）。這裡改用 `re.sub()` 只替換匹配到的子字串。只在 `mutation` 情境套用，理由同 `masked_fields_mutation_only`。
+
 ```python
 import re
 from typing import Any, Literal
@@ -338,35 +441,49 @@ class ResponseMasker:
         self.masked_fields = set(rules.get("masked_fields", []))
         self.masked_fields_mutation_only = set(rules.get("masked_fields_mutation_only", []))
         self.masked_patterns = rules.get("masked_patterns", [])
+        self.masked_value_substring_patterns_mutation_only = rules.get(
+            "masked_value_substring_patterns_mutation_only", []
+        )
         self.MASK = "<<MASKED>>"
 
     def mask(self, obj: Any, context: Literal["readonly", "mutation"] = "readonly") -> Any:
         """
         readonly 情境（預設）只套用 masked_fields，不遮罩 id / order_id / user_id
         這類欄位，讓實體 ID 是否撈對能被真正比對到；mutation 情境額外套用
-        masked_fields_mutation_only（見 mask_rules.yaml 說明）。
+        masked_fields_mutation_only／masked_value_substring_patterns_mutation_only
+        （見 mask_rules.yaml 說明）。
         呼叫端要自行傳對 context——comparator.py（readonly）不傳即為預設值，
         mutation_verifier.py／golden_writer.record_mutation() 需明確傳 "mutation"。
         """
         active_fields = self.masked_fields | (
             self.masked_fields_mutation_only if context == "mutation" else set()
         )
-        return self._mask(obj, active_fields)
+        substring_patterns = (
+            self.masked_value_substring_patterns_mutation_only if context == "mutation" else []
+        )
+        return self._mask(obj, active_fields, substring_patterns)
 
-    def _mask(self, obj: Any, active_fields: set) -> Any:
+    def _mask(self, obj: Any, active_fields: set, substring_patterns: list) -> Any:
         if isinstance(obj, dict):
             return {
-                k: self.MASK if k in active_fields else self._mask(v, active_fields)
+                k: self.MASK if k in active_fields else self._mask(v, active_fields, substring_patterns)
                 for k, v in obj.items()
             }
         elif isinstance(obj, list):
-            return [self._mask(item, active_fields) for item in obj]
+            return [self._mask(item, active_fields, substring_patterns) for item in obj]
         elif isinstance(obj, str):
             for pattern in self.masked_patterns:
                 if re.match(pattern, obj):
                     return self.MASK
+            for pattern in substring_patterns:
+                obj = re.sub(pattern, self.MASK, obj)
+            return obj
         return obj
 ```
+
+### 回歸測試
+
+`tests/refactor_harness/test_masker.py`（新增）：既有 `masked_fields`／`masked_fields_mutation_only`／`masked_patterns`／遞迴行為的回歸鎖定；`randomId` 在 mutation 情境正確遮罩、readonly 情境不遮罩（含陣列內每筆記錄）；`masked_value_substring_patterns_mutation_only` 只替換訊息字串裡匹配到的子字串、保留其餘內容，且只在 mutation 情境套用——特別鎖住一個實測踩到的陷阱：`voice` 這個路徑關鍵字本身剛好也是 5 個英數字元，若 pattern 只靠「前後都是路徑分隔符的 5 碼英數字段」判斷會連它一起誤遮，因此改成錨定檔名（`{part}_{question}.{ext}`）結構，只匹配緊接在檔名前面的那一段。
 
 ---
 
@@ -565,7 +682,7 @@ class RouteMapper:
 
 ## core/reporter.py
 
-> 09b 端對端驗證新增 `excluded_cases` 參數／欄位（見 `09b_bug_trace.md` #21），設計面對應說明見 02a 九章「Report 結構」。
+> 09b 端對端驗證新增 `excluded_cases` 參數／欄位（見 `09b_bug_trace.md` #21），設計面對應說明見 02a 九章「Report 結構」。`failures[]` 另外多了 `module` 欄位——`GoldenVerifier`／`MutationVerifier` 內部本來就算出這個值，只是原本沒有寫進輸出，見 `10a_debug_agent_architecture.md` 二章。
 
 ```python
 class HarnessReporter:
@@ -607,6 +724,7 @@ class HarnessReporter:
             "failures": [
                 {
                     "case_id": f["case_id"],
+                    "module": f.get("module"),
                     "failure_type": self._classify_failure(f),
                     "status_code_match": f.get("status_match", True),
                     "expected_status": f.get("expected_status"),
@@ -1155,8 +1273,10 @@ class GoldenVerifier:
                     continue
                 results.append({
                     "case_id": case_id,
+                    "module": module,
                     "passed": False,
-                    "error": "golden_not_found"
+                    "error": "golden_not_found",
+                    "related_files": self.route_mapper.resolve_related_files(method, url_parts),
                 })
                 continue
 
@@ -1169,8 +1289,10 @@ class GoldenVerifier:
                 except (json.JSONDecodeError, TypeError):
                     results.append({
                         "case_id": case_id,
+                        "module": module,
                         "passed": False,
-                        "error": "response_not_json"
+                        "error": "response_not_json",
+                        "related_files": self.route_mapper.resolve_related_files(method, url_parts),
                     })
                     continue
             # GoldenVerifier 只處理 readonly collection，context 用預設值 "readonly"
@@ -1185,6 +1307,7 @@ class GoldenVerifier:
 
             results.append({
                 "case_id": case_id,
+                "module": module,
                 "passed": status_match and (diff is None),
                 "expected_status": golden["response"]["status_code"],
                 "actual_status": actual_response["code"],
@@ -1208,7 +1331,7 @@ class GoldenVerifier:
 
 ## verifier/mutation_verifier.py
 
-> 09b 端對端驗證修正 `actual_response.get("body")` 讀錯欄位的問題（改用 `extract_response_body()`，見 core/postman_runner.py 一節、`09b_bug_trace.md` #20）——這條路徑目前只完成程式碼修正，尚未實際重跑驗證過，見 `09b_bug_trace.md`「待決定事項」。
+> 09b 端對端驗證修正 `actual_response.get("body")` 讀錯欄位的問題（改用 `extract_response_body()`，見 core/postman_runner.py 一節、`09b_bug_trace.md` #20）。之後在真實 `debug ↔ implement ↔ run_tests` 迴圈中已隨 `run_postman_tests()` 一併重跑驗證過（見 `10a_debug_agent_architecture.md` 前言「實作狀態」第三階段）。
 
 ```python
 import json
@@ -1386,6 +1509,7 @@ class MutationVerifier:
 
             results.append({
                 "case_id": case_id,
+                "module": module,
                 "passed": status_match and (body_diff is None),
                 "expected_status": expected_status,
                 "actual_status": actual_response["code"],
@@ -1416,16 +1540,23 @@ class MutationVerifier:
 ## langgraph_nodes/test_nodes.py
 
 > 提供 LangGraph 的 `record_tests`／`run_tests` 兩個 node 函式，以及條件邊判斷函式 `should_debug_or_done`。State 定義見 `01_langgraph_architecture.md` 三章；module 級局部驗證與 regression 重驗的實作在 `01` 六章的 `implement_node.py`（`_partial_verify` + `ModuleScheduler`），本檔不重複維護第二份局部驗證邏輯。圖形接線見 `01` 五章的 `graph/builder.py`。
+>
+> `run_postman_tests()` 開頭新增的健康檢查（`_is_service_reachable()`）與 `should_debug_or_done()` 的 retry_count 判斷邏輯，都是 `10a_debug_agent_architecture.md` 二章、七章交叉比對 09a 三章後定案的修正——後者明確推翻了本文件原本「`blocked_modules` 不消耗 retry_count」的設計，理由見 10a 一章「本文件推翻的一項既有假設」。以下是修正後的版本。
 
 ```python
+import json
 import os
+import time
 import yaml
+import httpx
 from graph.state import RefactorState
+from python_service import manager as python_service_manager
 from refactor_harness.recorder.golden_writer import GoldenRecorder
 from refactor_harness.verifier.comparator import GoldenVerifier
 from refactor_harness.verifier.mutation_verifier import MutationVerifier
 from refactor_harness.core.reporter import HarnessReporter
 from refactor_harness.fixtures.db_env import DbEnvironment
+from spec_collection_agent.java_service import JavaServiceProcess, resolve_jar_path
 
 with open("config/harness.yaml", encoding="utf-8") as f:
     HARNESS_CONFIG = yaml.safe_load(f)
@@ -1435,6 +1566,46 @@ MAX_RETRY = 3  # 已定案（見 00 九、State 表格 retry_count）
 
 # Java 服務位置不放進 RefactorState，直接讀 .env
 JAVA_BASE_URL = os.environ["JAVA_BASE_URL"]
+
+# 見 10a 二章「⑥ 對外呼叫前必須先確認 Python 服務有回應」：只確認連線
+# 層級可達，不是 09a 三章 _wait_for_service_reload() 那種要比對特定
+# token 的同步屏障——⑤ 該做的等待已經做過，這裡只需要知道「現在」連
+# 不連得上。逾時預算刻意比 09a 的 SERVICE_READY_TIMEOUT_SECONDS（預設
+# 120s）短很多：這裡的目的不是「等它恢復」，是「快速判斷這一輪要不要
+# 跳過 Newman」，服務若真的當機，多等也不會自己好。
+RUN_TESTS_HEALTH_CHECK_TIMEOUT_SECONDS = float(
+    os.environ.get("RUN_TESTS_HEALTH_CHECK_TIMEOUT_SECONDS", "15")
+)
+RUN_TESTS_HEALTH_CHECK_POLL_INTERVAL_SECONDS = float(
+    os.environ.get("RUN_TESTS_HEALTH_CHECK_POLL_INTERVAL_SECONDS", "3")
+)
+
+
+def _is_service_reachable(base_url: str, timeout_seconds: float, poll_interval: float) -> bool:
+    """只檢查連線層級是否可達，不檢查回應內容或狀態碼——即使服務回
+    404／500，只要連得上就代表這不是「worker 崩潰、連線被拒絕」的情境，
+    交給 run_newman() 正常執行、讓既有的比對邏輯去發現真正的問題。
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            httpx.get(base_url, timeout=5.0)
+            return True
+        except httpx.HTTPError:
+            pass
+        time.sleep(poll_interval)
+    return False
+
+
+_UNREACHABLE_TEST_RESULTS = {
+    "summary": {"total": 0, "passed": 0, "failed": 0, "pass_rate": 0},
+    "status": "fail",
+    "reason": "service_unreachable",
+    "failures": [],
+    "passed_cases": [],
+    "excluded_folders": [],
+    "excluded_cases": [],
+}
 
 
 # ── Agent ②：錄製 golden output（readonly + mutation）──
@@ -1450,15 +1621,30 @@ def record_golden_output(state: RefactorState) -> dict:
     01 五章、05a 十一章——③ 不依賴 golden_output），因此只回傳自己實際更動
     的 key，不能用 `{**state, ...}` 整包展開，避免跟 design 同一個
     superstep 對同一個 key 各自寫入。
+
+    自己開一個 `JavaServiceProcess`（比照 `spec_collection_agent.run_spec_agent()`
+    的既有寫法，換一組 env_overrides），見 03a 二章「與 Agent ② 共用的邊界」、
+    `docs/09b_bug_trace.md` #39：① parse 用的那個實例只在 parse 期間存在，
+    parse 一結束就 stop()，這裡不能假設 `JAVA_BASE_URL` 當下還有活著的服務。
     """
-    recorder = GoldenRecorder(
-        java_base_url=JAVA_BASE_URL,
-        golden_dir="fixtures/golden",
-        test_dsn=state["test_dsn"],
-    )
-    readonly_result = recorder.record("postman/collection_readonly.json")
-    mutation_result = recorder.record_mutation("postman/collection_mutation.json")
-    recorder.write_metadata(readonly_result, mutation_result)
+    with JavaServiceProcess(
+        jar_path=resolve_jar_path(os.environ["JAVA_JAR_PATH"]),
+        base_url=JAVA_BASE_URL,
+        java_executable=os.environ.get("JAVA_EXECUTABLE_PATH", "java"),
+        env_overrides={
+            "SPRING_DATASOURCE_URL": os.environ["SPRING_DATASOURCE_URL"],
+            "SPRING_DATASOURCE_USERNAME": os.environ["SPRING_DATASOURCE_USERNAME"],
+            "SPRING_DATASOURCE_PASSWORD": os.environ["SPRING_DATASOURCE_PASSWORD"],
+        },
+    ):
+        recorder = GoldenRecorder(
+            java_base_url=JAVA_BASE_URL,
+            golden_dir="fixtures/golden",
+            test_dsn=state["test_dsn"],
+        )
+        readonly_result = recorder.record("postman/collection_readonly.json")
+        mutation_result = recorder.record_mutation("postman/collection_mutation.json")
+        recorder.write_metadata(readonly_result, mutation_result)
 
     return {
         "golden_output": {
@@ -1477,7 +1663,58 @@ def run_postman_tests(state: RefactorState) -> RefactorState:
     MutationVerifier、02a 四章「排除已知異常的 folder」）；跑完後透過
     get_excluded_folders() 取得這次實際跳過的 folder 清單，一併傳進
     build_report()，讓最終 report 帶有 excluded_folders 欄位（見 02a 九章）。
+
+    見 docs/09b_bug_trace.md #42：02a 十一章流程圖從設計當下就明確畫出
+    「輸出單一 report.json」交給 ⑦ Debug Agent 讀取，但 02b 從未真的把
+    這一步寫進程式碼——`report` 只活在 `state["test_results"]`，graph run
+    一結束就消失，⑦ 沒有檔案可讀。這裡補上落地：寫到
+    `logs/report_{run_id}.json`，跟既有 `logs/orchestrator.log`／
+    `logs/llm_traces.db` 同一個「不進 git 的執行期產物」目錄（見
+    .gitignore），檔名帶 run_id 避免跨次執行互相覆蓋，同一次 run 內
+    debug 迴圈重跑 run_tests 則直接覆寫成最新結果——⑦ 永遠讀這次 run
+    目前最新的驗證結果，不需要自己判斷要看哪一份。
+
+    **前置健康檢查**（10a 二章）：09a 三章「批次執行」描述的
+    batch_reload_timeout 最常見成因（某個 task 寫入的程式碼有模組層級
+    匯入／語法錯誤，讓容器內的 uvicorn worker 崩潰）在 implement 結束
+    時可能還沒解決，Python 服務容器可能仍處於連不上的狀態（見 09b 六章
+    「Python 服務只啟動一次」——⑤／⑥ 共用同一個持續運行的容器，⑤ 沒有
+    機制把它修好）。若不做這個檢查，下面的 run_newman() 會直接拋出
+    RuntimeError（02a 五章既有、刻意設計的行為），讓整條 graph.ainvoke()
+    崩潰，⑦ Debug Agent 永遠不會被呼叫到。
+
+    同一時間點順手讀取 `service_diagnostics`（10a 二章、八章）：這是
+    診斷資料最新鮮的時間點，寫進 State 供 ⑦ 之後讀取——⑦（`debug_agent/`）
+    全程不 import 任何 `graph/nodes/*.py`，也不 import
+    `python_service.manager` 本身，只讀 `state["service_diagnostics"]`，
+    避免 node 對 node 互相依賴（見 10a 八章）。
+
+    見 docs/09b_bug_trace.md #54：這裡跟下方正常完成的 return 都用
+    `**state` 帶過其餘欄位，但 completed_tasks／failed_tasks／
+    task_failures／partial_reports／debug_rounds 這五個掛
+    `operator.add` reducer 的欄位（見 01 三章 State 定義）不能這樣
+    帶——`**state` 會把「目前已累積的完整值」原樣當成這次的回傳值，
+    LangGraph 分不出這是「不小心重複回傳」還是「這次真的新增了這麼
+    多」，直接加到既有累積值上，每次這個 node 完成就讓這些欄位的長度
+    再乘以 2。真實重跑證實 task_045 的 1 筆真實記錄膨脹成 128 筆重複。
+    下面兩個 return 都疊上 `**_NO_REDUCER_DELTA`（模組層級常數，明確
+    列舉這五個欄位對應空值）明確覆寫掉，不是排除法——新增任何一個掛
+    reducer 的欄位都要記得同步加進這個常數，完整程式碼見
+    `refactor_harness/langgraph_nodes/test_nodes.py`（這裡示範的兩個
+    分支，完整版還有 09b/#38 的 mid-flight timeout 分支，同樣的模式）。
     """
+    if not _is_service_reachable(
+        state["python_base_url"],
+        RUN_TESTS_HEALTH_CHECK_TIMEOUT_SECONDS,
+        RUN_TESTS_HEALTH_CHECK_POLL_INTERVAL_SECONDS,
+    ):
+        return {
+            **state,
+            "test_results": dict(_UNREACHABLE_TEST_RESULTS),
+            "service_diagnostics": python_service_manager.get_diagnostics(),
+            **_NO_REDUCER_DELTA,
+        }
+
     db = DbEnvironment(test_dsn=state["test_dsn"])
     db.apply_seed("fixtures/seed.sql", tables_to_truncate=TABLES)
 
@@ -1499,25 +1736,28 @@ def run_postman_tests(state: RefactorState) -> RefactorState:
         excluded_folders=mutation_verifier.get_excluded_folders(),
     )
 
-    return {**state, "test_results": report}
+    os.makedirs("logs", exist_ok=True)
+    report_path = f"logs/report_{state['run_id']}.json"
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2, default=str)
+
+    return {**state, "test_results": report, **_NO_REDUCER_DELTA}
 
 
 # ── 條件邊：決定去 Debug、結束、還是通知人工 ────────────────────
 def should_debug_or_done(state: RefactorState) -> str:
     """
-    retry_count 只在 failed_modules（確實跑過、驗證過但沒過）非空時才計入
-    重試判斷；blocked_modules 不影響這裡的判斷。
+    retry_count 上限檢查對所有分支統一套用，不再依 failed_modules 是否
+    為空分岔（見 10a 七章「為什麼要統一套用」）——這條分支原本存在的
+    理由是「blocked_modules 只是排程還沒排到，不算真正失敗」，但 10a
+    六章已經證明這個理由在目前 graph 的實際拓樸下不成立：能讓 debug
+    被觸發，test_results.status == "fail" 已經是既成事實，failed_modules
+    是否非空只反映 ⑤ 局部驗證（readonly-only）看不看得到問題，不是
+    「有沒有真的壞」的可靠依據，不該拿來決定要不要檢查 retry_count 上限。
     """
     report = state["test_results"]
-
     if report["status"] == "pass":
         return "done"
-
-    failed_modules = state.get("failed_modules", [])
-    if not failed_modules:
-        # 只有 blocked_modules、沒有 failed_modules
-        return "debug"
-
     if state["retry_count"] >= MAX_RETRY:
         return "give_up"
     return "debug"

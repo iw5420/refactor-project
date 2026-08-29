@@ -175,14 +175,49 @@ def _is_primitive(field_type) -> bool:
 _RELATION_ANNOTATIONS = ("ManyToOne", "OneToOne", "OneToMany", "ManyToMany")
 
 
+def project_has_jpa_auditing_enabled(java_project_path: str) -> bool:
+    """對應 docs/09b_bug_trace.md 的稽核時間戳失真案例：`@CreatedDate`／
+    `@LastModifiedDate`（Spring Data JPA 稽核）只有在專案某處有
+    `@EnableJpaAuditing` 時才會真的生效（還需要 `AuditingEntityListener`
+    掛勾，但那個前提條件如果連 `@EnableJpaAuditing` 都沒有就一定不成立，
+    只查這個當保守的必要條件已經足夠，見 `_scan_field()` docstring）——
+    跟 `@CreationTimestamp`／`@UpdateTimestamp`（Hibernate 原生機制，
+    不需要任何額外設定就會生效）語意完全不同，但兩者常被搞混。真實案例：
+    這個目標專案的 `BaseEntity` 用 `@CreatedDate`／`@LastModifiedDate`，
+    但整個專案完全沒有 `@EnableJpaAuditing`（也沒有 `@EntityListeners
+    (AuditingEntityListener.class)`）——這兩個 annotation 純粹是裝飾，
+    Java 端 `created`／`updated` 永遠是 null，SQLAlchemy 端卻機械生成
+    `server_default=func.now()`／`onupdate=func.now()`，讓 Python 版本
+    在每次 UPDATE 後自動填值，跟 golden 對不上。
+
+    只做字串搜尋，不用 javalang 解析——這是一次性的「專案裡有沒有出現
+    這個 annotation」二元判斷，不需要結構化資訊，效能與複雜度都不值得
+    引入 AST 解析（見本檔案 module docstring「Literal 規則」同樣的
+    「不過度解析」精神）。
+    """
+    for java_file in Path(java_project_path).rglob("*.java"):
+        if "@EnableJpaAuditing" in java_file.read_text(encoding="utf-8"):
+            return True
+    return False
+
+
 def _scan_field(
-    field_decl: javalang.tree.FieldDeclaration, *, label: str
+    field_decl: javalang.tree.FieldDeclaration, *, label: str, jpa_auditing_enabled: bool
 ) -> list[FieldRecord]:
     """對應四章 `fields`：一個 `FieldDeclaration` 可能一次宣告多個變數
     （`private int a, b;`），逐一展開，共用同一個型別與 annotation 集合
     （比照 `design_agent/signature_scan.py` 的 `_field_signature()` 既有
     先例）。`declaring_package`／`declaring_import_map` 由呼叫端
     （`scan_module()`）事後補上——這裡先留空，見該函式。
+
+    `jpa_auditing_enabled`：見 `project_has_jpa_auditing_enabled()`
+    docstring——`CreationTimestamp`／`UpdateTimestamp`（Hibernate 原生）
+    不受這個旗標影響，永遠視為生效；`CreatedDate`／`LastModifiedDate`
+    （Spring Data JPA 稽核）只有這個旗標為真才視為生效，否則欄位仍然
+    正確辨識出來，只是不會產生 `server_default`／`onupdate` 自動填值
+    （對應 `column_mapping.py` 的 `is_audit_created`／`is_audit_updated`
+    渲染邏輯），保留一般 nullable 欄位的行為，貼近 Java 端annotation
+    裝飾但實際上沒有生效的真實狀態。
     """
     ann_by_name: dict[str, dict[str, object]] = {
         ann.name: _annotation_elements(ann) for ann in field_decl.annotations
@@ -239,8 +274,14 @@ def _scan_field(
                 scale=scale if isinstance(scale, int) else None,
                 unique=unique if isinstance(unique, bool) else None,
                 enum_ordinal=_enum_ordinal(enumerated_elements) if enumerated_elements is not None else False,
-                is_audit_created=bool({"CreatedDate", "CreationTimestamp"} & ann_by_name.keys()),
-                is_audit_updated=bool({"LastModifiedDate", "UpdateTimestamp"} & ann_by_name.keys()),
+                is_audit_created=(
+                    "CreationTimestamp" in ann_by_name
+                    or ("CreatedDate" in ann_by_name and jpa_auditing_enabled)
+                ),
+                is_audit_updated=(
+                    "UpdateTimestamp" in ann_by_name
+                    or ("LastModifiedDate" in ann_by_name and jpa_auditing_enabled)
+                ),
                 mapped_by=mapped_by,
                 join_table=join_table,
                 declaring_package=None,  # scan_module() 補上
@@ -250,11 +291,78 @@ def _scan_field(
     return records
 
 
-def scan_module(java_project_path: str, module: ModuleInfo) -> tuple[list[EntityRecord], list[EnumRecord]]:
+def _enum_constructor_values(decl: javalang.tree.EnumDeclaration) -> tuple[list[str], dict[str, list[object]]]:
+    """對應四章「同時掃描 EnumDeclaration」的擴充：Java enum 常見帶建構子
+    參數（如 `CommonErrorCode(int code, String msg)`），原本的掃描只取
+    `decl.body.constants` 的名稱，完全丟棄這些建構子引數——`SUCCESS(200,
+    "操作成功")` 這種真正帶資料的 enum 值，渲染出來只剩 `SUCCESS =
+    "SUCCESS"`，數值資訊整個消失，不是精度打折而是資料遺失。這裡把
+    引數還原成 `member_args`，供 `model_builder.py` 渲染成帶值的 enum。
+
+    **取哪個建構子**：`decl.body.declarations` 裡的 `ConstructorDeclaration`
+    正常只有一個（Java enum 多載建構子極少見）；真的出現多個時，用
+    第一個宣告的參數清單當唯一依據，記一筆 warning——這不是精確解法
+    （不同常數可能呼叫不同的多載建構子），但比完全不處理更接近事實，
+    且「每個常數各自對應哪個多載」需要逐一比對引數型別才能判斷，成本
+    遠高於這個極端案例的實際發生機率。沒有任何建構子（一般狀態列舉，
+    如 `enum OrderStatus { PENDING, PAID }`）→ 回傳 `([], {})`，維持
+    修改前的既有行為（只渲染名稱）。
+
+    **Literal 規則**：一個常數的引數清單長度若跟建構子參數數量不符、
+    或任一引數不是 `javalang.tree.Literal`（如常數參照、方法呼叫），
+    整個常數視同沒有可用的建構子引數——不寫進 `member_args`，記一筆
+    warning，`model_builder.py` 對這個常數退回只渲染名稱（見該檔案）。
+    不嘗試部分還原（例如只取還原得出來的前幾個引數），半套資料比完全
+    沒有更容易誤導：使用端看到 `member_args` 有這個 key 就會假設引數
+    數量與 `constructor_params` 完全對齊。
+    """
+    constructors = [d for d in decl.body.declarations if isinstance(d, javalang.tree.ConstructorDeclaration)]
+    if not constructors:
+        return [], {}
+    if len(constructors) > 1:
+        logger.warning(
+            "enum %s 有多個多載建構子，只用第一個宣告的參數清單當渲染依據（見 _enum_constructor_values() docstring）",
+            decl.name,
+        )
+    constructor_params = [p.name for p in constructors[0].parameters]
+
+    member_args: dict[str, list[object]] = {}
+    for constant in decl.body.constants:
+        args = constant.arguments or []
+        if len(args) != len(constructor_params):
+            if constructor_params:
+                logger.warning(
+                    "enum %s 常數 %s 的引數數量（%d）跟建構子參數數量（%d）對不上，退回只渲染名稱",
+                    decl.name, constant.name, len(args), len(constructor_params),
+                )
+            continue
+        if not all(isinstance(a, javalang.tree.Literal) for a in args):
+            logger.warning(
+                "enum %s 常數 %s 的引數不是全部 Literal（可能是常數參照），退回只渲染名稱（見 Literal 規則）",
+                decl.name, constant.name,
+            )
+            continue
+        member_args[constant.name] = [_literal_value(a) for a in args]
+    return constructor_params, member_args
+
+
+def scan_module(
+    java_project_path: str, module: ModuleInfo, *, jpa_auditing_enabled: bool | None = None
+) -> tuple[list[EntityRecord], list[EnumRecord]]:
     """對 `module["java_files"]` 逐檔 `javalang.parse.parse()`，回傳
     `(entities, enums)`。對應四章「掃描範圍」＋「同時掃描
     `EnumDeclaration`」。
+
+    `jpa_auditing_enabled`：見 `project_has_jpa_auditing_enabled()`
+    docstring，這是全專案層級的旗標，理想上由呼叫端（`reference_
+    resolver.build_scan_index()`）對整個 `java_project_path` 只算一次、
+    逐 module 呼叫時重複傳入，避免每個 module 各自重新掃一次整個專案
+    的檔案系統。留 `None` 時當場算一次當保底（單元測試、或未來有其他
+    呼叫端還沒更新成傳入這個參數時，行為仍然正確，只是效能較差）。
     """
+    if jpa_auditing_enabled is None:
+        jpa_auditing_enabled = project_has_jpa_auditing_enabled(java_project_path)
+
     entities: list[EntityRecord] = []
     enums: list[EnumRecord] = []
     root = Path(java_project_path)
@@ -271,6 +379,7 @@ def scan_module(java_project_path: str, module: ModuleInfo) -> tuple[list[Entity
 
         for decl in tree.types:
             if isinstance(decl, javalang.tree.EnumDeclaration):
+                constructor_params, member_args = _enum_constructor_values(decl)
                 enums.append(
                     EnumRecord(
                         class_name=decl.name,
@@ -278,6 +387,8 @@ def scan_module(java_project_path: str, module: ModuleInfo) -> tuple[list[Entity
                         module=module["module"],
                         members=[c.name for c in decl.body.constants],
                         file_path=rel_path,
+                        constructor_params=constructor_params,
+                        member_args=member_args,
                     )
                 )
                 continue
@@ -307,7 +418,9 @@ def scan_module(java_project_path: str, module: ModuleInfo) -> tuple[list[Entity
 
             fields: list[FieldRecord] = []
             for field_decl in decl.fields:
-                for record in _scan_field(field_decl, label=label):
+                for record in _scan_field(
+                    field_decl, label=label, jpa_auditing_enabled=jpa_auditing_enabled
+                ):
                     record.declaring_package = package
                     record.declaring_import_map = import_map
                     fields.append(record)

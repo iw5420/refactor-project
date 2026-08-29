@@ -79,10 +79,22 @@ def interface_id(file_path: str, class_name: str | None, function_name: str) -> 
 def file_path_of(iid: str) -> str:
     """`interface_id()` 的部分反解——只取 `file_path` 這一段，供七章
     `target_files` 組裝時把 `referenced_interfaces`（interface_id 清單）
-    轉回檔案路徑。`class_name`／`function_name` 這兩段在 06a 的設計裡
-    不需要反解回來（七章只需要檔案路徑），因此不提供完整反解函式。
+    轉回檔案路徑，決定要讀哪些檔案。
     """
     return iid.split("::", 1)[0]
+
+
+def parse_interface_id(iid: str) -> tuple[str, str | None, str]:
+    """`interface_id()` 的完整反解，回傳 `(file_path, class_name,
+    function_name)`。對應 06a 七章新設計「`referenced_interfaces` 函式
+    層級抽取」：`_build_referenced_functions()` 需要完整三元組，才能讓
+    `translator_cli` 精準抽出被引用到的那一個函式，不是整份檔案（見
+    `docs/09b_bug_trace.md` #37 根因——舊版 `file_path_of()` 只反解檔案
+    路徑，正是造成 context 膨脹的直接原因）。`class_name` 編碼時的空字串
+    佔位（routers 層，見 05a 七章）在這裡還原成 `None`。
+    """
+    file_path, class_name, function_name = iid.split("::", 2)
+    return file_path, (class_name or None), function_name
 
 
 def schema_file_path(module: str) -> str:

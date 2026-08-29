@@ -15,8 +15,8 @@
 | `plan_agent/planning.py` | 06a 五、六、七、八章 | LLM 呼叫、`depends_on`／`target_files` 組裝、`task_list` 組裝與涵蓋率驗證 |
 | `plan_agent/__init__.py` | 06a 九章 | 對外唯一入口 `run_plan_agent()` |
 | `graph/nodes/plan_node.py` | 06a 十章 | LangGraph node（取代原本的 stub） |
-| `tests/plan_agent/test_module_index.py` | 06a 四章、六章、八章 | `classify()`／`interface_id()`／`full_order_key()` 的自動化測試（12 個） |
-| `tests/plan_agent/test_planning.py` | 06a 五、六、七、八章 | happy path、`referenced_interfaces` 過濾、防環規則、失敗處理、涵蓋率 defense-in-depth 的自動化測試（6 個），見五章「已驗證」 |
+| `tests/plan_agent/test_module_index.py` | 06a 四章、六章、八章 | `classify()`／`interface_id()`／`parse_interface_id()`／`full_order_key()` 的自動化測試（15 個） |
+| `tests/plan_agent/test_planning.py` | 06a 五、六、七、八章 | happy path、`referenced_interfaces` 過濾、防環規則、`referenced_functions` 同檔案排除、失敗處理、涵蓋率 defense-in-depth 的自動化測試（8 個），見五章「已驗證」 |
 
 ---
 
@@ -67,8 +67,6 @@ class PlanAgentCoverageError(Exception):
 
 **已驗證**：`tests/plan_agent/test_planning.py::test_duplicate_interfaces_raises_coverage_error` 用人工構造的重複三元組案例，穩定觸發 `PlanAgentCoverageError`——這是目前的權威驗證方式，不依賴任何會隨專案輸出刷新而失效的真實 fixture。
 
-**歷史紀錄（方法論已被取代，保留供追溯）**：這個檢查最早是用 `tests/design_agent/fixtures/real_python_structure.json`（當時尚未套用 `design_agent/design.py` 的多載消歧修正）做 dry-run 驗證的，`ResponseResult.error` 六個多載共用同一個三元組、正確觸發過一次；這份 fixture 後續已重新對 `lang-exam-api-refactor` 執行過 `design_agent` 刷新，不再有重複三元組可以自然重現這個案例——這正是「靠真實 fixture 剛好含 bug 來測」的方法論脆弱之處，改用人工構造案例後不再有這個問題。
-
 ---
 
 ## 二、`module_index.py`——反查、三元組編碼、全序（四、六、八章）
@@ -98,10 +96,17 @@ _LAYER_SUFFIX = {"routers": "_router", "services": "_service", "repositories": "
 # 06a 六章「防環規則」固定全序第一層：repositories < services < routers。
 LAYER_RANK = {"repositories": 0, "services": 1, "routers": 2}
 
-# `_global` 保留模組（見 04a 十一章、05a 十四章）固定輸出
+# `_global` 保留模組（見 parse_agent/summarize.py／design_agent/design.py
+# 同一組字面值，這裡比照本檔開頭「各自維護、不 import 其他 Agent 套件」
+# 的既有原則自己重複定義，不新增跨套件依賴）固定輸出
 # `app/core/exception_handlers.py`，不符合 `{module}_{layer}.py` 命名
-# 慣例——09b 端對端整合測試才發現這個缺口（見 06a 四章「例外」、
-# docs/09b_bug_trace.md #11/#12）。
+# 慣例——真實端對端測試才發現這個缺口（見 docs/09b_bug_trace.md
+# #11/#12）：一般規則找不到任何固定後綴，會直接中止整個 [P] 呼叫。
+# 這裡在一般規則之前特殊處理；layer 歸類為 "routers"（rank 最高、不影響
+# 任何排序正確性——`_global` 目前只有一個 task、模組內無 depends_on，
+# 選哪個 layer 對防環規則沒有實質差異，選 "routers" 只是語意上最接近：
+# 這批函式跟 routers 層一樣是 class_name=None 的自由函式、在 main.py
+# 被機械註冊，不是真正需要區分 service/repository 順序的情況）。
 _GLOBAL_MODULE_NAME = "_global"
 _EXCEPTION_HANDLERS_FILE = "app/core/exception_handlers.py"
 
@@ -139,9 +144,12 @@ def interface_id(file_path: str, class_name: str | None, function_name: str) -> 
     """`(file_path, class_name, function_name)` 三元組的字串編碼，供五章
     LLM 呼叫（echo back 核對用）與跨函式傳遞時當唯一識別鍵——比照 04b
     `method_id()`／05b `JavaMethodSignature.signature_key` 的既有先例
-    （`"{a}::{b}::{c}"` 格式），class_name 為 None（routers 層，見
-    05a 七章）時用空字串佔位，不需要在 JSON schema 裡額外處理 nullable
-    型別（見本檔開頭模組 docstring）。
+    （`"{a}::{b}::{c}"` 格式）。`class_name` 為 `None`（routers 層，見
+    05a 七章）時用空字串佔位：這是刻意的實作選擇，讓五章的 output schema
+    全程只有 `string` 型別，不需要為 `class_name` 額外處理 nullable
+    schema（06a 五章要求「原樣抄回三元組」，字串編碼與拆開傳三個欄位
+    在語意上等價，但前者讓 schema 更簡單、也順便讓 `referenced_interfaces`
+    從「三元組物件陣列」簡化成「字串陣列」）。
     """
     return f"{file_path}::{class_name or ''}::{function_name}"
 
@@ -149,10 +157,22 @@ def interface_id(file_path: str, class_name: str | None, function_name: str) -> 
 def file_path_of(iid: str) -> str:
     """`interface_id()` 的部分反解——只取 `file_path` 這一段，供七章
     `target_files` 組裝時把 `referenced_interfaces`（interface_id 清單）
-    轉回檔案路徑。`class_name`／`function_name` 這兩段在 06a 的設計裡
-    不需要反解回來（七章只需要檔案路徑），因此不提供完整反解函式。
+    轉回檔案路徑，決定要讀哪些檔案。
     """
     return iid.split("::", 1)[0]
+
+
+def parse_interface_id(iid: str) -> tuple[str, str | None, str]:
+    """`interface_id()` 的完整反解，回傳 `(file_path, class_name,
+    function_name)`。對應 06a 七章「`referenced_functions`：函式層級
+    抽取」：`_build_referenced_functions()` 需要完整三元組，才能讓
+    `translator_cli` 精準抽出被引用到的那一個函式，不是整份檔案（見
+    `docs/09b_bug_trace.md` #37 根因——`file_path_of()` 只反解檔案路徑，
+    正是造成 context 膨脹的直接原因）。`class_name` 編碼時的空字串佔位
+    （routers 層，見 05a 七章）在這裡還原成 `None`。
+    """
+    file_path, class_name, function_name = iid.split("::", 2)
+    return file_path, (class_name or None), function_name
 
 
 def schema_file_path(module: str) -> str:
@@ -180,7 +200,7 @@ def full_order_key(
     return (module_rank[module], LAYER_RANK[layer], function_name, class_name or "")
 ```
 
-**已驗證**：`tests/plan_agent/test_module_index.py` 的 `test_classify_*` 系列用人工構造案例覆蓋三種層級後綴、兩種失敗情境（找不到對應後綴／module 名稱不存在），是穩定的權威驗證，不受真實 fixture 內容變動影響。另外也對照過真實 `lang-exam-api-refactor` 專案的 `tests/design_agent/fixtures/real_python_structure.json` 跑過 `classify()`——這份 fixture 隨 `design_agent` 反覆刷新，`InterfaceSpec` 數量會跟著變動（曾經是 76 個，含尚未消歧的重複三元組；目前刷新後是 72 個），每次都全數正確反查回 `(module, layer)`，沒有觸發過 `PlanAgentModuleLookupError`，間接驗證③實際輸出確實遵守 `{module}_{layer}.py` 檔名格式承諾——這裡刻意不寫死特定數字，因為數字本身只是 fixture 當下的快照、會隨刷新變動，不是驗證結果的重點。`full_order_key()` 用 `tests/plan_agent/test_module_index.py` 的排序測試驗證過，另外也在五章 dry-run 驗證過保留/捨棄兩種方向的排序結果正確。
+**已驗證**：`tests/plan_agent/test_module_index.py` 的 `test_classify_*` 系列用人工構造案例覆蓋三種層級後綴、兩種失敗情境（找不到對應後綴／module 名稱不存在），是穩定的權威驗證，不受真實 fixture 內容變動影響。另外也對照過真實 `lang-exam-api-refactor` 專案的 `tests/design_agent/fixtures/real_python_structure.json` 跑過 `classify()`，全數正確反查回 `(module, layer)`，沒有觸發過 `PlanAgentModuleLookupError`，間接驗證③實際輸出確實遵守 `{module}_{layer}.py` 檔名格式承諾。`full_order_key()` 用 `tests/plan_agent/test_module_index.py` 的排序測試驗證過，另外也在五章 dry-run 驗證過保留/捨棄兩種方向的排序結果正確。
 
 ---
 
@@ -313,6 +333,8 @@ PLAN_OUTPUT_SCHEMA: dict = {
 
 對應 06a 全文核心：五章 LLM 呼叫與重試佇列（不需拓樸分波，跟 `design_agent/design.py` 的關鍵差異見 06a 五章）、六章 `depends_on` 組裝（固定全序防環）、七章 `target_files` 組裝（含跨 module schemas／models）、八章 `task_list` 組裝與涵蓋率驗證。
 
+**`referenced_functions`：函式層級抽取**（對應 06a 七章同名小節、`docs/09b_bug_trace.md` #37 根因）：下方 `_build_target_files()` 只決定「要讀哪些檔案」，檔案內容怎麼帶是另一件事——`_build_referenced_functions()` 另外算出每個因引用而拉進來的檔案裡，具體是哪個函式被引用到，交給 `translator_cli` 只抽取那幾個函式（`python_adapter.extract_specific_functions()`），細節見七章。
+
 **涵蓋率驗證提前到組裝前執行**：06a 八章把涵蓋率驗證放在「輸出格式與 State 對應」一節、字面順序上像是最後一步，但這裡選擇在五章 LLM 呼叫全部完成、六／七／八章機械組裝**之前**就先驗證——理由：後面的排序／`depends_on`／`target_files` 組裝都假設 `drafts_by_id` 跟 `python_structure.interfaces` 是同一個集合，提前驗證失敗可以更快中止、錯誤訊息也更單純（不會混雜組裝階段可能產生的其他例外），不影響驗證邏輯本身。
 
 ```python
@@ -332,7 +354,7 @@ from dataclasses import dataclass, field
 
 from common.concurrency import default_concurrency
 from common.llm_client import LlmJsonError, call_claude_for_json
-from graph.state import InterfaceSpec, ModuleInfo, PythonStructure, TaskSpec
+from graph.state import InterfaceSpec, ModuleInfo, PythonStructure, ReferencedFunctionRef, TaskSpec
 from plan_agent import module_index
 from plan_agent.exceptions import PlanAgentCoverageError, PlanAgentModuleError
 from plan_agent.llm import DEFAULT_MODEL, PLAN_AGENT_MAX_TOKENS
@@ -667,6 +689,29 @@ def _build_target_files(
     return files
 
 
+def _build_referenced_functions(draft: _TaskDraft) -> list[ReferencedFunctionRef]:
+    """對應 06a 七章「`referenced_functions`：函式層級抽取」：把
+    `draft.referenced_interfaces` 逐一反解成 `(file_path, class_name,
+    function_name)`，供 `translator_cli` 只抽取被引用到的那個函式，不是
+    整份檔案帶入（見 `docs/09b_bug_trace.md` #37 根因）。
+
+    **同檔案引用（`file_path == draft.file_path`）刻意排除**：這種情況
+    指向的是這個 task 自己的檔案，`target_files[0]` 本來就整份帶入（見
+    七章表格第一列），不需要、也不能對它做函式層級抽取——`_read_context_files()`
+    若對 `context_files[0]`（＝`target_files[0]`）套用這份清單，會把
+    「這次要填的目標函式本身」也一併篩掉（因為目標函式不在
+    `referenced_interfaces` 裡，那是「這個函式引用別人」的清單，不包含
+    自己），等於損毀目標檔案的 context。
+    """
+    result: list[ReferencedFunctionRef] = []
+    for ref_id in draft.referenced_interfaces:
+        file_path, class_name, function_name = module_index.parse_interface_id(ref_id)
+        if file_path == draft.file_path:
+            continue
+        result.append({"file_path": file_path, "class_name": class_name, "function_name": function_name})
+    return result
+
+
 # --------------------------------------------------------------------------
 # 六／八章：depends_on 組裝、task id 全序編號、最終組裝
 # --------------------------------------------------------------------------
@@ -731,6 +776,7 @@ def _assemble_task_list(
                 target_files=_build_target_files(draft, module_by_id, layer_by_id, modules_with_schema_file),
                 context=draft.context,
                 depends_on=_build_depends_on(draft, iid, module_by_id, order_index),
+                referenced_functions=_build_referenced_functions(draft),
             )
         )
     return tasks
@@ -740,9 +786,9 @@ def _assemble_task_list(
 
 **已驗證**：
 
-`tests/plan_agent/test_module_index.py`（12 個）／`test_planning.py`（6 個）是現在的權威、可重複執行的自動化測試，全程 monkeypatch `call_claude_for_json`，不呼叫真實 API，涵蓋：happy path（`depends_on`／`target_files` 組裝、`id` 固定全序編號）、`referenced_interfaces` 的非法引用／自我引用過濾、六章防環規則（反向／同層邊捨棄）、五章失敗處理（LLM 回應遺漏 interface → 重試 → 仍失敗中止）、涵蓋率 defense-in-depth（人工構造重複三元組）、四章 module 反查失敗。這批測試補上了 `plan_agent/` 從 `1358ce8` 這個 commit 落地以來一直缺少的自動化覆蓋——當時只跑過一次既有測試套件（`pytest`，148 個）確認沒有破壞其他模組（這是**回歸檢查**，不是 `plan_agent` 自己的覆蓋率；`plan_agent/` 自己的邏輯當時完全沒有對應測試檔案）。目前 `pytest tests/` 全部共 203 個測試，全數通過。
+`tests/plan_agent/test_module_index.py`（15 個）／`test_planning.py`（8 個）是現在的權威、可重複執行的自動化測試，全程 monkeypatch `call_claude_for_json`，不呼叫真實 API，涵蓋：happy path（`depends_on`／`target_files`／`referenced_functions` 組裝、`id` 固定全序編號）、`referenced_interfaces` 的非法引用／自我引用過濾、`referenced_functions` 同檔案引用排除、六章防環規則（反向／同層邊捨棄）、五章失敗處理（LLM 回應遺漏 interface → 重試 → 仍失敗中止）、涵蓋率 defense-in-depth（人工構造重複三元組）、四章 module 反查失敗。
 
-**接上真實 Claude API 呼叫的驗證紀錄**（只保留最新一次——這是目前唯一一次對照著 `class_name`／`function_name` 修正後的程式碼、消費目前已刷新去重過的 fixture 跑的，較早幾次分別消費了不同版本的 fixture／不同版本的程式碼，數字對不上現況，沒有保留價值）：
+**接上真實 Claude API 呼叫的驗證紀錄**：
 
 **2026-08-08，`real_module_list.json`（6 個 module）＋ `real_python_structure.json`（72 個 `InterfaceSpec`）**：6 個 module 平行呼叫 `claude-sonnet-4-6`（`PLAN_AGENT_MODEL` 未設，退回 `DEFAULT_MODEL_FALLBACK`），65.6 秒內全數成功；72 個 task 與 72 個 interface **精確** 1:1 對應（用完整三元組核對，不只是數量）；所有 task 都帶有正確的 `class_name`／`function_name`，其中 8 個檔案被超過一個 task 共用（最多 `common_service.py` 22 個，橫跨 6 個不同 class）——證實這不是理論上的邊界情況，是這個真實專案的常態；抽查依賴鏈（`task_049` `ExamService.get_candidate_by_card` 正確 `depends_on` → `task_033` `ExamRepository.find_by_card`）與業務描述品質皆正確。花費：36,304 input ＋ 13,172 output tokens，約 US$0.31（`claude-sonnet-4-6` 費率 $3/$15 每百萬 token）。**這次驗證的範圍是「機制跑得通、結構正確」，不含**逐筆核對 LLM 判斷的 Java↔Python 配對與 `referenced_interfaces` 語意是否準確——那是十二章仍列為待辦的 prompt 品質校準，屬於另一件事。
 
@@ -811,10 +857,21 @@ async def run(state: RefactorState) -> dict:
 
 ## 八、已知限制與待驗證事項
 
-- **已接上真實 Claude API 呼叫（含完整 04a→05a→06a 串接），但只驗證「機制」不驗證「判斷品質」**：完整驗證紀錄見五章「已驗證」（三次真實呼叫，含 2026-08-08 對照 07a 新增 `class_name`／`function_name` 的最新一次）。**這些驗證仍然只證明「呼叫得通、輸出格式對、容量上限夠」，沒有逐筆核對 `prompts.py` 的 system prompt 實際判斷品質**（`referenced_interfaces` 的業務關聯判斷整體準確率）——抽查過的少數 task（如 `SchoolRepository.find_by_grade_and_local`、`routers` 層 `class_name=None` 的 `ExamController.search`／`saveAnswer`、`ExamService.get_candidate_by_card`）配對正確，但沒有逐筆核對，延續 06a 十二章「待接上真實③輸出後校準」的既有待辦，範圍縮小為「品質校準」而非「有沒有跑過、容量夠不夠」。
+- **已接上真實 Claude API 呼叫（含完整 04a→05a→06a 串接），但只驗證「機制」不驗證「判斷品質」**：完整驗證紀錄見五章「已驗證」（2026-08-08，對照 07a 新增 `class_name`／`function_name` 後的程式碼跑的）。**這次驗證只證明「呼叫得通、輸出格式對、容量上限夠」，沒有逐筆核對 `prompts.py` 的 system prompt 實際判斷品質**（`referenced_interfaces` 的業務關聯判斷整體準確率）——抽查過的少數 task（如 `SchoolRepository.find_by_grade_and_local`、`routers` 層 `class_name=None` 的 `ExamController.search`／`saveAnswer`、`ExamService.get_candidate_by_card`）配對正確，但沒有逐筆核對，延續 06a 十二章「待接上真實③輸出後校準」的既有待辦，範圍縮小為「品質校準」而非「有沒有跑過、容量夠不夠」。
 - [x] ~~驗證涵蓋率 defense-in-depth 用的 fixture 已刷新，`PlanAgentCoverageError` 的多載重複測試案例目前沒有天然來源~~——**已解決**：`tests/plan_agent/test_planning.py::test_duplicate_interfaces_raises_coverage_error` 改用人工構造的重複三元組案例，不再依賴真實 fixture 是否剛好含 bug，見一章「已驗證」。
+- **`referenced_functions` 函式層級抽取——已實作，待真實環境重跑驗證**：`docs/09b_bug_trace.md` #37 根因的修正，`module_index.parse_interface_id()`／`_build_referenced_functions()`／`translator_cli.python_adapter.extract_specific_functions()` 均已完成，單元測試與真實失敗案例的 prompt 資料重放皆已驗證（15334 bytes → 7327 bytes，見七章）。尚未跑過真實環境端對端重跑確認能讓 #37 記錄的 5 支函式實際成功，見 06a 十二章。
 - **`interface_id()` 的字串編碼是實作層級的簡化，未在 06a 明文出現**：06a 五章字面描述「回應的三元組」，這裡改用單一字串編碼（理由見二、四章）。語意等價，但若未來有人依照 06a 字面描述另外實作一份消費 `plan_agent` 內部資料的程式碼，需要知道實際的識別鍵格式是這個編碼字串，不是三個獨立欄位。
 - **`_TaskDraft.referenced_interfaces` 的「過濾非法引用」只做一次，發生在五章 LLM 回應剛收到時**：06a 五章原文只說「六／七章組裝時一律過濾並記警告」，沒有明講是「組裝時各自過濾」還是「統一先過濾一次、組裝時直接消費乾淨的結果」。這裡選擇後者（`_plan_module()` 內一次過濾），單一根據點，六、七章不需要重複同一段過濾邏輯——語意上滿足 06a 的要求（六／七章確實用的是已過濾的結果），但實作路徑跟字面描述「六／七章組裝時」不完全一樣，記錄在此避免日後對照時誤以為是漏做。
+
+---
+
+## `config_field_mappings` 折進 `task.context`（對應 06a 十一之一章、`docs/09b_bug_trace.md` #45）
+
+`plan_all_modules()` 讀 `python_structure.get("config_field_mappings", {})`（`NotRequired` 欄位，沒有 `@Value` 欄位的專案完全不會有這個 key），往下傳給 `_assemble_task_list()`，新增 `_augment_context_with_config_hint(context, file_path, config_field_mappings) -> str`：`config_field_mappings.get(file_path)` 查無對應項目時原樣回傳 `context`；有對應項目時把 `{java_field: python_reference}` 逐一組成一段固定格式的中文提示，附加到 `context` 尾端（`context` 本身若為空字串，直接用提示文字，不留多餘的空白行）。`TaskSpec` 的 `context=draft.context` 這一行改成 `context=_augment_context_with_config_hint(draft.context, draft.file_path, config_field_mappings)`，其餘八章組裝邏輯不變。
+
+比對 key 用的是 `draft.file_path`（即 `TaskSpec.target_files[0]`，Python 檔案路徑），跟 `config_field_mappings` 的 key（`design_agent.global_infra.scan_value_injected_fields()` 算出的 `python_file_path`）是同一個路徑空間——這是實作時特別留意的一點：`ValueInjectedField` 原本另外記了一份 Java 原始碼的 `file_path`（純記錄用），兩者容易混淆，命名上刻意用 `python_file_path` 這個更明確的欄位名稱區分，避免 [P] 這一側不小心拿 Java 路徑去比對 Python 路徑（兩者字串格式完全不同，比對永遠落空，且不會拋錯——`dict.get()` 查無此 key 只是安靜地不附加提示，很容易在真實環境驗證前都不會被發現）。
+
+單元測試見 `tests/plan_agent/test_planning.py::test_config_field_mappings_appended_to_matching_task_context`／`test_no_config_field_mappings_leaves_context_untouched`。真實環境驗證見 06a 十一之一章。
 
 ---
 

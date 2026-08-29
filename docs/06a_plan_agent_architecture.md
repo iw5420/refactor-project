@@ -124,15 +124,25 @@ Harness 端 `get_module()` 與 `ModuleInfo.module` 之間過去確實存在既�
 
 | 組成 | 來源 | 判定方式 |
 |---|---|---|
-| 自己的 `file_path` | 這個 task 對應的 `InterfaceSpec.file_path` | 機械，必然存在，固定放 `target_files[0]` |
-| 五章 `referenced_interfaces` 對應的 `file_path` | 不論同 module 或跨 module，機械查表取得（同 module 的還會反映進六章 `depends_on`；跨 module 的只反映在這裡） | 機械查表，[P] 不重新判斷「要不要納入」——LLM 已在五章判斷過業務關聯性 |
-| 本 module 的 `schemas/{module}.py`（若存在） | `directory_tree` 是否有這個檔案的 Schema 定義段（見 05a 三章格式慣例） | 機械：這個 task 屬於 `routers` 或 `services` 層（見四章判定）且該檔案存在時一律加入，不細究具體用到哪幾個欄位——`services` 層之所以也納入，是因為它經常直接收發 router 傳下來的同一組 Pydantic model（05a 五章型別對應表本身也承認「專案內自訂 class 的實際定義由 schemas／models／service 回傳型別決定」，無法從型別字串機械判斷歸屬），呼應 04a／05a 反覆出現的「多連、少排除」保守精神 |
-| 本 module 的 `models/{module}.py` | 無條件（見下方說明） | 機械：這個 task 屬於 `services` 或 `repositories` 層時一律加入，不做存在性判斷 |
-| 跨 module 的 `referenced_interfaces` 所屬外部 module 的 `schemas/{module}.py`／`models/{module}.py` | 隨 `referenced_interfaces` 附帶判定（若存在） | 機械：比照上兩列「本 module」的規則，只是套用在 `referenced_interfaces` 指向的外部 module 身上——依**外部介面自身所在層級**判定：該外部介面屬 `routers`／`services` 層 → 一併加入外部 module 的 `schemas/{module}.py`（存在性判斷同上）；屬 `services`／`repositories` 層 → 一併加入外部 module 的 `models/{module}.py`（無條件同上）|
+| 自己的 `file_path` | 這個 task 對應的 `InterfaceSpec.file_path` | 機械，必然存在，固定放 `target_files[0]`，整份帶入（translator-cli 執行期要在這個檔案裡定位並替換目標函式，不能只有片段） |
+| 五章 `referenced_interfaces` 對應的 `file_path` | 不論同 module 或跨 module，機械查表取得（同 module 的還會反映進六章 `depends_on`；跨 module 的只反映在這裡） | 機械查表，[P] 不重新判斷「要不要納入」——LLM 已在五章判斷過業務關聯性；**檔案內容只精準抽取被引用到的那個函式**，不是整份帶入，見下方「`referenced_functions`：函式層級抽取」 |
+| 本 module 的 `schemas/{module}.py`（若存在） | `directory_tree` 是否有這個檔案的 Schema 定義段（見 05a 三章格式慣例） | 機械：這個 task 屬於 `routers` 或 `services` 層（見四章判定）且該檔案存在時一律加入，不細究具體用到哪幾個欄位——`services` 層之所以也納入，是因為它經常直接收發 router 傳下來的同一組 Pydantic model（05a 五章型別對應表本身也承認「專案內自訂 class 的實際定義由 schemas／models／service 回傳型別決定」，無法從型別字串機械判斷歸屬），呼應 04a／05a 反覆出現的「多連、少排除」保守精神；整份帶入，理由見下方——資料形狀定義沒有「函式」這個切分單位 |
+| 本 module 的 `models/{module}.py` | 無條件（見下方說明） | 機械：這個 task 屬於 `services` 或 `repositories` 層時一律加入，不做存在性判斷；整份帶入，理由同上 |
+| 跨 module 的 `referenced_interfaces` 所屬外部 module 的 `schemas/{module}.py`／`models/{module}.py` | 隨 `referenced_interfaces` 附帶判定（若存在） | 機械：比照上兩列「本 module」的規則，只是套用在 `referenced_interfaces` 指向的外部 module 身上——依**外部介面自身所在層級**判定：該外部介面屬 `routers`／`services` 層 → 一併加入外部 module 的 `schemas/{module}.py`（存在性判斷同上）；屬 `services`／`repositories` 層 → 一併加入外部 module 的 `models/{module}.py`（無條件同上），整份帶入 |
 
 **`models/{module}.py` 為什麼是無條件加入，不是比照 `schemas` 做存在性判斷**：`schemas/{module}.py` 只在 `modules_with_schema_file` 集合裡的 module 才會真的產出（05a 六章、05b「已驗證」段），需要先判斷存不存在，否則會指向一個 directory_tree 裡不存在的幽靈檔案（05a 八章）；`models/{module}.py` 出現在 `directory_tree` 目錄結構段的每個 module 底下（05a 三章、05b 十一章），但這只代表文字樹狀圖有列出這個路徑，不代表檔案內容一定存在——**這裡原先「沒有幽靈檔案風險」的判斷不成立**（回應 `07a_translator_cli_architecture.md` 十四章的修正）：目錄結構段只負責 `mkdir -p` 建目錄，不建檔案內容；`models/{module}.py` 的實際內容來自④透過 `generate_scaffold()` 的 `db_models` 引數併入（見 07a 四章「`db_models`：④ 自行取得的 DB schema 內容如何併入」），有對應 DB 表的模組會由④實際產出，但沒有 DB 表的模組（純外部 API 串接）合法地不會有這個檔案。[P] 這裡的機械規則本身沒有錯——`models/{module}.py` 存不存在無法在拆 task 當下預先判斷，逐一查證屬於過度工程——仍然無條件加入 `target_files`，缺檔案的情況改由 07a 七章「`context_files` 讀取容錯」承接（`FileNotFoundError` 記警告後跳過，不中斷整個 task），不是 [P] 這一步該解決的事。`repositories` 層方法幾乎必然回傳／查詢 ORM entity（00 六章例子本身就是「實作 `UserRepository.get_by_id()` 時，只需傳入 `user_repository.py` 和 `user.py`」——這裡的 `user.py` 就是 model 檔案），`services` 層則經常直接處理 repository 回傳的 entity，兩層都納入。`routers` 層不納入 `models`：router 層方法的 `params`／`return_type` 依 05a 五章「API 邊界方法改用 openapi_spec 覆寫」規則，改用 `schemas`（Pydantic）而非 Java entity 型別，不應該直接碰觸 ORM model。⑤若仍因缺檔案而生成錯誤，交給 module 局部驗證與⑦ Debug Agent 的既有回饋機制處理（02a 十三章），不在 [P] 這一步窮舉解決。
 
 **為什麼「本 module」的兩列規則要延伸到跨 module 的 `referenced_interfaces`**：本 module 的規則只保證「這個 task 自己所屬 module 的型別定義都在 context 裡」，但 `referenced_interfaces` 跨 module 時，目前只帶入外部介面的**函式簽名檔**（如 `services/order_service.py`），不含簽名裡型別（如回傳的 `OrderResponse`）實際定義在哪個檔案——本機模型看得到「呼叫這個函式會拿到 `OrderResponse`」，卻看不到 `OrderResponse` 有哪些欄位，容易對欄位存取產生幻覺或誤用。這與 00 六章「只需傳入 `user_repository.py` 和 `user.py`」的既有配對邏輯是同一件事，只是延伸到跨 module 的情境，不是新增的判斷原則。
+
+### `referenced_functions`：函式層級抽取
+
+**根因**：`referenced_interfaces` 若只解析到 `file_path`（`module_index.file_path_of()`），`interface_id` 裡本來就有的 `class_name`／`function_name` 會在這一步被丟棄——後果是**每一筆引用，無論鏈有多短，都會把整份檔案帶入 `target_files`**，同檔案裡跟這次要填的函式毫無業務關聯、但剛好已經被填入真實邏輯的姊妹函式一起被當成參考內容送給⑤的本地模型。真實環境用 11a/11b 的 log 機制量化：`exam` 模組 5 支函式的 context 因此膨脹到 15～17KB（同模組其他成功呼叫最大僅約 13KB），本地模型生成耗時暴增 7～20 倍、高機率誤解任務範圍（完整數據見 `docs/09b_bug_trace.md` #37）。
+
+**修正**：`TaskSpec` 新增 `referenced_functions: list[ReferencedFunctionRef]`（`ReferencedFunctionRef = {file_path, class_name, function_name}`），逐一對應 `referenced_interfaces` 完整反解出的三元組（`module_index.parse_interface_id()`，補上原本只反解檔案路徑的 `file_path_of()` 所缺的另外兩段）。translator-cli 讀取 `context_files` 時，若某個檔案在 `referenced_functions` 裡有對應項目，只抽取那幾個函式的完整定義（`python_adapter.extract_specific_functions()`），不是整份帶入；沒有對應項目的檔案（`target_files[0]` 自己、`schemas`／`models`）維持整份帶入，跟上面表格的判定方式一致。
+
+**同檔案引用刻意排除**：若 `referenced_interfaces` 指向的函式跟這個 task 自己在同一個檔案（`file_path == draft.file_path`），不寫進 `referenced_functions`——那個檔案是 `target_files[0]`，本來就整份帶入；若對它套用函式層級抽取，會把「這次要填的目標函式本身」也一併篩掉，因為目標函式不在 `referenced_interfaces`（那是「這個函式引用別人」的清單，不含自己）。
+
+**效果**（用真實失敗案例的實際 prompt 驗證，見 `docs/09b_bug_trace.md` #37）：`create_random` 的 context 從 15334 bytes 降到 7327 bytes——比舊有的門檻式安全網裁減（`strip_all_function_bodies()`，降到 9131 bytes）更精準，因為連無關函式的「簽名」都不出現，不只是把本體換成 `pass`。程式碼實作見 06b。
 
 ---
 
@@ -141,6 +151,12 @@ Harness 端 `get_module()` 與 `ModuleInfo.module` 之間過去確實存在既�
 `task_list` 直接對應 `graph/state.py` 既有的 `TaskSpec`（00 八章已定義，這裡不重新定義結構）：
 
 ```python
+class ReferencedFunctionRef(TypedDict):
+    file_path: str
+    class_name: str | None
+    function_name: str
+
+
 class TaskSpec(TypedDict):
     id: str
     module: str
@@ -150,6 +166,7 @@ class TaskSpec(TypedDict):
     depends_on: list[str]
     class_name: NotRequired[str | None]
     function_name: NotRequired[str]
+    referenced_functions: NotRequired[list[ReferencedFunctionRef]]
 ```
 
 **`id` 產生規則**：全部 task 依「module（依 `module_list` 原始順序）→ 層級（`repositories`／`services`／`routers`）→ `function_name` 字母序」的固定全序（即六章防環規則用的同一套全序）依序編號 `task_{:03d}`——沿用同一套排序，除了編號穩定、可重現（同一份輸入重跑會產生同樣的 id 分配，方便除錯與比對），也不需要為編號另外設計第二套排序邏輯。
@@ -200,10 +217,23 @@ refactor-project/
 
 ---
 
+## 十一之一、`config_field_mappings` 折進 `task.context`（對應 `docs/09b_bug_trace.md` #45）
+
+`python_structure.config_field_mappings`（③ `design_agent.global_infra` 機械組出，見 `05a_design_agent_architecture.md` 十五章、`graph/state.py PythonStructure.config_field_mappings`）記錄「哪個 Python 檔案的哪個 Java 欄位是 `@Value("${key}")` 注入、對應哪個環境變數常數」——這份資訊本身跟七章 `target_files` 組裝規則無關（不是新增一個要帶入的檔案），是要**折進 task 自己的 `context` 文字**，讓⑤本地模型翻譯到原本讀取 `this.xxx`（`@Value` 欄位）的程式碼時有明確依據，不會像 #45 實際案例那樣把它跟同一個 class 裡其他無關的框架物件混為一談、幻覺出從未存在的型別。
+
+**組裝時機**：八章 `_assemble_task_list()` 組出每個 task 的 `context` 時（`context=draft.context` 那一步），額外檢查這個 task 的 `file_path`（即 `target_files[0]`）是否在 `config_field_mappings` 有對應項目——有就機械附加一段固定格式的提示文字到 `context` 尾端；沒有則 `context` 維持 LLM 五章原樣輸出，不受影響。**純機械字串附加，不呼叫 LLM**——property key 到常數名稱的對應在③階段就已經是決定性事實，沒有語意判斷空間。
+
+**為什麼不是新增 `target_files` 項目**：`app/core/config.py` 是純常數（`os.environ[...]`），沒有函式可以「參考」，帶進 `context_files` 給本地模型看整份檔案內容意義不大（內容本身就只有幾行 `CONST = os.environ["CONST"]`，看檔案不如直接把「欄位 X 對應常數 Y」寫進 context 文字更直接）；⑤實際要做的是把 `this.code` 這種讀取改寫成 `from app.core.config import LANGUAGE_CODE` ＋ `LANGUAGE_CODE` 引用，這是「怎麼改寫程式碼」的指示，屬於 context 的既有定位（06a 二章：「補充依賴關係／邊界條件文字」），不是「需要參考哪個檔案」的 `target_files` 定位。
+
+**真實環境驗證**：對真實 `GeneralController.java`（`language.code`／`language.displayName` 兩個 `@Value` 欄位）跑過完整真實 `plan_all_modules()`，確認 `language()` 對應 task 的 `context` 正確附加：「這個類別有 Spring @Value 屬性注入欄位，`code` 對應 `app.core.config.LANGUAGE_CODE`；`displayName` 對應 `app.core.config.LANGUAGE_DISPLAY_NAME`（環境變數注入，已由 ④ 生成，見 app/core/config.py）。業務邏輯中原本讀取這些欄位的地方，請改成引用對應的常數，不要臆測其他來源（如框架 bean）。」
+
+---
+
 ## 十二、待決定事項
 
 - [ ] 五章 LLM 判斷「函式呼叫關係」的 prompt 設計與品質：已對真實 `lang-exam-api-refactor` 專案完整跑過（2026-08-08、6 個 module／72 個 interface，完整紀錄見 `06b_plan_agent_code.md` 五章「已驗證」），涵蓋率驗證通過，`routers` 層 `class_name=None` 的案例（如 `ExamController.search`／`saveAnswer`）也正確配對回對應的 Java method；但只抽查過部分 task，`referenced_interfaces` 語意判斷的整體準確率沒有逐筆核對，這部分仍待累積更多真實案例評估
 - [ ] 七章「`routers` 層一律納入 `schemas/{module}.py`」是否過度保守（每個 router task 都多帶一個檔案）：若目標專案 schema 檔案體積偏大，可能需要改成依 `referenced_interfaces` 精算實際用到的 schema class，屬於效能／成本 vs. 保守精準度的取捨，待接上真實專案規模評估
+- [x] ~~設計缺陷：`referenced_interfaces` 的檔案層級解析~~——**已實作並用真實環境端對端驗證**：七章「`referenced_functions`：函式層級抽取」已完成設計與程式碼（`module_index.parse_interface_id()`、`planning._build_referenced_functions()`、`translator_cli.python_adapter.extract_specific_functions()`，見 06b）。2026-08-22 對真實 `../exam-platform-api` 專案跑真實 `run_plan_agent()` 產生的 `task_list`，對 `docs/09b_bug_trace.md` #37 記錄的 6 支頑固函式裡找得到對應 task 的 5 支直接打真實 Ollama，**5/5 全部成功**（prompt 10739～14192 bytes，耗時 65.7～108.8 秒，皆在正常範圍，無一觸發原本的 400～900 秒暴增），詳見 `09b_bug_trace.md` #37
 - [x] ~~05a 十三章「router 層方法目前沒有任何管道把 HTTP method／路徑帶給④」的缺口，是否該由 [P] 把 `api_to_python_target` 的 HTTP method／路徑塞進 `task.context` 來補~~——**評估後確認不該由 [P] 補，這不是 06a 的範圍，也解不了問題**：`@router.get(...)` 裝飾器屬於函式**骨架**的一部分，由④（`generate_scaffold()`）產生；`task_list` 只餵給⑤的 `fill_function()`，只填函式本體、用 AST 插入，不碰裝飾器或簽名。更根本的是 00 一章的流程圖：`[P]` 與 `④` 是**平行分支**，兩者都只依賴③的輸出、互不依賴，[P] 執行當下不知道④在做什麼，[P] 的輸出也從不流向④。即使把 HTTP method／路徑寫進 `task.context`，這筆資料要到⑤才會被讀到，但④早已把骨架（含裝飾器有無）定案，時間點上也救不了；⑤更沒有管道去改裝飾器。缺口本身已在 05a 五章／九章解決。結論不變：不需要 06a 二章讀 `api_to_python_target`
 
 ---

@@ -194,8 +194,9 @@ Content-Type 是 JSON 但 body 為空（如 `204 No Content` 或部分 DELETE �
 
 主要職責：
 - 呼叫 `newman run`，輸出 JSON 格式報告
-- 檢查 return code：若 newman 失敗（服務沒起來、collection 路徑錯誤）立即拋出明確例外，不讓錯誤靜默流入後續比對
-- 提供共用的 `extract_response_body()`，從 newman 單一 execution 的 `response` 物件取出原始 body 文字——**真實 newman（6.2.2）的 JSON reporter 沒有 `response["body"]` 這個欄位**，內容序列化在 `response["stream"]`（Node.js Buffer 的 JSON 表示），這是端對端驗證才發現的既有缺陷，見 `09b_bug_trace.md` #20、`02b_harness_code.md` 該函式的完整說明。Recorder／Verifier 兩端都必須透過這個共用函式讀 body，不能各自直接存取 `response["body"]`，理由跟這裡「兩端共用同一份執行入口」是同一種精神——任一端漂移就會重演這個 bug。
+- 判斷「執行本身有沒有成功」不是只看 return code：newman 的 exit code 只反映 collection 裡的 test script 斷言是否全部通過，不代表這次執行沒有產生報表——鏈式依賴注入的 capture script 斷言失敗時 exit code 也會非 0，但報表仍完整寫出。真正的硬性失敗判準是「report 檔案不存在，或不是合法 JSON」；exit code 非 0 只記警告，斷言失敗與否交給呼叫端（`GoldenVerifier`／`MutationVerifier`／`GoldenRecorder`）自己比對 response 內容判斷，見 `09b_bug_trace.md` #33
+- 對目標服務逾時保護：目標服務可能處於「socket 還開著但沒有真的回應」的異常狀態（如容器內 app 載入時就掛掉，reload watcher 仍在監聽），這種情況下 newman 本身也會卡住不結束。逾時後必須連整棵行程樹一起砍乾淨，不能只砍 Python 直接持有 handle 的那個行程——Windows 上 `newman` 實際執行的是 `newman.cmd`（npm batch wrapper），真正在做事的是它底下的 `node.exe` 子行程，只砍掉 wrapper 砍不掉它，會讓收尾等待仍然沒有真正上限。這是端對端驗證才發現的既有缺陷，見 `09b_bug_trace.md` #34／#36
+- 提供共用的 `extract_response_body()`，從 newman 單一 execution 的 `response` 物件取出原始 body 文字——**真實 newman（6.2.2）的 JSON reporter 沒有 `response["body"]` 這個欄位**，內容序列化在 `response["stream"]`（Node.js Buffer 的 JSON 表示），這是端對端驗證才發現的既有缺陷，見 `09b_bug_trace.md` #20、`02b_harness_code.md` 該函式的完整說明。Recorder／Verifier 兩端都必須透過這個共用函式讀 body，不能各自直接存取 `response["body"]`，理由跟這裡「兩端共用同一份執行入口」是同一種精神——任一端漂移就會重演這個 bug
 
 → 實作見：`core/postman_runner.py`（`02b_harness_code.md`）
 
@@ -274,7 +275,8 @@ postman/
 Masker 遞迴走訪整個 response body，對符合條件的欄位替換為 `<<MASKED>>`：
 
 - **欄位名稱比對**（`masked_fields`）：timestamp、token、request_id 等動態純量欄位
-- **值的 Pattern 比對**（`masked_patterns`）：ISO datetime 字串、UUID、Bearer token
+- **值的 Pattern 比對**（`masked_patterns`）：ISO datetime 字串、UUID、Bearer token，`re.match` 整個字串值，符合就把整個值換成 `<<MASKED>>`
+- **值內子字串 Pattern 比對**（`masked_value_substring_patterns_mutation_only`，見下方「第三種遮罩機制」）：只替換字串裡匹配到的一小段，不是整個值
 
 ### 兩種遮罩情境
 
@@ -283,9 +285,15 @@ Masker 遞迴走訪整個 response body，對符合條件的欄位替換為 `<<M
 | context | 套用規則 | 適用對象 |
 |---|---|---|
 | `readonly`（預設） | 只套用 `masked_fields` | `collection_readonly.json` 的錄製與比對 |
-| `mutation` | `masked_fields` ＋ `masked_fields_mutation_only`（`id`、`order_id`、`user_id` 等主鍵欄位） | `collection_mutation.json` 的錄製與比對 |
+| `mutation` | `masked_fields` ＋ `masked_fields_mutation_only`（`id`、`order_id`、`user_id`、`randomId` 等主鍵／動態識別碼欄位）＋ `masked_value_substring_patterns_mutation_only` | `collection_mutation.json` 的錄製與比對 |
 
-**為什麼要分情境**：mutation 剛建立的資源，其自增主鍵在 Java／Python 兩端本來就不會相同（見六、關鍵不變量），逐值比對沒有意義，遮掉才能比對其餘欄位。但 readonly 的精確查詢（如 `GET /users/1`）完全相反——回傳的 `user_id` **就應該是 1**，這裡的 ID 是查詢正確性的一部分；若沿用同一套規則把它也遮掉，「Python JOIN 錯欄位、撈到別人的資料」這種最嚴重的 bug 會顯示為 PASS。
+**為什麼要分情境**：mutation 剛建立的資源，其自增主鍵在 Java／Python 兩端本來就不會相同（見六、關鍵不變量），逐值比對沒有意義，遮掉才能比對其餘欄位。但 readonly 的精確查詢（如 `GET /users/1`）完全相反——回傳的 `user_id` **就應該是 1**，這裡的 ID 是查詢正確性的一部分；若沿用同一套規則把它也遮掉，「Python JOIN 錯欄位、撈到別人的資料」這種最嚴重的 bug 會顯示為 PASS。`randomId` 適用同一套理由：`candidate/generateRandomId` 每次呼叫都用 `CodeUtil.generateRandomCode()` 現生一組隨機碼（真實環境重跑才發現，見 `docs/09b_bug_trace.md`「golden 對隨機欄位無法比對」），golden 錄製當下的值必然跟每次重新驗證時不同，只在 mutation（剛建立、值本來就會變）情境才遮，不是通用地永遠遮罩。
+
+### 第三種遮罩機制：值內子字串替換（`masked_value_substring_patterns_mutation_only`）
+
+`masked_fields`／`masked_patterns` 都假設「動態值本身就是一個完整的欄位值」，但真實案例（`voice` 上傳成功訊息，`docs/09b_bug_trace.md`「golden 對隨機欄位無法比對」）打破了這個假設：隨機碼被包在一段更長的訊息字串裡（如 `"上傳成功: C:\voice\2025\macuhau\TAA\xMpIV\1_1.wav"`），隨機碼既不是獨立欄位（欄位名稱比對擋不住），也不是整個字串值（`masked_patterns` 的 `re.match` 全字串比對若硬套用，會連同前後固定的訊息文字一起吃掉，遮罩範圍過大）。這裡改用 `re.sub()`，只替換 pattern 匹配到的那一小段子字串，保留字串其餘內容。只在 `mutation` 情境套用，理由同 `masked_fields_mutation_only`。
+
+**pattern 設計不能只靠值的長度／字元集判斷**：`voice` 案例的隨機碼定義是 5 個字元、字元集 `[A-Za-z0-9]`（見目標專案 `CodeUtil.CODE_LENGTH`／`CHARACTERS`）——第一版 pattern 只判斷「前後都是路徑分隔符的 5 碼英數字段」，實測發現這樣會連 `"voice"` 這個固定路徑關鍵字本身（剛好也是 5 個字母）一起誤遮，因為它在路徑裡的位置一樣「前後都是分隔符」。**修法**：改成錨定訊息裡更獨特的結構特徵——這個訊息格式裡，隨機碼固定緊接在檔名（`{partNumber}_{questionNumber}.{副檔名}`，如 `1_1.wav`）前面一個路徑分隔符，用零寬 lookahead 只匹配「後面緊接著這個檔名形狀」的那一段，不誤傷路徑裡其他固定關鍵字。這是撰寫這類子字串 pattern 時的通用教訓：優先錨定訊息裡**唯一、不會跟固定文字混淆**的結構特徵，不要只靠隨機值本身的長度或字元集猜測邊界。
 
 ### 重要限制
 
@@ -341,6 +349,7 @@ Agent ⑦（Debug Agent）的輸入是結構化的 JSON report，格式設計讓
   failures: [
     {
       case_id          ← 唯一識別失敗的 case
+      module           ← 所屬 module，供 Debug Agent 依 module 分組（見 core/reporter.py、10a_debug_agent_architecture.md 二章）
       failure_type     ← 失敗分類（見下表）
       status_code_match
       expected_status / actual_status
@@ -513,10 +522,16 @@ implement（Agent ⑤，內部呼叫，非獨立 node，見十三章 + 01 六章
   → 累加進 state["partial_reports"]（含 regression 重驗結果）
 
 run_tests（Agent ⑥，對應 run_postman_tests，全量驗證）
+  health check：先確認 Python 服務連線層級可達（見四章「執行流程」步驟①、
+    10a_debug_agent_architecture.md 二章）
+    不可達 → 直接回傳 status="fail" 的空 report（不執行下面的 apply_seed／Newman），
+             並把 python_service 容器的診斷 log 存進 state["service_diagnostics"]
+             供 Debug Agent 使用
   apply_seed → GoldenVerifier.verify_raw(collection_readonly.json)
   MutationVerifier.verify_all_raw()                        ← 內部逐頂層 folder apply_seed，自動排除 tainted_folders（見四、九）
   build_report(readonly_raw + mutation_raw, excluded=mutation_verifier 的排除清單)
-  → state["test_results"]（含 excluded_folders／excluded_cases 欄位）
+  → state["test_results"]（含 excluded_folders／excluded_cases 欄位），
+    並落地寫入 logs/report_{run_id}.json 供 Debug Agent 讀取（見 02b test_nodes.py）
 ```
 
 > `record_golden_output`／`run_postman_tests` 是 01 四章沿用的 node 名稱（`record_tests`／`run_tests`）；module 級局部驗證不是獨立 node，是 `implement` node 內部依排程觸發的呼叫，不出現在圖的節點清單中。
@@ -527,15 +542,12 @@ run_tests（Agent ⑥，對應 run_postman_tests，全量驗證）
 run_tests
       ↓
 should_debug_or_done()
-      ├── test_results.status == "pass"        → END（done）
-      ├── failed_modules 非空 且
-      │   retry_count >= MAX_RETRY              → give_up node（通知人工，非直接 END）
-      ├── failed_modules 非空 且未超過上限        → debug node → implement node（retry_count + 1）
-      └── 只有 blocked_modules 非空（無 failed_modules）
-                                                 → 不消耗 retry_count，待上游 module 修好後排程器自然釋放
+      ├── test_results.status == "pass"   → END（done）
+      ├── retry_count >= MAX_RETRY          → give_up node（通知人工，非直接 END）
+      └── 其餘情況                          → debug node → implement node（retry_count + 1）
 ```
 
-**與 01 State 設計的關鍵對齊**：`retry_count` 只在 `failed_modules`（確實執行過、驗證過但沒通過）非空時才扣減；`blocked_modules`（因上游未過局部驗證而從未進入就緒佇列）不消耗重試次數，因為那不是「寫錯了」，只是排程還沒排到。`give_up` 是獨立節點（見 01 五章），保留通知人工的落點，不是直接跳 `END`。
+**retry_count 上限對所有分支統一套用，不再依 `failed_modules` 是否非空分岔**：`failed_modules` 只反映 ⑤ 局部驗證（僅 readonly，見 `09a_implement_agent_architecture.md` 三章）看不看得到問題，不是「這一輪有沒有真的壞」的可靠依據；能讓 debug 被觸發，`test_results.status == "fail"` 已經是 ⑥ 全量驗證（readonly＋mutation）確認過的事實，`retry_count` 上限必須照樣檢查——否則只有 mutation 或跨模組 regression 才會出現的 bug，會因為 `failed_modules` 永遠是空的而讓 `debug ↔ implement` 迴圈沒有上限地跑下去。這條規則推翻了本章原本「`blocked_modules` 不消耗重試次數」的設計，完整失效場景與理由見 `10a_debug_agent_architecture.md` 一章「本文件推翻的一項既有假設」、七章。`give_up` 是獨立節點（見 01 五章），保留通知人工的落點，不是直接跳 `END`。
 
 → 完整條件邊判斷邏輯與 `blocked_modules`／`failed_modules` 的區分見 `01_langgraph_architecture.md` 五、六章；node 對應的實作程式碼見 `02b_harness_code.md`。
 
@@ -565,7 +577,9 @@ Agent ⑤ 逐 task 呼叫 translator-cli 寫入單一函式，但**驗證不是�
   只跑此模組的 readonly golden cases
   目的：確認「這個 module 沒寫錯」，快速 fail-fast，Debug 範圍限縮在單一模組
       ↓
-  Fail → 標記該 module 為 failed，回 Agent ⑤／⑦ 修正，只帶入此模組 diff
+  Fail → 標記該 module 為 failed，帶著此模組 diff 進入 `debug ↔ implement` 迴圈，
+  由 ⑦ Debug Agent 分析並直接寫出修正（⑤ 本地模型不再參與這類已驗證失敗
+  task 的重試，見 10a「known_fill_failures」一節）
   Pass → 標記該 module 為 verified，其依賴此 module 的下游 module 才會被排入就緒佇列
       ↓
 【第二層：全量驗證（LangGraph 條件邊放行條件）】
@@ -681,49 +695,13 @@ PostgreSQL Server
 
 ## 十六、待實作清單
 
-**OpenAPI → Collection 工具鏈（優先執行，細節見 `03a_spec_collection_agent_architecture.md`）**
-- [ ] Java 專案 pom.xml 加入 `springdoc-openapi-ui 1.7.0`（對應目前 Spring Boot 2.7.11；若專案改用 Spring Boot 3.x 則改用 `springdoc-openapi-starter-webmvc-ui` 2.x 系列，見十章）
-- [ ] 啟動 Java 服務，確認 `GET /v3/api-docs` 能正常回傳完整 OpenAPI JSON
-- [ ] 安裝 `openapi-to-postmanv2`（npm），確認能將 openapi.json 轉成 Postman Collection
-- [ ] 確認 collection_readonly.json 和 collection_mutation.json 都能被 newman 正常執行
-
-> [A]/[B] 產生 Collection 的完整流程、LLM 填值與失敗處理、鏈式依賴偵測與注入，詳見 `03a_spec_collection_agent_architecture.md`，本文件不重複列。
-
-**測試 DB 建立**
-- [ ] 執行 `createdb MOC_MATSUEXAM_TEST` 建立測試用 DB
-- [ ] 若非 `ddl-auto`：執行 `pg_dump --schema-only MOC_MATSUEXAM | psql MOC_MATSUEXAM_TEST` 複製 schema
-- [ ] 確認 Java 服務可以用 `SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:5432/MOC_MATSUEXAM_TEST` 正常啟動
-- [ ] 確認 Python 服務可以用 `DATABASE_URL=postgresql://.../MOC_MATSUEXAM_TEST` 正常啟動
-- [ ] 在 `config/harness.yaml` 與 `.env` 填入正確的 `TEST_DB_DSN`
-
-**Harness 核心**
-- [ ] mask_rules.yaml 初版：把 Java 回傳格式中所有動態欄位列出來（只列純量欄位；`id` 系主鍵欄位放 `masked_fields_mutation_only`，不放通用 `masked_fields`，見七）
-- [ ] newman 安裝與 collection 執行驗證：確認 newman run 可正常輸出 JSON report
+> 以下項目已隨 ①～⑦ 各 Agent 的實作與真實環境端對端驗證陸續完成，本節僅保留仍未落地的項目；已完成項目的細節見對應章節與程式碼本身，不在此重複列出佐證。
 
 **Mutation 錄製異常偵測（見三章、四章、九章）**
-- [ ] （優先度較低）更精準的預期 status 判斷基準：需 [B] 在 Postman item 標註 openapi 宣告的成功 response code，屬 `03a`/`03b` 與本文件的介面擴充，待評估
-
-**Collection 分組（狀態污染防護）**
-- [ ] 確認 Agent B 正確拆分 readonly / mutation 兩份 collection
-- [ ] 確認 Agent B 遵守「頂層 folder ＝ 一條自洽鏈式情境」的約定（見六）：有鏈式依賴的 request 在同一頂層 folder 內、跨 folder 不引用任何動態變數
-- [ ] 確認 readonly collection 跑完後 DB 狀態不變
-
-**Route Mapping（Agent ③ 自動產生）**
-- [ ] 確認 Agent ③ 輸出的 route_to_file_mapping 已正確寫入 config/harness.yaml
-- [ ] key 格式確認為 `{METHOD}_{path_normalized}`，動態段用 `{id}` 佔位
-- [ ] 確認巢狀資源路由有獨立 key，不會被父路由假匹配
-- [ ] 確認沒有 API 對應到空的 related_files
-- [ ] 確認 Agent ③ 同一次呼叫還輸出了 `route_to_module_mapping`（見十一章、`05a_design_agent_architecture.md` 八章），key 格式與 `route_to_file_mapping` 完全一致
-
-**Module 詞彙一致性**
-- [ ] 確認 `get_module()` 優先查 `route_to_module_mapping`，只有查不到時才 fallback 回 URL 推斷（見十三章）
-- [ ] 檢查專案是否存在①③解析範圍外、因此不會出現在 `route_to_module_mapping` 裡的殘餘路由（如 04a 十一章列出的已知限制、或 skip 呼叫鏈已排除的端點）：若有，確認這些路由走 fallback 時的 `get_module()` 推斷結果與 warning log 符合預期，不需要再要求 Plan Agent 手動對齊——`task.module` 一律逐字沿用 `ModuleInfo.module`（見 `06a_plan_agent_architecture.md` 四章），沒有例外情況需要特別處理
-
-**Schema 同步機制**
-- [ ] 確認 Python 服務的 Alembic migration 可以直接套用到 `MOC_MATSUEXAM_TEST`，或改用 `db.sync_schema()` 手動同步
+- [ ]（優先度較低）更精準的預期 status 判斷基準：需 [B] 在 Postman item 標註 openapi 宣告的成功 response code，屬 `03a`/`03b` 與本文件的介面擴充，待評估
 
 **流程整合**
-- [ ] give_up 通知機制：超過重試次數時，Slack / email 通知人工介入
+- [ ] give_up 通知機制：超過重試次數時，Slack / email 通知人工介入（目前 `graph/nodes/give_up_node.py` 僅印出訊息，見該檔案內的 TODO）
 
 ---
 

@@ -47,6 +47,62 @@ def test_interface_declaration_has_empty_annotations_and_fields(tmp_path):
     assert sig.fields == []
 
 
+def test_http_mapping_annotations_extracted_per_method(tmp_path):
+    """對應 docs/09b_bug_trace.md #70：5 種 HTTP method 簡寫 annotation
+    各自機械對應到固定的 HTTP method 大寫字面字串。真實案例：
+    `FileController.voice()` 有 `@PostMapping`／`@GetMapping` 兩個同名
+    多載，各自的 `http_method` 必須正確區分，不能混淆或都是 None。"""
+    (tmp_path / "FileController.java").write_text(
+        """
+        package com.example;
+        import org.springframework.web.bind.annotation.*;
+        @RestController
+        public class FileController {
+            @PostMapping("/voice")
+            public String voice(String kind) { return null; }
+            @GetMapping("/voice")
+            public String voice(String location) { return null; }
+            @PutMapping("/x")
+            public void putX() {}
+            @DeleteMapping("/x")
+            public void deleteX() {}
+            @PatchMapping("/x")
+            public void patchX() {}
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    result = scan_java_files(["FileController.java"], str(tmp_path))
+    methods = {(m.method_name, len(m.params)): m for m in result["FileController"].methods}
+
+    assert methods[("voice", 1)].http_method in ("POST", "GET")
+    voice_methods = [m for m in result["FileController"].methods if m.method_name == "voice"]
+    assert {m.http_method for m in voice_methods} == {"POST", "GET"}
+    assert methods[("putX", 0)].http_method == "PUT"
+    assert methods[("deleteX", 0)].http_method == "DELETE"
+    assert methods[("patchX", 0)].http_method == "PATCH"
+
+
+def test_method_without_http_mapping_annotation_has_none_http_method(tmp_path):
+    (tmp_path / "UserService.java").write_text(
+        """
+        package com.example;
+        import org.springframework.stereotype.Service;
+        @Service
+        public class UserService {
+            public void doWork() {}
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    result = scan_java_files(["UserService.java"], str(tmp_path))
+    sig = result["UserService"].methods[0]
+
+    assert sig.http_method is None
+
+
 def test_multiple_annotations_are_all_captured_not_just_stereotype():
     from design_agent.signature_scan import _annotation_names
     import javalang

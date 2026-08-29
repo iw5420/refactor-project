@@ -258,6 +258,8 @@ Map 階段輸出的是「候選清單」，不是最終配對結果——同一�
 | `consumer_param` | 對應的參數名稱（path/query/body 皆可）；巢狀 body 欄位比照 `producer_field` 用點號路徑表示（如 `"user.id"`） |
 | `env_var_name` | producer/consumer 共用的 environment variable 名稱，如 `created_user_id` |
 
+**Reduce 輸出後過濾自我參照配對**：`producer_endpoint` 與 `consumer_endpoint` 相同的配對一律捨棄——同一次呼叫不可能同時是自己這次要用的參數來源，時序上不成立。不靠語意判斷，只用「producer 與 consumer 是不是同一個 endpoint」機械過濾，跟 Map 階段排除 GET/HEAD producer 是同一種寫法。此規則在真實 Java 服務端對端驗證時才實際觸發（`POST /api/candidate/search` 自己回應的 `data.card` 被誤判成能餵給自己 `card` 參數的來源），詳見 `docs/09b_bug_trace.md` #32。
+
 這份 reduce 輸出即為上方「Mutation Collection 的頂層 folder 分組」直接消費的配對清單，分組階段不需要重新呼叫 map 或 reduce。
 
 **注入機制**：偵測結果（reduce 階段輸出）套用到 Collection 上分兩步。

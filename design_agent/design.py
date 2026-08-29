@@ -23,7 +23,7 @@ import javalang.tree
 from common.concurrency import default_concurrency
 from common.java_annotations import DATA_CLASS_ANNOTATIONS, JPA_ENTITY_ANNOTATIONS
 from common.llm_client import LlmJsonError, call_claude_for_json
-from design_agent import layout, signature_scan, type_mapping
+from design_agent import global_infra, layout, signature_scan, type_mapping
 from design_agent.exceptions import DesignAgentCoverageError, DesignAgentModuleError
 from design_agent.llm import DEFAULT_MODEL
 from design_agent.prompts import DESIGN_OUTPUT_SCHEMA, DESIGN_SYSTEM_PROMPT
@@ -58,7 +58,7 @@ class _MethodContext:
     uncovered_params: list[UncoveredParam]
     needs_db_session_decision: bool
     boundary_schemas: list[tuple[str, dict]] = field(default_factory=list)  # (schema_name, resolved_schema)，見五章
-    http_method: str | None = None  # 僅 boundary（selected_overload）非 None，見五章「router 層 API 邊界方法額外帶」
+    http_method: str | None = None  # 僅這個 overload 精確查到 boundary 時非 None，見五章「router 層 API 邊界方法額外帶」
     route_path: str | None = None   # 同上，直接是 boundary["endpoint"] 原始字面值，不做轉換
 
 
@@ -67,10 +67,11 @@ def design_all_modules(
     api_to_python_target: list[ApiMapping],
     openapi_spec: dict,
     java_project_path: str,
-) -> tuple[list[InterfaceSpec], str, set[str]]:
+) -> tuple[list[InterfaceSpec], str, set[str], dict[str, dict[str, str]], list[dict[str, str]]]:
     """對外入口，對應 05a 六章全節。回傳
     `(全部 module 攤平的 InterfaceSpec 清單, 組裝完成的 directory_tree 字串,
-    實際產出過 schemas/{module}.py 的 module 名稱集合)`。
+    實際產出過 schemas/{module}.py 的 module 名稱集合,
+    config_field_mappings, config_env_vars)`。
 
     第三個回傳值供 `route_mapping.build_route_mappings()` 判斷
     `related_files` 該不該納入 schema 檔案——不能只憑「這個 module 有沒有
@@ -79,6 +80,12 @@ def design_all_modules(
     module 就不會真的產出 `schemas/{module}.py`，猜測會讓
     `route_to_file_mapping` 指向一個 directory_tree 裡實際上不存在的
     「幽靈檔案」，Debug Agent（⑦）跟著這個路徑去讀檔會撲空。
+
+    第四、第五個回傳值見 `graph/state.py PythonStructure.
+    config_field_mappings`／`config_env_vars` docstring，對應
+    `docs/09b_bug_trace.md` #45／#46——都由
+    `global_infra.scan_value_injected_fields()`／`render_config_py()`
+    同一次呼叫機械組出，跟六章逐 module 的 LLM 呼叫無關。
     """
     waves = layout.build_waves(module_list)
     boundary_index = _build_boundary_index(api_to_python_target)
@@ -104,9 +111,25 @@ def design_all_modules(
         layout.render_code_section("app/core/database.py", layout.render_database_py()),
         layout.render_code_section("app/main.py", layout.render_main_py(all_interfaces)),
     ]
+
+    # #45（機械，見 global_infra.py module docstring 第 1 點）：
+    # @Value("${key}") 屬性注入欄位 → app/core/config.py。
+    value_fields = global_infra.scan_value_injected_fields(module_list, java_project_path)
+    config_py_content, config_field_mappings, config_env_vars = global_infra.render_config_py(value_fields)
+    if config_py_content is not None:
+        infra_sections.append(layout.render_code_section(global_infra.CONFIG_PY_FILE, config_py_content))
+
+    # #44 剩餘部分（LLM，見 global_infra.py module docstring 第 2 點）：
+    # 只被 enum 實作的 interface（如 ErrorCode），交給 LLM 設計 Python
+    # 對等寫法。全域一次性偵測，不分 module，也不依賴六章逐 module 的
+    # LLM 呼叫結果。
+    enum_backed_interfaces = global_infra.scan_enum_backed_interfaces(module_list, java_project_path)
+    for file_path, python_source in global_infra.design_enum_backed_interfaces(enum_backed_interfaces):
+        infra_sections.append(layout.render_code_section(file_path, python_source))
+
     directory_tree = layout.render_directory_tree(directory_lines, schema_fragments, infra_sections)
 
-    return all_interfaces, directory_tree, modules_with_schema_file
+    return all_interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars
 
 
 def _render_directory_lines(
@@ -135,7 +158,7 @@ def _render_directory_lines(
 
 def _design_wave_with_retry(
     wave: list[ModuleInfo],
-    boundary_index: dict[tuple[str, str, str], ApiMapping],
+    boundary_index: dict[tuple[str, str, str, str], ApiMapping],
     openapi_spec: dict,
     java_project_path: str,
     interfaces_by_module: dict[str, list[InterfaceSpec]],
@@ -171,7 +194,7 @@ def _design_wave_with_retry(
 
 def _run_wave_batch(
     modules: list[ModuleInfo],
-    boundary_index: dict[tuple[str, str, str], ApiMapping],
+    boundary_index: dict[tuple[str, str, str, str], ApiMapping],
     openapi_spec: dict,
     java_project_path: str,
     interfaces_by_module: dict[str, list[InterfaceSpec]],
@@ -202,26 +225,31 @@ def _run_wave_batch(
 # --------------------------------------------------------------------------
 
 
-def _build_boundary_index(api_to_python_target: list[ApiMapping]) -> dict[tuple[str, str, str], ApiMapping]:
-    """`(module, class_name, method_name) -> ApiMapping`，供
-    `_build_method_contexts()` 判斷一個方法是不是 API 邊界方法。
-    `ApiMapping.java_controller` 是 `"ClassName.method_name"`（見 04a
-    六章 `assemble_api_mapping()`），這裡拆開重組成 key。
+def _build_boundary_index(api_to_python_target: list[ApiMapping]) -> dict[tuple[str, str, str, str], ApiMapping]:
+    """`(module, class_name, method_name, http_method) -> ApiMapping`，
+    供 `_build_method_contexts()` 判斷一個方法是不是 API 邊界方法，並且
+    是哪一個 HTTP method 的邊界方法。`ApiMapping.java_controller` 是
+    `"ClassName.method_name"`（見 04a 六章 `assemble_api_mapping()`），
+    這裡拆開重組成 key 的一部分。
 
-    **已知限制**：`java_controller` 不含參數簽名，若同一個 class 內有
-    多載方法且剛好都是不同 endpoint 的 Controller 方法（比 04a 五章
-    `voice`/`image` 那種 skip 案例更少見，但理論上可能發生），這裡的
-    索引只保留最後一筆 `ApiMapping`。`_build_method_contexts()` 那邊
-    再進一步限定：這唯一一筆 operation 只會套用到 `overloads` 清單裡
-    `_select_boundary_overload()` 依參數個數選出的那一個多載，不是宣告
-    順序第一個（見該函式 docstring），其餘多載一律退回機械型別對應。
-    這仍然是猜測，不是精確消歧，留待接上真實專案規模評估是否需要升級
-    成 list（並讓 `ApiMapping` 帶參數簽名徹底消歧）。
+    **對應 docs/09b_bug_trace.md #70 的根治修正**：原本的 key 只有
+    `(module, class_name, method_name)`，同一個 class 內若有「同名、
+    不同 HTTP method」的多載方法（Java 方法多載，靠 `@GetMapping`／
+    `@PostMapping` 等 annotation 而非參數簽名區分，如
+    `FileController.voice()` 的 POST 上傳／GET 下載兩個 overload），
+    dict 賦值會互相覆寫，只留得住最後一筆——另一個多載完全查不到
+    boundary，退回機械型別對應，翻出不合法的回傳型別注記，讓 FastAPI
+    在匯入階段直接崩潰、整個服務起不來（真實案例見 #70）。加上
+    `http_method` 這一維後，`voice()` 的 POST／GET 兩個 ApiMapping 各自
+    有自己的 key，不再互相覆寫；`_build_method_contexts()` 那邊改成用
+    `JavaMethodSignature.http_method`（見 `signature_scan.py` 對應
+    extraction）直接查對應的那一筆，不需要再靠 `_select_boundary_
+    overload()` 的參數個數猜測消歧——這個函式因此已移除，見 git 記錄。
     """
-    index: dict[tuple[str, str, str], ApiMapping] = {}
+    index: dict[tuple[str, str, str, str], ApiMapping] = {}
     for api in api_to_python_target:
         class_name, _, method_name = api["java_controller"].partition(".")
-        index[(api["module"], class_name, method_name)] = api
+        index[(api["module"], class_name, method_name, api["http_method"])] = api
     return index
 
 
@@ -234,27 +262,10 @@ def _python_function_name(java_method: str, is_private: bool) -> str:
     return f"_{name}" if is_private else name
 
 
-def _select_boundary_overload(overloads: list[JavaMethodSignature], operation: dict) -> JavaMethodSignature:
-    """`boundary_index` 對同名多載只能保留一筆 `ApiMapping`（見
-    `_build_boundary_index()` 已知限制），這裡要在 `overloads`
-    （javalang 掃描的宣告順序，見 05a 四章「多載方法的處理」）裡挑一個
-    最可能對應這個 operation 的多載——不挑宣告順序第一個：Java 原始碼
-    裡的宣告順序跟哪個多載才是真正的 Controller 端點無關，單純調整
-    程式碼排版就可能悄悄換掉綁定結果。改用「Java 參數個數」跟
-    operation 的 `parameters` + `requestBody`（算一個）比對，取參數
-    個數差距最小的一個；並列時退回宣告順序，讓結果穩定可重現。這仍然
-    是猜測，不是精確消歧（`ApiMapping` 本身不含參數型別，見
-    `_build_boundary_index()` docstring），只是比「永遠挑宣告順序第一
-    個」更貼近實際簽名形狀。
-    """
-    expected_count = len(operation.get("parameters") or []) + (1 if operation.get("requestBody") else 0)
-    return min(overloads, key=lambda sig: (abs(len(sig.params) - expected_count), overloads.index(sig)))
-
-
 def _build_method_contexts(
     module: ModuleInfo,
     class_signatures: dict[str, JavaClassSignature],
-    boundary_index: dict[tuple[str, str, str], ApiMapping],
+    boundary_index: dict[tuple[str, str, str, str], ApiMapping],
     openapi_spec: dict,
 ) -> list[_MethodContext]:
     """對應 05a 七章「強制規則：interfaces 必須涵蓋 module_list 裡每一
@@ -313,19 +324,6 @@ def _build_method_contexts(
             )
 
         layer = layout.layer_for_stereotype(class_sig.stereotype)
-        boundary = boundary_index.get((module["module"], class_sig.class_name, method_info["java_method"]))
-        operation = (
-            type_mapping.find_operation(boundary["endpoint"], boundary["http_method"], openapi_spec)
-            if boundary is not None
-            else None
-        )
-        # 這個 operation 只屬於「一個」物理方法，boundary_index 對同名
-        # 多載本來就只能保留一筆 ApiMapping（見 _build_boundary_index()
-        # docstring）。用 _select_boundary_overload() 依參數個數挑出最可能
-        # 的那一個多載，而不是宣告順序第一個——不能讓迴圈裡剩下的其他
-        # 多載也套用同一份 operation，那會把同一個 endpoint 的參數/回傳
-        # 型別錯誤地複製到不相干的多載方法上。
-        selected_overload = _select_boundary_overload(overloads, operation) if operation is not None else None
 
         # 多載消歧（05a 四章「多載方法的處理」）：同一組 overloads 的
         # sig.method_name 相同，_python_function_name() 對每個 sig 都會
@@ -335,7 +333,23 @@ def _build_method_contexts(
         seen_names: dict[str, int] = {}
 
         for sig in overloads:
-            if sig is selected_overload:
+            # 對應 docs/09b_bug_trace.md #70 根治修正：每個 overload 各自
+            # 用自己的 http_method 精確查 boundary_index，不再是迴圈外
+            # 只查一次、套用到「猜出來的那一個」多載——「同名、不同 HTTP
+            # method」的多載（如 voice() 的 POST／GET）現在都能各自找到
+            # 自己對應的 ApiMapping，不會有一個被硬套用不屬於它的
+            # operation、另一個完全查不到而被誤判為非邊界方法。
+            boundary = (
+                boundary_index.get((module["module"], class_sig.class_name, sig.method_name, sig.http_method))
+                if sig.http_method is not None
+                else None
+            )
+            operation = (
+                type_mapping.find_operation(boundary["endpoint"], boundary["http_method"], openapi_spec)
+                if boundary is not None
+                else None
+            )
+            if operation is not None:
                 params, return_type = type_mapping.resolve_api_boundary_signature(sig, operation, openapi_spec)
                 uncovered = type_mapping.find_uncovered_framework_params(sig, operation, openapi_spec)
                 # ResponseEntity<T> 方法的 return_type 已被覆寫成
@@ -516,7 +530,7 @@ def _design_global_advice_module(module: ModuleInfo, java_project_path: str) -> 
 
 def _design_module(
     module: ModuleInfo,
-    boundary_index: dict[tuple[str, str, str], ApiMapping],
+    boundary_index: dict[tuple[str, str, str, str], ApiMapping],
     openapi_spec: dict,
     java_project_path: str,
     interfaces_by_module: dict[str, list[InterfaceSpec]],

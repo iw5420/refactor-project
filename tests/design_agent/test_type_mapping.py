@@ -10,6 +10,7 @@ import pytest
 
 from design_agent.type_mapping import (
     collect_named_schemas,
+    extract_schema_fields,
     is_response_entity_return_type,
     map_java_type,
     resolve_api_boundary_signature,
@@ -360,3 +361,57 @@ class TestResolveApiBoundarySignatureRequestBody:
         params, return_type = resolve_api_boundary_signature(method, operation, {})
         assert params == [{"name": "req", "type": "OrderCreateRequest"}]
         assert return_type == "OrderRs"
+
+
+def _assert_valid_field_declaration(name: str, declaration: str) -> None:
+    """驗證 extract_schema_fields() 的輸出接在 Pydantic BaseModel 的
+    class body 裡是合法 Python 語法。"""
+    ast.parse(f"class _M:\n    {name}: {declaration}\n")
+
+
+class TestExtractSchemaFields:
+    """對應 docs/09b_bug_trace.md：非必填欄位若沒有驗證限制（不會走
+    Field(...) 分支），舊版只有 `python_type = f'{python_type} | None'`
+    純型別注記、沒有補 `= None` 預設值——Pydantic v2 對這種寫法一樣會
+    把欄位當成必填，Java 端本來可以省略的欄位一旦真的被省略就會
+    RequestValidationError。真實案例：CreaterandomRq.year 的 golden
+    請求本體完全沒有帶 year，但生成出來的欄位是 `year: str | None`
+    （沒有 `= None`），第三輪真實 pipeline 因此對 create_random 端點
+    500。"""
+
+    def test_optional_field_without_constraints_gets_none_default(self):
+        raw_schema = {
+            "properties": {"year": {"type": "string"}},
+            "required": [],
+        }
+        fields = extract_schema_fields(raw_schema)
+        assert fields == [("year", "str | None = None")]
+        _assert_valid_field_declaration(*fields[0])
+
+    def test_required_field_without_constraints_has_no_default(self):
+        raw_schema = {
+            "properties": {"card": {"type": "string"}},
+            "required": ["card"],
+        }
+        fields = extract_schema_fields(raw_schema)
+        assert fields == [("card", "str")]
+        _assert_valid_field_declaration(*fields[0])
+
+    def test_optional_field_with_constraints_still_uses_field_default_none(self):
+        """既有行為（走 Field(...) 分支的既有邏輯）不能被這次修正動到。"""
+        raw_schema = {
+            "properties": {"name": {"type": "string", "maxLength": 50}},
+            "required": [],
+        }
+        fields = extract_schema_fields(raw_schema)
+        assert fields == [("name", "str | None = Field(default=None, max_length=50)")]
+        _assert_valid_field_declaration(*fields[0])
+
+    def test_required_field_with_constraints_uses_field_ellipsis(self):
+        raw_schema = {
+            "properties": {"name": {"type": "string", "maxLength": 50}},
+            "required": ["name"],
+        }
+        fields = extract_schema_fields(raw_schema)
+        assert fields == [("name", "str = Field(..., max_length=50)")]
+        _assert_valid_field_declaration(*fields[0])

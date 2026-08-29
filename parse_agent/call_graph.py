@@ -77,7 +77,11 @@ def parse_java_project(java_project_path: str) -> ParsedProject:
         # _uses_dynamic_query_signal() docstring），跟 file_imports 一樣
         # 整份檔案共用，供 grouping.py 判斷是否需要送 Map 摘要用。
         file_uses_dynamic_query_signal = _uses_dynamic_query_signal(tree)
-        for class_info in [*_extract_classes(tree, rel_path), *_extract_interfaces(tree, rel_path)]:
+        for class_info in [
+            *_extract_classes(tree, rel_path),
+            *_extract_interfaces(tree, rel_path),
+            *_extract_enums(tree, rel_path),
+        ]:
             class_info.imports = file_imports
             class_info.uses_dynamic_query_signal = file_uses_dynamic_query_signal
             if class_info.class_name in classes:
@@ -181,6 +185,14 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
     的 summary，可能污染 Reduce 階段的模組拆分判斷。
     改用 `tree.types` 只列出頂層型別宣告，天生排除這個風險；代價見十一章
     「已知限制」。
+
+    **`extends`**：只取父類別簡單名稱（Java 單一繼承，`class_decl.extends`
+    是單一 `ReferenceType` 或 `None`，不是清單，跟 `implements` 不同）。
+    對應 `docs/09b_bug_trace.md`「新發現：`@MappedSuperclass`（如
+    `BaseEntity`）未被任何 module 的 `java_files` 收錄」——沒有這個欄位，
+    `grouping.py::_direct_deps()` 完全沒有管道知道「這個 class 繼承了
+    哪個父類別」，同套件內的 `extends`（Java 語言特性上不需要 import）
+    因此連候選依賴邊都不存在，不是「解析不到」，是從一開始就沒被問過。
     """
     result: list[ClassInfo] = []
     for class_decl in tree.types:
@@ -216,6 +228,7 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
                 stereotype=stereotype,
                 bean_name_override=bean_name_override,
                 implements=[t.name for t in (class_decl.implements or [])],
+                extends=class_decl.extends.name if class_decl.extends is not None else None,
                 is_primary=is_primary,
                 fields=_extract_fields(class_decl),
                 methods=[
@@ -293,6 +306,60 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
                     )
                     for m in decl.methods
                 ],
+                request_mapping_base=[],
+                routes=[],
+                annotations=[a.name for a in decl.annotations],
+            )
+        )
+    return result
+
+
+def _extract_enums(tree: javalang.tree.CompilationUnit, rel_path: str) -> list[ClassInfo]:
+    """把獨立宣告的 Java `enum`（`EnumDeclaration`）也建成 `ClassInfo`，
+    理由跟 `_extract_interfaces()` 完全對稱：沒有這個函式，enum 永遠不會
+    出現在 `project.classes`，`controller_dependency_closure()` 的 import
+    依賴邊（見 `_extract_project_imports()`）就算掃到某個檔案明確 import
+    了這個 enum，也找不到對應節點可以連——這個 enum 因此永遠無法透過既有
+    機制被任何 module 收進 `module_list.java_files`。JPA entity 欄位型別
+    用到的 enum 有 ④（`scaffold_agent`，見 `08a_scaffold_agent_
+    architecture.md` 四章）自己獨立掃描 db_models 用；但業務邏輯用的
+    enum（如自訂錯誤碼列舉，只透過 import 被其他 class 引用，不是任何
+    entity 欄位）完全不在④的掃描範圍內，必須先進 `module_list.java_files`
+    才有機會被④的既有「同時掃描 EnumDeclaration」邏輯撿到並渲染進
+    `app/models/_enums.py`——這就是這個函式存在的理由。
+
+    `implements`：Java enum 可以 `implements` interface（`enum
+    CommonErrorCode implements ErrorCode`），這裡如實記錄——一旦這個 enum
+    進了 `project.classes`，既有的 `build_interface_implementors()`
+    完全不用改，就能自動反查出「這個 interface 被哪些 enum 實作」。
+
+    **刻意不解析 enum 成員（`decl.body.constants`）或建構子參數**：那是
+    ④ 自己要做的事（08a 四章「同時掃描 EnumDeclaration」），這裡只需要
+    讓這個檔案「被看見」，不需要重複④已經要做的完整解析。`fields=[]`：
+    enum 沒有 instance field 可供依賴解析用（成員本身不是 field 宣告）。
+    `methods=[]`：延續①「不解析 enum 方法本體」的範圍界線——`is_enum`
+    因此固定為 `True`、`methods` 恆為空，純供下游診斷用（見 types.py
+    `ClassInfo.is_enum` docstring），不驅動任何分支：`grouping.py::
+    needs_llm_summary()` 既有規則 2（`not has_implementor and all(not
+    m.has_body ...)`，空清單天生滿足 `all()`）本來就會判定這種 enum
+    不需要送 Map，不需要另外新增判斷分支。`routes=[]`：enum 不會是
+    Controller。
+    """
+    result: list[ClassInfo] = []
+    for decl in tree.types:
+        if not isinstance(decl, javalang.tree.EnumDeclaration):
+            continue
+        result.append(
+            ClassInfo(
+                file_path=rel_path,
+                class_name=decl.name,
+                stereotype=None,
+                bean_name_override=None,
+                implements=[i.name for i in (decl.implements or [])],
+                is_primary=False,
+                is_enum=True,
+                fields=[],
+                methods=[],
                 request_mapping_base=[],
                 routes=[],
                 annotations=[a.name for a in decl.annotations],

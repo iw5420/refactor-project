@@ -429,7 +429,7 @@ refactor-project/
 - `module["module"] == "_global"` 走完全獨立的專屬處理路徑，**不查 `_STEREOTYPE_LAYER`**，固定輸出 `app/core/exception_handlers.py`、`class_name=None`（自由函式，比照 routers 層無 class 的既有渲染慣例）、不產生 `http_method`／`route_path`。
 - 函式簽名比照 FastAPI `@app.exception_handler(...)` 呼叫慣例固定為 `(request: Request, exc: Exception) -> Response`，不是 Java 原始簽名的機械轉換——FastAPI 的例外處理器協定本來就要求這個固定形狀。
 - **範圍刻意收斂**：只處理 `@ExceptionHandler(Exception.class)` 這種全域 catch-all case（真實案例裡唯一有 golden output 佐證的情況）。若同一個 advice class 還有 `@ExceptionHandler(SomeSpecificException.class)` 這類更細的例外處理方法（真實案例確實存在 `handleBaseException(BaseException e)`），只記警告、不產生對應 `InterfaceSpec`——這些方法不會被 [P] 排進 task list，不會被實作，是刻意接受的限制，不是遺漏。
-- `app/main.py` 新增一段：偵測到 `app/core/exception_handlers.py` 的 interface 時，機械產生 `app.add_exception_handler(Exception, {function_name})` 註冊行。
+- `app/main.py` 新增一段：偵測到 `app/core/exception_handlers.py` 的 interface 時，機械產生**三行** `app.add_exception_handler()` 註冊行（`Exception`／`HTTPException`／`RequestValidationError`，都指向同一個函式）——只註冊 `Exception` 接不到後兩種型別，FastAPI 會替它們預先註冊自己的內建預設處理器，精確型別優先於泛用的 `Exception` 註冊（見 `docs/09b_bug_trace.md #57`，已用隔離測試證實）。
 - 函式本體不在③機械產生——比照一般 service/repository 方法，經 [P] 產生 task、走⑤既有的 `fill_function()` 流程翻譯 Java handler 方法本體，維持「③只做機械骨架決策、業務邏輯留給既有 task pipeline」的既有分工邊界。
 
 **真實環境驗證**：容器內實測確認 Starlette 的例外處理中介層確實會呼叫到⑤翻譯出的 `handle_all`（從未攔截例外時的 500 錯誤 traceback 直接看到呼叫鏈）——證實「這個方法會不會被框架呼叫到」這個架構層面的問題已解決；⑤實際翻譯出的函式本體品質（qwen 是否正確理解業務邏輯）另計，屬於翻譯品質範疇。
@@ -449,6 +449,56 @@ refactor-project/
 **真實環境驗證**：直接讀真實生成的 `app/schemas/registration.py`，確認 `GetAllGradeRs`／`GetAllClassesRs`／`GetAllSchoolRs` 全部自我完備定義在檔案內，不再需要跨檔案 import。
 
 程式碼實作見 `05b_design_agent_code.md` 對應章節；單元測試見 `tests/design_agent/test_global_advice_module.py`、`tests/design_agent/test_type_mapping.py`（`TestResponseEntity`／`TestIsResponseEntityReturnType`／`TestResolveApiBoundarySignatureResponseEntity`／`TestCollectNamedSchemasRecursion`）。
+
+---
+
+## 十五、兩個新增的全域基礎設施：LLM 設計的 enum-backed interface、機械產生的 `@Value` config
+
+對應 `docs/09b_bug_trace.md` #44（剩餘部分：`ErrorCode` 本身）、#45（根因）。兩者都延伸自三章「全域基礎設施檔案」既有機制（`app/core/database.py`／`app/main.py`），比照十四章新增 `exception_handlers.py` 的既有先例——**不是逐 module 處理，是對整個 `module_list.java_files` 做一次獨立、輕量的全域掃描**，因為這兩個模式本質上跨模組，且刻意獨立於六章逐 module 的 LLM 呼叫之外（③／④是平行分支，這裡的掃描不能依賴④已經算出的 `db_models`／`scan_index`，見十一章）。實作集中在新模組 `design_agent/global_infra.py`。
+
+### 15.1 只被 Enum 實作的 interface（`ErrorCode`）：LLM 設計 Python 對等寫法
+
+**根因回顧**（見 `04a_parse_agent_architecture.md` 十二章）：Java 常見「interface 定義契約、enum 提供具體常數值」寫法（如 `interface ErrorCode { getCode(); getMsg(); }` ＋ `enum CommonErrorCode implements ErrorCode`）。①修好 `_extract_enums()` 後，`CommonErrorCode` 等具體 enum 能正確進 `module_list.java_files`，④既有機制也能正確渲染出帶正確數值的 Python enum（見 `08a_scaffold_agent_architecture.md` 對應章節）——但 `ErrorCode` 這個 interface 本身純粹被當**型別標註**用（如 `error_4(self, code: ErrorCode)`，來自 `ResponseResult.error(ErrorCode code)` 的機械型別對應，見五章「專案內自訂 class」規則），沒有任何機械規則會產生它的 Python 定義：它不是 `ClassDeclaration`（③的 `InterfaceSpec` 生成、三章「孤兒類別／資料容器占位」都只處理 `ClassDeclaration`），也不是④要處理的 JPA entity／enum。缺這個定義會讓引用它的檔案（如 `common_service.py`）在 import 當下直接 `NameError`。
+
+**為什麼交給 LLM，不是機械寫死一個 Union type alias**：Java 的 interface + enum 這套組合是 Java 語言慣用法，不等於 Python 慣用寫法（如 `typing.Protocol` 結構化型別、或其他寫法）——用哪種 Python 寫法能達到「功能對等」需要語意判斷，機械規則做不到，這正是 00 二章「機械規則判斷不了的部分才問 LLM」的情況，不是③三、五、七章那種可以查表決定的判斷。
+
+**偵測（機械，全域一次性，不分 module）**：`design_agent/global_infra.py::scan_enum_backed_interfaces()` 對 `module_list` 全部 `java_files` 找出所有 `InterfaceDeclaration`，以及所有「`implements` 非空的 `EnumDeclaration`」，組出 `interface_name → [implementor enum 資訊]`（含每個實作 enum 的欄位，來自 `EnumBody.declarations` 的 `FieldDeclaration`，供 LLM 判斷資料形狀）。**觸發條件**：這個 interface 至少有一個 enum 實作者，且**零個** class 實作者——純 enum-backed，不是「順便被某個 class 也實作」的一般共用 interface（那種仍走既有 `_extract_interfaces()`／共用類別既有路徑，不歸這個新機制管）。已對真實 `lang-exam-api-refactor` 全專案掃過，只有 `ErrorCode` 一個 interface 符合這個模式（機制設計成可重用，但目前只會觸發一次）。
+
+**LLM 設計（新增一次全域呼叫，不是逐 module）**：`design_agent/global_infra.py::design_enum_backed_interfaces()` 對每一個命中的 interface 各自呼叫一次 Claude（互相獨立，不是批次一次問完），把方法簽名＋ implementor enum 的欄位丟給 LLM，直接請它輸出完整、可以直接寫入檔案的 Python 原始碼（`{python_module_path, python_source}`）——不是抽象決策再由③組裝，這類「選一種語言慣用寫法」的產出本身就是自由文字，機械組裝反而畫蛇添足。**失敗處理**：比照六章既有的「單一呼叫失敗」節奏——失敗的 interface 列入待重試清單，全部呼叫完後等待 5 分鐘統一重試一次；仍失敗中止整條 `design` run（`DesignAgentModuleError`，沿用既有例外型別，不新發明一套）。
+
+**輸出串接（零成本，複用既有機制）**：`07a_translator_cli_architecture.md` 四章「基礎設施段」的解析是**通用正則**（`### {file_path}` + fenced code block → 直接寫入檔案，不是寫死認得 `database.py`／`main.py` 這兩個檔名）——③只需要把 LLM 產出的程式碼文字，用同樣格式追加進 `directory_tree` 既有「基礎設施段」（三章），**④／⑤／07a 現有程式碼完全不用改**。
+
+**真實環境驗證**：對真實 `ErrorCode` interface（`getCode()`／`getMsg()`，四個 enum 實作者）跑過真實 Claude API 呼叫，產出 `app/core/error_code.py`，內容是 `typing.Protocol`（`@runtime_checkable`，結構化型別，`code`／`msg` 屬性＋ `get_code()`／`get_msg()` 方法，docstring 列出全部四個實作 enum）——`ast.parse()` 通過，且串接進完整 scaffold 後（見 15.3）真實 import 成功，`common_service.py` 既有的「自訂型別索引」機制（07a 四章，完全沒有改動）自動偵測到 `error_4(self, code: ErrorCode)` 用到這個型別，自動加上 `from app.core.error_code import ErrorCode`。
+
+### 15.2 `@Value("${key}")` 屬性注入欄位：機械產生 `app/core/config.py`
+
+**根因回顧**（`docs/09b_bug_trace.md` #45）：Java `@Value("${language.code}")` 屬性注入（值在 `application-{profile}.properties`）跟真正的 Spring Boot `BuildProperties` 框架 bean（`@Autowired`）是完全不同的兩種機制，但既有的「框架注入物件」LLM 判斷（五章「框架注入物件：openapi_spec 覆寫的例外」）只處理**方法參數**，不含被方法本體引用的 **class 欄位**——沒有任何規則處理 `@Value` 欄位，⑤翻譯時把它跟同一個 class 裡的另一個框架物件（`buildProperties`）混為一談，幻覺出從未存在的型別。
+
+**決策：機械偵測＋機械產生，不需要 LLM**——跟 15.1 的 `ErrorCode`不同，這裡沒有語意判斷空間：property key 到環境變數名稱、到常數宣告，每一步都是決定性字串轉換，跟 `app/core/database.py` 的 `DATABASE_URL` 同一種「純樣板」性質。
+
+**偵測**：`design_agent/global_infra.py::scan_value_injected_fields()` 對 `module_list` 全部 `java_files` 掃 `@Value("${key}")` 標註的欄位（沿用 08a 四章已定案的「Annotation 元素值萃取：只接受 Literal」規則，非 Literal 或非 `${...}` 包裝格式一律視同缺席，記警告，不猜）。**同一次掃描順便計算 `python_file_path`**：這個欄位所屬 class 的 Spring stereotype（`layout.layer_for_stereotype()`）＋所屬 module（反查 `module_list.java_files`）決定它落在 Python 哪一層／哪個檔案——這一步是必要的，因為後續 `config_field_mappings` 要能被 [P]（只認得 Python `file_path`）比對到，不能只留 Java 路徑（兩者是不同的路徑空間，最初實作時漏看這一點，已在真實環境驗證中發現並修正，見下方「真實環境驗證」）。
+
+**機械產生 `app/core/config.py`**：`global_infra.py::render_config_py()` 全專案彙整所有掃到的 `@Value` property key（如 `language.code`），用既有 `common/java_type_mapping.py::camel_to_snake()` 轉換＋大寫＋`.`換`_`，產生常數名（`language.code` → `LANGUAGE_CODE`，`language.displayName` → `LANGUAGE_DISPLAY_NAME`），渲染成 `CONST = os.environ["CONST"]` 逐行列出。內容一樣寫進 `directory_tree`「基礎設施段」，跟 `database.py` 用同一個既有機制。
+
+**`config_field_mappings`**：`graph/state.py::PythonStructure` 新增 `config_field_mappings: NotRequired[dict[str, dict[str, str]]]`（key 是 Python `file_path`，value 是 `{java_field_name: python_reference}`），③在掃描階段順便機械組出，供 [P]（見 `06a_plan_agent_architecture.md` 對應章節）折進 `task.context`，讓⑤翻譯到原本讀取 `this.xxx`（`@Value` 欄位）的程式碼時有明確依據可用。
+
+**真實環境驗證**：對真實 `GeneralController.java`（`language.code`／`language.displayName` 兩個 `@Value` 欄位）跑過完整真實 `design_all_modules()`，確認 `app/core/config.py` 正確產出（`LANGUAGE_CODE`／`LANGUAGE_DISPLAY_NAME`），`config_field_mappings` 正確以 Python 檔案路徑（`app/routers/general_router.py`）為 key；再跑一次真實 `plan_all_modules()`，確認 `language()` 對應 task 的 `context` 正確附加提示文字。**這裡曾經有一版 bug**：`python_file_path` 計算漏做，`config_field_mappings` 誤用 Java `file_path` 當 key，導致 [P] 比對不到（`draft.file_path` 是 Python 路徑）、`task.context` 沒有拿到提示——已在真實環境重跑中發現並修正，修正後重新驗證通過。
+
+### 15.2.1 `config_env_vars`：只設計了「怎麼命名／怎麼讀」，沒設計「值從哪裡來」（`docs/09b_bug_trace.md` #46）
+
+15.2 到這裡為止只解決了「Python 端要用什麼環境變數名稱、要怎麼讀」——`app/core/config.py` 產出的 `LANGUAGE_CODE = os.environ["LANGUAGE_CODE"]` 這一行，只有容器啟動時**真的有人把 `LANGUAGE_CODE` 這個環境變數塞進去**才不會崩潰。真實環境從乾淨狀態重新端對端重跑才發現：整條 pipeline 沒有任何一步做這件事——`python_service/process.py::start()` 的 `docker run` 只帶了 `-e DATABASE_URL=...`，`language()` 端點直接 `KeyError` 崩潰。
+
+這不是③要解決的問題——③（本節）已經做完自己該做的部分：決定「用環境變數」這個機制、算出每個 `@Value` 欄位對應的環境變數常數名稱。「這個常數的值從 Java 端哪裡讀、怎麼注入進容器」是容器啟動基礎設施（⑤／`python_service/`）的職責，但它需要③告訴它「有哪些常數需要值」——這正是③這一步唯一還沒做的事：`render_config_py()` 內部本來就已經算出 `property_key -> constant_name` 的對照表（`constants` 這個區域變數，拿去產生 `content` 字串後就丟棄），這裡新增第三個回傳值把它攤平成 `config_env_vars: list[{"property_key": str, "constant_name": str}]`（依首次出現順序，已對 `property_key` 去重），寫進 `graph/state.py::PythonStructure.config_env_vars`（`NotRequired`，跟 `config_field_mappings` 同一種「沒有 `@Value` 欄位的專案不需要這個 key」慣例）。
+
+**`config_env_vars` 跟 `config_field_mappings` 是同一份 `value_fields` 算出來的兩種不同投影，不是重複資料**：`config_field_mappings` 回答「[P] 幫哪個 Python 檔案的哪個欄位折進什麼提示文字」；`config_env_vars` 回答「容器啟動時這個常數該填什麼值」——前者的 key 是 Python `file_path`（且 `python_file_path` 為 `None` 的欄位完全不會出現在 `config_field_mappings` 裡），後者不看 `python_file_path`，任何成功掃描到的 `@Value` 欄位都會出現（容器啟動注入這個值，不管有沒有 task.context 提示可用，兩件事互不影響）。
+
+**profile 選擇不需要③或任何新決策點介入**：Java 端 `application.properties`（base）本身用 Spring Boot 標準慣例宣告了 `spring.profiles.active`（如 `spring.profiles.active=macuhau`）——這是既有事實，讀取值、解析 `application-{profile}.properties` 都是⑤（`python_service/java_properties.py`）容器啟動前的機械讀取，見 `09a_implement_agent_architecture.md` 對應章節，這裡不重複設計。
+
+### 15.3 結構層端對端驗證（不含⑤/Docker）
+
+除了 15.1／15.2 各自的驗證，另外對真實 `../lang-exam-api-refactor` 完整跑過 ①③（含本節兩個新機制）→ ④ `build_db_models()`／`translator_cli.scaffold.build_files()`，把產出的全部 26 個檔案（含 `app/core/error_code.py`／`app/core/config.py`／修正後的 `app/models/_enums.py`）寫進一個獨立的 scratch Python 專案，逐一 `importlib.import_module()`：**26 個模組全部 import 成功，零錯誤**；`CommonErrorCode.SUCCESS.code == 200`、`.msg` 為真實 Java 原始碼裡的訊息文字（不是只有成員名稱）——證實①③④三個 Agent 的修正合起來，不只是「能生成」，是「生成的內容在真實資料下語法正確、跨檔案 import 正確解析、執行期數值正確」。
+
+程式碼實作見 `05b_design_agent_code.md` 對應章節；單元測試見 `tests/design_agent/test_global_infra.py`（若尚未建立，見 05b）、`tests/scaffold_agent/test_entity_scan.py`／`test_model_builder.py`（enum 建構子引數渲染）、`tests/plan_agent/test_planning.py`（`config_field_mappings` 折進 context）。
 
 ---
 

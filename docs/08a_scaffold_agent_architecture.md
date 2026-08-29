@@ -344,6 +344,21 @@ SQLAlchemy Column 型別（如 Numeric、DateTime、String）
 
 第 2 步已經唯一的成員維持模組名後綴（較短、較可讀），不因為同一組裡有其他成員需要退到第 3 步而跟著降級——只有真正還在撞的那幾筆才用比較長的 package 全路徑命名。這份「FQN → 最終 Python class 名稱」的對應收進 `scan_index.enum_python_names: dict[fqn, str]`（六章，跟 `fallback_pk_type`／`fk_use_alter_edges` 一樣是 `ScanIndex` 的一個欄位），七章渲染欄位、`_enums.py` 本身渲染 class 定義時都查這份對應，不是直接拿 FQN 的最後一段當 class 名稱用。
 
+### 建構子引數還原（對應 `docs/09b_bug_trace.md` #44 根因的一部分）
+
+上方「產生 Python `enum.Enum` class」原本只取 `decl.body.constants` 的成員**名稱**（`NAME = "NAME"`），完全不處理 Java enum 常見的建構子參數寫法（如 `CommonErrorCode(int code, String msg) { ... } SUCCESS(200, "操作成功")`）——對本章原本設想的情境（JPA entity 欄位、`EnumType.STRING` 持久化格式，如 `OrderStatus { PENDING, PAID }`）這是正確、刻意的選擇：SQLAlchemy 的 `Enum` 型別持久化用的是成員的 `.name`，不是 `.value`，成員名稱本來就是唯一需要保留的資訊。但 09b 端對端測試接上①的 `_extract_enums()`（`04a_parse_agent_architecture.md` 十二章）後才發現：`scan_index.enums`（六章）不只收「entity 欄位引用到的 enum」，而是**無條件收整個 `module_list.java_files` 裡所有掃到的 `EnumDeclaration`**——這包含大量根本不是 entity 欄位、單純帶著業務資料的「常數類別」enum（如自訂錯誤碼列舉），這批 enum 的建構子參數（`code`／`msg`）才是它們存在的**唯一理由**，原本的「只取名稱」渲染會讓這些數值資訊整個遺失（`CommonErrorCode.SUCCESS(200, "操作成功")` 渲染成只剩 `SUCCESS = "SUCCESS"`）。
+
+**決策：`entity_scan.py::scan_module()` 額外還原建構子參數，`model_builder.py` 據此決定渲染成帶值的 enum**：
+
+- `EnumRecord` 新增 `constructor_params: list[str]`（建構子參數名稱，依宣告順序）與 `member_args: dict[str, list[object]]`（member 名稱 → 對應引數的字面值清單）。取哪個建構子：正常只有一個（Java enum 多載建構子極少見）；真的出現多個時用第一個宣告的參數清單當唯一依據，記警告——不追求完美（不同常數理論上可能呼叫不同多載），只求比完全不處理更接近事實。沒有建構子（一般狀態列舉）→ 兩者皆為空，維持修改前的既有行為。
+- **Literal 規則**（同四章「Annotation 元素值萃取」同一套精神）：一個常數的引數清單若跟建構子參數數量對不上、或任一引數不是 `javalang.tree.Literal`，整個常數視同沒有可用的建構子引數，不寫進 `member_args`，記警告——不嘗試部分還原。
+- **渲染時全有全無，不逐常數各自判斷**：`record.constructor_params` 非空、且每一個 `record.members` 都在 `record.member_args` 裡有對應項目（`len` 相等，代表沒有任何常數在掃描階段被跳過）時，才渲染成帶值的 enum：`SUCCESS = (200, "操作成功")` ＋ `def __init__(self, code, msg): self.code = code; self.msg = msg`；否則整個 enum 退回原本「只渲染名稱」的寫法。**這不是保守，是必要**：Python `enum.Enum` 一旦定義 `__init__`，所有成員的賦值都必須是同一種形狀（tuple 對應多參數 `__init__`），若這個 enum 裡有些常數有還原出引數、有些沒有，硬要混合渲染會讓沒有引數的常數在 `__init__` 呼叫時缺參數，直接在 class body 求值階段拋 `TypeError`——比完全不渲染值更嚴重（原本只是資訊遺失，這樣會整個檔案 import 失敗）。
+- **不影響既有的 `EnumType.STRING` 持久化語意**：SQLAlchemy 的 `mapped_column(SqlEnum(OrderStatus, ...))` 持久化用的是成員的 `.name`（不是 `.value`），這裡新增的 `.code`／`.msg` 這類屬性是額外附加的資料，不改變 `.name` 本身，即使某個 entity 欄位引用到的 enum剛好也帶建構子參數，既有的欄位渲染（`mapped_column(SqlEnum(...))`）完全不受影響。
+
+**真實環境驗證**：對真實 `CommonErrorCode.java`（16 個成員，`code`／`msg` 兩個建構子參數）跑過完整 `build_db_models()`，渲染出的 `_enums.py` 通過 `ast.parse()`，`exec()` 後 `CommonErrorCode.SUCCESS.code == 200`、`.msg` 為真實 Java 原始碼裡的中文訊息文字（非亂碼，UTF-8 正確保留）——不只是語法正確，是數值正確。
+
+程式碼實作見 `08b_scaffold_agent_code.md` 對應章節；單元測試見 `tests/scaffold_agent/test_entity_scan.py`（`test_scan_enum_with_constructor_args_extracts_values`／`test_scan_enum_arg_count_mismatch_skips_that_member`）、`tests/scaffold_agent/test_model_builder.py`（`test_enum_with_constructor_args_renders_values_not_just_names`／`test_enum_with_partial_constructor_args_falls_back_to_name_only`）。
+
 ### 無法解析型別的最終降級
 
 裸識別字既不是已知純量型別、也解析不到 `scan_index.enums`（例如透過 wildcard import 引用、或型別不在 `module_list.java_files` 掃描範圍內）時，降級渲染成 `String`（不帶長度限制），並在欄位上方加一行 `# TODO` 註解記下原始 Java 型別（例如 `# TODO: 未知型別 SomeType，降級為 String，可能是 Enum（無法解析引用來源）或其他自訂型別，需要人工或⑤確認`）。**這條路徑的前提是「型別解析失敗」，跟上方「Enum 欄位」`EnumType.ORDINAL` 那條路徑不一樣**（那裡是型別解析成功、只是主動選擇不渲染，用的是專屬 TODO 文字，不是這裡的通用文字）——兩者最終都降級成不帶長度的 `String`，渲染結果看起來一樣，但成因不同，TODO 文字必須分開寫，讓事後排查的人知道該往哪個方向查。這個 TODO 註解保留機制跟八章「外鍵解析失敗的降級處理」用的是同一套：`db_models` 走原始字串直寫、不經 `ast.unparse()` 重新格式化，註解不會被工具鏈丟掉。`String` 是這條防線唯一合理的選擇——不知道實際型別時，`String` 能承載絕大多數可能的資料形狀，且比直接跳過欄位保留更多資訊。

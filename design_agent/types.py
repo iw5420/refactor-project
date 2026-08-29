@@ -30,6 +30,21 @@ class JavaMethodSignature:
     params: list[JavaParam]
     return_type: str | None  # None 代表 void
     is_private: bool = False  # 供 design.py 決定 Python function_name 是否加底線前綴（05a 七章）
+    # 對應 docs/09b_bug_trace.md #70：Spring 端點方法用 `@GetMapping`／
+    # `@PostMapping`／`@PutMapping`／`@DeleteMapping`／`@PatchMapping`
+    # 這 5 種簡寫 annotation 之一標註時，機械讀出對應的 HTTP method
+    # （固定大寫，如 "GET"／"POST"），供 design.py::_build_boundary_
+    # index() 精確消歧「同名、不同 HTTP method」的多載方法（如
+    # FileController.voice() 的 POST 上傳／GET 下載兩個 overload）——
+    # 不像 signature_key 那樣需要比對參數型別，HTTP method 直接對應
+    # ApiMapping.http_method，可以做到零猜測的精確比對。非端點方法
+    # （service／repository 層，本來就不會出現在 boundary_index，這個
+    # 欄位是不是 None 對它們沒有影響）或用純 `@RequestMapping
+    # (method=...)`（沒有搭配 5 種簡寫之一）宣告的端點方法（刻意窄範圍
+    # 不解析，見 _method_signature() docstring）維持 None——這種端點
+    # 方法會被視為非邊界方法、退回機械型別對應，是刻意接受的窄範圍
+    # （這個真實 Java 專案目前找不到這種寫法的真實案例）。
+    http_method: str | None = None
 
     @property
     def signature_key(self) -> str:

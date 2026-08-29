@@ -2365,7 +2365,7 @@ async def run(state: RefactorState) -> dict:
 
 ### `layout.py`：`EXCEPTION_HANDLERS_FILE` 常數與 `render_main_py()` 擴充
 
-新增 `EXCEPTION_HANDLERS_FILE = "app/core/exception_handlers.py"`。`render_main_py()` 除了既有的 router include 邏輯，新增：偵測 `interfaces` 裡 `file_path == EXCEPTION_HANDLERS_FILE` 的項目，為每個這樣的函式產生 `from app.core.exception_handlers import {fn}` 與 `app.add_exception_handler(Exception, {fn})`。
+新增 `EXCEPTION_HANDLERS_FILE = "app/core/exception_handlers.py"`。`render_main_py()` 除了既有的 router include 邏輯，新增：偵測 `interfaces` 裡 `file_path == EXCEPTION_HANDLERS_FILE` 的項目，為每個這樣的函式產生 `from app.core.exception_handlers import {fn}` 與**三行**註冊：`app.add_exception_handler(Exception, {fn})`／`app.add_exception_handler(HTTPException, {fn})`／`app.add_exception_handler(RequestValidationError, {fn})`，並對應加上 `from fastapi import FastAPI, HTTPException`／`from fastapi.exceptions import RequestValidationError` 兩行 import。**2026-08-28 修正（`docs/09b_bug_trace.md #57`）**：原本只註冊 `Exception` 這一版，真實環境用局部真實測試撞到——FastAPI 會替 `HTTPException`／`RequestValidationError` 預先註冊自己的內建預設處理器，Starlette 分派例外時精確型別優先，內建的具體型別處理器贏過只註冊 `Exception` 的泛用處理器，等於這兩種例外完全繞過 `handle_all()`，回應是 FastAPI 自己的預設格式（如 `{"detail": "..."}`），不是這個專案統一的 `{"code":...,"msg":...,"data":...}` 慣例。已用隔離 FastAPI app 直接證實這個假設，也證實補這兩行註冊後確實修好。單元測試見 `tests/design_agent/test_global_advice_module.py::test_render_main_py_also_registers_http_exception_and_validation_error`／`test_render_main_py_no_extra_imports_when_no_exception_handler`。**這是機械修正（`render_main_py()` 全程不經過 LLM），不是靠 prompt 提示——未來任何一次完整重跑產生的 `main.py` 都會自動正確，不需要依賴 ⑤／⑦ 這次運氣好不好。**
 
 ### `type_mapping.py`：`ResponseEntity` 覆寫與 `collect_named_schemas()` 遞迴
 
@@ -2380,6 +2380,46 @@ async def run(state: RefactorState) -> dict:
 單元測試見 `tests/design_agent/test_global_advice_module.py`、`tests/design_agent/test_type_mapping.py`（`TestResponseEntity`／`TestIsResponseEntityReturnType`／`TestResolveApiBoundarySignatureResponseEntity`／`TestCollectNamedSchemasRecursion`／`TestResolveApiBoundarySignatureRequestBody`）、`tests/design_agent/test_design.py`（`test_response_entity_boundary_method_gets_response_return_type_and_skips_schema`）。
 
 **真實環境驗證**：對 `../lang-exam-api-refactor` 完整跑過 ①③[P]④⑤⑥，`app/core/exception_handlers.py::handle_all` 正確產生並被容器內 Starlette 例外處理中介層實際呼叫到；`file_router.py` 的 `voice_2`／`image_2`（真實 `ResponseEntity<FileRs>` 方法）正確標成 `Response` 並成功產出可執行程式碼；`registration.py` 自我完備定義 `GetAllGradeRs`，不再需要跨檔案 import。詳見 `docs/09b_bug_trace.md`。
+
+---
+
+## `design_agent/global_infra.py`（對應 05a 十五章、`docs/09b_bug_trace.md` #44／#45）
+
+新模組，串接於 `design.py::design_all_modules()` 六章逐 module 波次跑完之後：
+
+```python
+value_fields = global_infra.scan_value_injected_fields(module_list, java_project_path)
+config_py_content, config_field_mappings, config_env_vars = global_infra.render_config_py(value_fields)
+if config_py_content is not None:
+    infra_sections.append(layout.render_code_section(global_infra.CONFIG_PY_FILE, config_py_content))
+
+enum_backed_interfaces = global_infra.scan_enum_backed_interfaces(module_list, java_project_path)
+for file_path, python_source in global_infra.design_enum_backed_interfaces(enum_backed_interfaces):
+    infra_sections.append(layout.render_code_section(file_path, python_source))
+```
+
+`design_all_modules()` 回傳值從三元組擴充成四元組（新增 `config_field_mappings`），再擴充成五元組（新增 `config_env_vars`，對應 05a 十五章 15.2.1、`docs/09b_bug_trace.md` #46）——`design_agent/__init__.py::run_design_agent()` 把兩者都折進 `PythonStructure`（各自非空才寫入對應 key，比照 `NotRequired` 慣例）：
+
+```python
+interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars = (
+    design.design_all_modules(module_list, api_to_python_target, openapi_spec, java_project_path)
+)
+python_structure = PythonStructure(directory_tree=directory_tree, interfaces=interfaces)
+if config_field_mappings:
+    python_structure["config_field_mappings"] = config_field_mappings
+if config_env_vars:
+    python_structure["config_env_vars"] = config_env_vars
+```
+
+`render_config_py()` 本身的回傳值也從 `(content, config_field_mappings)` 擴充成 `(content, config_field_mappings, config_env_vars)`：`config_env_vars` 是函式內部本來就已經算好、用來產生 `content` 字串的 `constants: dict[property_key, constant_name]`（依首次出現順序，已去重）另外攤平成 `[{"property_key": ..., "constant_name": ...}, ...]`——不是新的一次資料計算，只是把原本組完 `content` 就丟棄的中間結果也回傳出去，供 `python_service`（⑤，見 `09b_implement_agent_code.md` 對應章節）容器啟動前解析 Java 端實際值時使用。
+
+**`scan_value_injected_fields()` 的 `python_file_path` 計算**：需要這個 `@Value` 欄位所屬 class 的 Spring stereotype（判斷用的 5 個 annotation 名稱集合 `_STEREOTYPES`，跟 `design_agent/signature_scan.py::_STEREOTYPES`、`parse_agent/call_graph.py::_stereotype_of()` 各自維護同一份既有慣例，不共用）＋所屬 module（反查 `module_list.java_files`），呼叫既有 `layout.layer_for_stereotype()`／`layout.file_path_for_layer()` 算出——跟六章逐 module 設計階段用的是同一套機械規則。兩者缺一（無 stereotype，或檔案不屬於任何已知 module）時 `python_file_path` 為 `None`，記警告，不中止。
+
+**`scan_enum_backed_interfaces()` 的判定**：對 `module_list.java_files` 建三個對照表（`interfaces`、`class_implementors`、`enum_implementors`），逐一交叉比對——「有 enum 實作者、零 class 實作者」的 interface 才算命中，這個交叉比對本身是機械的，不需要 LLM 介入（見 05a 十五章「偵測」）。
+
+**`design_enum_backed_interfaces()` 的 prompt 設計**：明確告知 LLM「不需要重新定義 enum 本身的完整成員清單」（那是④獨立負責的部分，見 08a 對應章節），只需要決定 interface 本身怎麼表示——避免 LLM 誤以為要把 `SUCCESS(200, "...")` 這種具體常數也一併吐出來，重複、甚至可能跟④實際渲染出的版本衝突。
+
+單元測試見 `tests/design_agent/test_global_infra.py`：涵蓋 `@Value` 掃描的 Literal 規則、`python_file_path` 計算（含無 stereotype 的邊界情況）、`render_config_py()` 的常數命名與 field mapping 組裝、`config_env_vars` 的攤平與去重（含 `python_file_path` 為 `None` 的欄位仍要出現在 `config_env_vars` 裡，但不出現在 `config_field_mappings` 裡這條分歧規則）、`scan_enum_backed_interfaces()` 的「零 class 實作者」判定、`design_enum_backed_interfaces()` 的 LLM 呼叫（monkeypatch，不打真實 API）與重試失敗中止路徑。真實環境驗證見 05a 十五章；`config_env_vars` 實際被 `python_service` 解析注入的部分見 `09b_implement_agent_code.md` 對應章節。
 
 ---
 

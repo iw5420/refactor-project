@@ -21,13 +21,18 @@ class MutationVerifier:
     """
     def __init__(self, python_base_url: str, golden_dir: str,
                  test_dsn: str | None = None,
-                 config_path: str = "config/harness.yaml"):
+                 config_path: str = "config/harness.yaml",
+                 route_to_module_mapping: dict[str, str] | None = None):
         """
         test_dsn 由呼叫端傳入，理由同 GoldenRecorder.__init__ 的說明——若各自
         去讀 harness.yaml 的靜態預設值，即使呼叫前已經用 state["test_dsn"]
         對 readonly 做過 apply_seed，這裡內部逐 folder 的 apply_seed 仍可能
         連到不同資料庫。呼叫端（test_nodes.py 的 run_postman_tests）一律
         傳入 state["test_dsn"]。
+
+        route_to_module_mapping 同一個模式（見 docs/09b_bug_trace.md
+        #64）：留 None 才 fallback 讀 harness.yaml 當下版本，見
+        RouteMapper.__init__ docstring。
 
         同時讀取 {golden_dir}/_metadata.json 的 tainted_folders（見 02a 三章
         「Mutation 錄製異常偵測」、四章「排除已知異常的 folder」），取得 Recorder
@@ -42,7 +47,7 @@ class MutationVerifier:
         self.diff_engine = DiffEngine()
         self.reporter = HarnessReporter()
         # 與 GoldenVerifier 共用同一套 route → related_files 解析
-        self.route_mapper = RouteMapper(config_path)
+        self.route_mapper = RouteMapper(config_path, module_mapping_override=route_to_module_mapping)
 
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)

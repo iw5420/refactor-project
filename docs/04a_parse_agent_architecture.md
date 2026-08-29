@@ -129,6 +129,8 @@ Reduce **不**決定方法層級的內容——`MethodInfo`（`java_method`／`c
 
 > 若合併階段只是機械拼接各組候選、不重新做跨邊界判斷，會系統性漏掉組與組之間的關聯（00 六章已強調過這點），因此 Reduce 階段的「重新摘要」不可省略，不能只是把 Map 階段的 class 摘要照抄堆疊成 module 摘要。
 
+**真實環境重跑才發現的缺口：「一個 class 只屬於一個 module」只靠 prompt 文字要求，沒有機械驗證**（`docs/09b_bug_trace.md` #50）。`REDUCE_SYSTEM_PROMPT` 明文要求「被多個 Controller 共用的 class 依業務關聯判斷歸入最相關的模組，即使被其他模組依賴，也只屬於一個模組」，`build_reduce_output_schema()` 的 `enum` 約束（見上方「為什麼用 schema 約束」）也只保證 `java_classes` 陣列裡的每個字串合法存在，管不到「同一個合法 class_name 被 Reduce 分別填進兩個不同 `module_entry` 的 `java_classes`」——這種分類失手一旦發生，`_assemble_module_drafts()` 原本會讓兩個 module 各自拿到這個 class 完整的 `java_files`／`methods`，下游③依此機械渲染，同一組方法會在兩個 module 各自的 router 檔案裡各出現一次（真實案例：`FileController` 同時被分進 `file` 與 `exam`，`voice`／`voice_2`／`image`／`image_2` 也跟著出現在 `exam_router.py`，其中帶裝飾器的兩個還跟 `file_router.py` 真正的路由衝突）。修法：`_assemble_module_drafts()` 新增機械檢查，跟既有 `missing_classes`／`unassigned`／`invalid_deps` 同一種「機械擋、不重問 LLM」精神——`reduce_result["modules"]` 依序處理，先宣告某個 class 的 module_entry 保留，後面重複宣告的一律捨棄並記警告。實作見 `04b_parse_agent_code.md` 七章 7.3 `_assemble_module_drafts()`。
+
 **用量記錄**：Map／Reduce 呼叫 Claude API 一律經由 `common/llm_client.py` 的 `call_claude_for_json()`（跨 Agent 共用的呼叫封裝，見 00 六章「Claude API 呼叫封裝」），不自己重新實作 client 初始化或 `log_usage()` 串接——`log_usage()` 的呼叫已經在 `common/llm_client.py` 內部處理好，`parse_agent/summarize.py`（見七章）只需要呼叫 `call_claude_for_json()` 並傳入自己的 `model`（讀 `PARSE_AGENT_MODEL` 環境變數，見七章 `llm.py`）。
 
 ---
@@ -273,3 +275,41 @@ refactor-project/
 **真實環境驗證**：已對真實 `../lang-exam-api-refactor` 跑過完整 ①③[P]④⑤⑥，`module_list` 正確產出 `_global` 模組（`java_files=["src/main/java/com/teachLanguage/exception/GlobalExceptionHandler.java"]`），且下游一路串到⑤翻譯、⑥容器內實際觸發（Starlette 例外處理中介層確實呼叫到 ⑤ 產出的 `handle_all`），見 `09b_bug_trace.md`。
 
 程式碼實作見 `04b_parse_agent_code.md` 對應章節；單元測試見 `tests/parse_agent/test_grouping.py`。
+
+---
+
+## 十二、獨立宣告的 Java `enum` 收集（`_extract_enums()`）
+
+**背景**：`docs/09b_bug_trace.md` #44 追蹤到的根因——`parse_agent/call_graph.py` 原本只有 `_extract_classes()`（`ClassDeclaration`）與 `_extract_interfaces()`（`InterfaceDeclaration`，見四章「Repository interface 的補充掃描」），沒有對稱處理 `EnumDeclaration` 的函式。獨立宣告的業務 enum（如自訂錯誤碼列舉 `CommonErrorCode`）因此永遠不會出現在 `project.classes`——即使有其他 class 明確 `import` 它（如 `ResponseResult`／`GeneralController` 都 `import CommonErrorCode`），`controller_dependency_closure()` 既有的 import 依賴邊（三章「Import 依賴補充」）也找不到對應的 `ClassInfo` 節點可以連，這個 enum 因此永遠無法透過既有機制被任何 module 收進 `module_list.java_files`。
+
+這不是③／④設計上刻意排除的範圍：`08a_scaffold_agent_architecture.md` 四章「同時掃描 EnumDeclaration」早已設計好④要怎麼把 `module_list.java_files` 裡的 enum 渲染進 `app/models/_enums.py`（且是無條件渲染全部掃到的 enum，不限 JPA entity 欄位引用的）——問題出在①根本沒有把這些檔案交給④，是①實作面的既有缺口，不是④的缺口。
+
+**決策：新增 `_extract_enums(tree, rel_path) -> list[ClassInfo]`，比照既有 `_extract_interfaces()` 的寫法對稱處理**：
+
+- `ClassInfo.implements`：Java enum 可以 `implements` interface（如 `enum CommonErrorCode implements ErrorCode`），如實記錄——一旦這個 enum 進了 `project.classes`，既有的 `build_interface_implementors()`（三章 3.2）完全不用改就能查到（雖然 `build_interface_implementors()` 本身的用途仍是 DI 消歧，只收 `@Service`/`@Component`/`@Repository` stereotype 類別，enum 沒有 stereotype，不會出現在它的回傳值裡——但 `implements` 這個事實本身已經正確記錄在 `ClassInfo` 上，供其他需要的呼叫端讀取，見 `05a_design_agent_architecture.md` 對應章節的獨立掃描）。
+- **刻意不解析 enum 成員（`decl.body.constants`）或建構子參數**：那是④自己要做的事（08a 四章），①只需要讓這個檔案「被看見」，不需要重複④已經要做的完整解析。`fields=[]`（enum 沒有 instance field 可供依賴解析用）、`methods=[]`（①刻意不解析 enum 方法本體）、`routes=[]`（enum 不會是 Controller）。
+- 新增 `ClassInfo.is_enum: bool` 純標記欄位，不驅動任何分支邏輯——enum 的 `methods` 恆為空清單，`grouping.py::needs_llm_summary()` 既有規則 2（「無實作類別且方法皆無本體」，空清單天生滿足 `all()`）已經自然覆蓋「不需要送 Map」，不需要為 enum 另外新增判斷分支；`is_enum` 只是讓下游讀 `project.classes` 時能診斷「這筆是 enum」。
+
+**真實環境驗證**：對真實 `../lang-exam-api-refactor` 直接呼叫 `parse_java_project()` 確認 `CommonErrorCode`／`AuthErrorCode`／`ExamErrorCode`／`GradingErrorCode` 四個 enum 都正確建出 `ClassInfo`（`is_enum=True`，`implements=["ErrorCode"]`）；完整跑一次真實 Map-Reduce（含 Claude API），確認 Reduce 階段正確把這四個 enum 分進對應 module 的 `java_files`（`common`／`exam`／`grading`）。下游④（`build_db_models()`）確認能正確讀到這些檔案並渲染出 `app/models/_enums.py`（見 08a 對應章節的建構子引數渲染修正，這兩個修法要合起來才能讓 `CommonErrorCode` 等帶出**正確數值**，不只是拿到成員名稱）。
+
+程式碼實作見 `04b_parse_agent_code.md` 對應章節；單元測試見 `tests/parse_agent/test_extract_enums.py`。
+
+---
+
+## 十三、`extends`（class 繼承）依賴邊
+
+**背景**：修 #44/#45 時，對 `exam-platform-api` 完整重跑驗證發現的另一個真實缺口——`ExamEntity`／`AnswerEntity`／`ExamkindEntity`／`BackUserEntity`／`QuestionEntity` 這五個 JPA entity 都 `extends BaseEntity`（`@Id`／`@CreatedDate`／`@LastModifiedDate` 標在 `BaseEntity` 這個共用 `@MappedSuperclass` 上），但 `BaseEntity.java` 從未被①收進任何 module 的 `java_files`，連鎖造成④（`build_db_models()`）判定這五個 entity「主鍵不明確」而整批跳過（`skipped_entities`），⑤翻譯時找不到真正的 SQLAlchemy model，只能誤引用同名的 Pydantic schema 當 ORM 用，執行期直接炸掉。
+
+**根因比 #44 更徹底**：`grouping.py::_direct_deps()`（三章「Map-Reduce」）只認兩種依賴訊號——欄位型別依賴（`resolve_field_target_classes()`）、明確 `import`。`ClassInfo` 從來沒有 `extends` 這個欄位，`_direct_deps()` 完全沒有管道知道「這個 class 繼承了哪個父類別」——不是解析失敗，是這個關聯本身從未被問過。`ExamEntity` 跟 `BaseEntity` 同一個 package，Java 語言特性上不需要 import 陳述式就能 `extends`，import 依賴邊天生也查不到這條關聯（同套件無 import 是既有已知限制，見 `04b_parse_agent_code.md`「已知限制」；但這裡真正的缺口是「`extends` 從未被記錄」，不是「同套件 import 解析不到」——即使補上同套件解析，沒有 `extends` 欄位一樣看不到這條依賴）。
+
+**決策：`ClassInfo` 新增 `extends: str | None`（父類別簡單名稱，Java 單一繼承，`class_decl.extends` 是單一 `ReferenceType` 或 `None`，跟 `implements` 的清單形狀不同），`_extract_classes()` 填入，`_direct_deps()` 新增一條依賴邊**：單一繼承沒有 DI 那種「多個實作選一個」的歧義，跟既有 import 邊同一種確定性、甚至更確定——直接沿用「target 是否真的在 `project.classes` 裡」的既有邊界處理（解析不到的 target 安靜忽略，不拋錯，比照既有 import 依賴邊）。
+
+**這個修法是通用的，不是只為了 `BaseEntity` 這一個案例寫死**：任何 Java class 繼承鏈（services 共用基底類別、controllers 共用基底類別等）現在都會被正確納入依賴閉包的 BFS，`_closure()` 既有的遞迴展開機制自動處理多層繼承鏈，不需要額外邏輯。
+
+**真實環境驗證**：
+- 直接呼叫 `parse_java_project()`：`ExamEntity.extends == "BaseEntity"`，`controller_dependency_closure()` 確認 `BaseEntity` 正確進入全部 4 個相關 Controller（`CandidateController`／`ExamController`／`GradingController`／`RegistrationController`）的閉包
+- 完整真實 Map-Reduce（含 Claude API）：`BaseEntity.java` 正確進入 `module_list.java_files`（分到 `common` module）
+- 真實 `build_db_models()`：`skipped_entities` 從 5 個降到 0，`AnswerEntity` 等正確帶出繼承自 `BaseEntity` 的 `id`／`created`／`updated` 欄位，且 `BaseEntity` 本身沒有被誤渲染成獨立 entity（`@MappedSuperclass` annotation 讓④既有邏輯正確跳過，只用於合併，見 08a 六章「`@MappedSuperclass` 欄位繼承合併」）
+- 完整重跑 ①③[P]④⑤（真實 Ollama）＋真實 Docker＋Newman：`postman/collection_readonly.json` 全數 9/9 通過
+
+程式碼實作見 `04b_parse_agent_code.md` 對應章節；單元測試見 `tests/parse_agent/test_extends_dependency.py`。

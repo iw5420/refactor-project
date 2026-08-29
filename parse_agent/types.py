@@ -65,9 +65,12 @@ class RouteDecl:
 
 @dataclass
 class ClassInfo:
-    """單一 Java class（僅限具體類別，interface 不建立這個結構——interface
-    沒有欄位/方法本體可摘要，也不是呼叫圖的節點來源，見 call_graph.py）
-    的解析結果，三章掃描階段的基礎單位。
+    """單一 Java 頂層宣告（class／interface／enum）的解析結果，三章掃描
+    階段的基礎單位——interface（`_extract_interfaces()`）、enum（見
+    `is_enum`、`_extract_enums()`）也各自建立這個結構，只是 `fields`／
+    `methods` 多半是空的或不完整（沒有欄位/方法本體可摘要），主要是為了
+    讓它們能被 import 依賴閉包（`grouping.py::controller_dependency_
+    closure()`）看到、正確收進 `module_list.java_files`。
     """
 
     file_path: str
@@ -75,7 +78,9 @@ class ClassInfo:
     stereotype: str | None  # "RestController"/"Controller"/"Service"/"Component"/"Repository"/None
     bean_name_override: str | None  # 如 @Service("userService") 的字面 value；沒有明確指定時為 None
     implements: list[str] = field(default_factory=list)  # interface 簡單名稱清單
+    extends: str | None = None  # 父類別簡單名稱（Java 單一繼承，只有一個），沒有 extends 時為 None——見 grouping.py::_direct_deps() 對這個欄位的依賴邊處理，回應 docs/09b_bug_trace.md「新發現：@MappedSuperclass（如 BaseEntity）未被任何 module 的 java_files 收錄」
     is_primary: bool = False  # 是否標註 @Primary
+    is_enum: bool = False  # 這個 ClassInfo 是否來自 _extract_enums()（EnumDeclaration）。純標記用，不驅動任何分支邏輯——enum 的 methods 恆為空清單，grouping.py::needs_llm_summary() 既有規則 2（無實作類別且方法皆無本體）已經自然覆蓋「不需要送 Map」，這裡只是讓下游讀 project.classes 時能診斷「這筆是 enum」，不用回頭猜
     fields: list[FieldInfo] = field(default_factory=list)
     methods: list[MethodEntry] = field(default_factory=list)
     request_mapping_base: list[str] = field(default_factory=list)  # class 上 @RequestMapping 的 base path（可能多個），未標註為空清單

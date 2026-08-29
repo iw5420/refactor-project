@@ -368,8 +368,15 @@ def build_scan_index(java_project_path: str, module_list: list[ModuleInfo]) -> S
     """
     scan_index = ScanIndex()
 
+    # 對應 docs/09b_bug_trace.md 稽核時間戳失真案例：@EnableJpaAuditing
+    # 是全專案層級的設定，只需要對整個 java_project_path 掃一次，見
+    # entity_scan.scan_module() docstring。
+    jpa_auditing_enabled = entity_scan.project_has_jpa_auditing_enabled(java_project_path)
+
     for module in module_list:
-        entities, enums = entity_scan.scan_module(java_project_path, module)
+        entities, enums = entity_scan.scan_module(
+            java_project_path, module, jpa_auditing_enabled=jpa_auditing_enabled
+        )
         for record in entities:
             fqn = _fqn(record.package, record.class_name, record.file_path)
             if record.jpa_kind == "Entity":

@@ -170,6 +170,32 @@ def test_render_main_py_no_registration_when_no_exception_handler():
     assert "exception_handlers" not in output
 
 
+def test_render_main_py_also_registers_http_exception_and_validation_error():
+    """對應 docs/09b_bug_trace.md #57：只註冊 Exception 接不到
+    HTTPException／RequestValidationError（FastAPI 自己搶先註冊了內建
+    預設處理器，精確型別優先），三行都要註冊、都指向同一個函式。"""
+    interfaces = [
+        {
+            "file_path": "app/core/exception_handlers.py", "class_name": None,
+            "function_name": "handle_all", "params": [], "return_type": "Response",
+            "http_method": None, "route_path": None,
+        },
+    ]
+    output = render_main_py(interfaces)
+    assert "app.add_exception_handler(Exception, handle_all)" in output
+    assert "app.add_exception_handler(HTTPException, handle_all)" in output
+    assert "app.add_exception_handler(RequestValidationError, handle_all)" in output
+    assert "from fastapi import FastAPI, HTTPException" in output
+    assert "from fastapi.exceptions import RequestValidationError" in output
+
+
+def test_render_main_py_no_extra_imports_when_no_exception_handler():
+    output = render_main_py([])
+    assert "from fastapi import FastAPI\n" in output
+    assert "HTTPException" not in output
+    assert "RequestValidationError" not in output
+
+
 def test_render_main_py_combines_router_includes_and_exception_handler():
     interfaces = [
         {
@@ -199,7 +225,7 @@ def test_design_all_modules_end_to_end_with_only_global_module(tmp_path):
     java_files = _write_global_handler(tmp_path)
     module_list = [_global_module(java_files)]
 
-    interfaces, directory_tree, modules_with_schema_file = design_all_modules(
+    interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars = design_all_modules(
         module_list=module_list, api_to_python_target=[], openapi_spec={"paths": {}},
         java_project_path=str(tmp_path),
     )
@@ -207,5 +233,7 @@ def test_design_all_modules_end_to_end_with_only_global_module(tmp_path):
     assert len(interfaces) == 1
     assert interfaces[0]["file_path"] == "app/core/exception_handlers.py"
     assert modules_with_schema_file == set()
+    assert config_field_mappings == {}
+    assert config_env_vars == []
     assert "app/core/exception_handlers.py" in directory_tree
     assert "app.add_exception_handler(Exception, handle_all)" in directory_tree

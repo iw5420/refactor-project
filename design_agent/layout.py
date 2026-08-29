@@ -157,14 +157,24 @@ def render_main_py(interfaces: list[InterfaceSpec]) -> str:
     在 `app/routers/` 底下，不需要 LLM 介入。
 
     **全域例外處理註冊（見 `EXCEPTION_HANDLERS_FILE`、
-    `docs/09b_bug_trace.md` #11/#12）**：`interfaces` 裡若有
+    `docs/09b_bug_trace.md` #11/#12／#57）**：`interfaces` 裡若有
     `file_path == EXCEPTION_HANDLERS_FILE` 的項目（`design.py` 的
     `_design_global_advice_module()` 產生，範圍刻意收斂只涵蓋
     `@ExceptionHandler(Exception.class)` 這種全域 catch-all case，見該
-    函式），為每一個這樣的函式機械產生 import＋
-    `app.add_exception_handler(Exception, ...)` 註冊行——只註冊 Python
-    內建 `Exception`，不嘗試處理更細的例外型別（範圍限制同上）。純粹
-    檢查 `file_path`，不需要 LLM 介入，跟上面 router 的機械判斷同一種
+    函式），為每一個這樣的函式機械產生 import＋**三行**
+    `app.add_exception_handler()` 註冊行：`Exception`／`HTTPException`／
+    `RequestValidationError`。**只註冊 `Exception` 不夠**——FastAPI 會替
+    `HTTPException`／`RequestValidationError` 這兩種型別預先註冊自己的
+    內建預設處理器，Starlette 分派例外時是精確型別優先比對，不是找 MRO
+    最近的祖先類別，內建的具體型別處理器會贏過這裡只註冊 `Exception`
+    的泛用處理器——只註冊 `Exception` 時，這兩種例外會被 FastAPI 自己的
+    預設處理器接走，回應是 FastAPI 的內建格式（如 `{"detail": "..."}`），
+    不是這個專案統一的 `ResponseResult` 回應慣例，等於「全域 catch-all」
+    這個設計目標在這兩種常見例外型別上完全落空（已用隔離測試證實，見
+    #57）。三行都指向同一個 Python 函式（Java 端 `@ExceptionHandler
+    (Exception.class)` 本來就是設計成涵蓋所有情況的單一 catch-all，
+    Python 這裡對應到三個型別但仍是同一份邏輯，不是三種不同處理方式）。
+    純粹檢查 `file_path`，不需要 LLM 介入，跟上面 router 的機械判斷同一種
     精神。
     """
     router_files = sorted(
@@ -189,9 +199,14 @@ def render_main_py(interfaces: list[InterfaceSpec]) -> str:
         fn = iface["function_name"]
         handler_imports.append(f"from {exception_handler_module_path} import {fn}")
         handler_registrations.append(f"app.add_exception_handler(Exception, {fn})")
+        handler_registrations.append(f"app.add_exception_handler(HTTPException, {fn})")
+        handler_registrations.append(f"app.add_exception_handler(RequestValidationError, {fn})")
 
+    fastapi_import = "from fastapi import FastAPI, HTTPException" if handler_registrations else "from fastapi import FastAPI"
     lines = [
-        "from fastapi import FastAPI", "", *imports, *handler_imports,
+        fastapi_import,
+        *(["from fastapi.exceptions import RequestValidationError"] if handler_registrations else []),
+        "", *imports, *handler_imports,
         "", "app = FastAPI()", *includes, *handler_registrations,
     ]
     return "\n".join(lines) + "\n"

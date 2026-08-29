@@ -150,6 +150,74 @@ def test_enums_file_generated_when_referenced(tmp_path):
     assert 'PENDING = "PENDING"' in enums_content
 
 
+def test_enum_with_constructor_args_renders_values_not_just_names(tmp_path):
+    """對應 docs/09b_bug_trace.md #44：帶建構子參數的 enum（如
+    CommonErrorCode(code, msg)）過去只渲染成 `NAME = "NAME"`，數值資訊
+    整個遺失——現在改渲染成 `NAME = (200, "msg")` ＋ `__init__` 賦值成
+    對應屬性，且真的能被 import、成員屬性讀得到正確數值（不只是語法
+    合法）。這裡故意不透過任何 @Entity／@Enumerated 讓它被引用（純業務
+    enum，不是 entity 欄位型別）——`scan_module()` 本身無條件收集
+    module 底下所有 EnumDeclaration，不需要被 entity 引用才會被掃到。
+    """
+    _write(
+        tmp_path,
+        "CommonErrorCode.java",
+        """
+        package com.hr;
+        public enum CommonErrorCode {
+            SUCCESS(200, "ok"),
+            NOT_FOUND(404, "not found");
+            private final int code;
+            private final String msg;
+            CommonErrorCode(int code, String msg) {
+                this.code = code;
+                this.msg = msg;
+            }
+        }
+        """,
+    )
+    result = build_db_models(str(tmp_path), [{"module": "hr", "java_files": ["CommonErrorCode.java"]}])
+    content = result.db_models["app/models/_enums.py"]
+    ast.parse(content)
+    assert "SUCCESS = (200, 'ok')" in content
+    assert "NOT_FOUND = (404, 'not found')" in content
+    assert "def __init__(self, code, msg):" in content
+
+    ns: dict = {}
+    exec(compile(content, "app/models/_enums.py", "exec"), ns)
+    CommonErrorCode = ns["CommonErrorCode"]
+    assert CommonErrorCode.SUCCESS.code == 200
+    assert CommonErrorCode.SUCCESS.msg == "ok"
+    assert CommonErrorCode.NOT_FOUND.code == 404
+
+
+def test_enum_with_partial_constructor_args_falls_back_to_name_only(tmp_path):
+    """有任何一個常數的引數還原不完整（見 entity_scan._enum_constructor_
+    values() Literal 規則），整個 enum 退回只渲染名稱，不嘗試混合渲染
+    ——混合渲染會讓沒有還原出引數的常數在 __init__ 呼叫時缺參數，class
+    body 求值階段直接 TypeError，比資訊遺失更嚴重。"""
+    _write(
+        tmp_path,
+        "Weird.java",
+        """
+        package com.hr;
+        public enum Weird {
+            A(1, "x"),
+            B(2);
+            private final int code;
+            private final String msg;
+            Weird(int code, String msg) { this.code = code; this.msg = msg; }
+        }
+        """,
+    )
+    result = build_db_models(str(tmp_path), [{"module": "hr", "java_files": ["Weird.java"]}])
+    content = result.db_models["app/models/_enums.py"]
+    ast.parse(content)
+    assert 'A = "A"' in content
+    assert 'B = "B"' in content
+    assert "__init__" not in content
+
+
 def test_no_enum_declared_means_no_enums_file(tmp_path):
     _write(tmp_path, "Order.java", "package com.hr;\nimport javax.persistence.*;\n@Entity\n@Table(name=\"orders\")\npublic class Order {\n@Id private Long id;\n}\n")
     result = build_db_models(str(tmp_path), [{"module": "hr", "java_files": ["Order.java"]}])

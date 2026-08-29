@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from common.concurrency import default_concurrency
 from common.llm_client import LlmJsonError, call_claude_for_json
-from graph.state import InterfaceSpec, ModuleInfo, PythonStructure, TaskSpec
+from graph.state import InterfaceSpec, ModuleInfo, PythonStructure, ReferencedFunctionRef, TaskSpec
 from plan_agent import module_index
 from plan_agent.exceptions import PlanAgentCoverageError, PlanAgentModuleError
 from plan_agent.llm import DEFAULT_MODEL, PLAN_AGENT_MAX_TOKENS
@@ -73,7 +73,10 @@ def plan_all_modules(module_list: list[ModuleInfo], python_structure: PythonStru
 
     # 六／七／八章：機械組裝 task_list
     modules_with_schema_file = _modules_with_schema_file(python_structure["directory_tree"], module_names)
-    return _assemble_task_list(module_rank, layer_by_id, module_by_id, drafts_by_id, modules_with_schema_file)
+    config_field_mappings = python_structure.get("config_field_mappings", {})
+    return _assemble_task_list(
+        module_rank, layer_by_id, module_by_id, drafts_by_id, modules_with_schema_file, config_field_mappings
+    )
 
 
 # --------------------------------------------------------------------------
@@ -349,6 +352,29 @@ def _build_target_files(
     return files
 
 
+def _build_referenced_functions(draft: _TaskDraft) -> list[ReferencedFunctionRef]:
+    """對應 06a 七章新設計「`referenced_interfaces` 函式層級抽取」：把
+    `draft.referenced_interfaces` 逐一反解成 `(file_path, class_name,
+    function_name)`，供 `translator_cli` 只抽取被引用到的那個函式，不是
+    整份檔案帶入（見 `docs/09b_bug_trace.md` #37 根因）。
+
+    **同檔案引用（`file_path == draft.file_path`）刻意排除**：這種情況
+    指向的是這個 task 自己的檔案，`target_files[0]` 本來就整份帶入（見
+    七章表格第一列），不需要、也不能對它做函式層級抽取——`_read_context_files()`
+    若對 `context_files[0]`（＝`target_files[0]`）套用這份清單，會把
+    「這次要填的目標函式本身」也一併篩掉（因為目標函式不在
+    `referenced_interfaces` 裡，那是「這個函式引用別人」的清單，不包含
+    自己），等於損毀目標檔案的 context。
+    """
+    result: list[ReferencedFunctionRef] = []
+    for ref_id in draft.referenced_interfaces:
+        file_path, class_name, function_name = module_index.parse_interface_id(ref_id)
+        if file_path == draft.file_path:
+            continue
+        result.append({"file_path": file_path, "class_name": class_name, "function_name": function_name})
+    return result
+
+
 # --------------------------------------------------------------------------
 # 六／八章：depends_on 組裝、task id 全序編號、最終組裝
 # --------------------------------------------------------------------------
@@ -378,12 +404,55 @@ def _build_depends_on(draft: _TaskDraft, own_id: str, module_by_id: dict[str, st
     return depends_on
 
 
+def _augment_context_with_config_hint(
+    context: str, file_path: str, config_field_mappings: dict[str, dict[str, str]]
+) -> str:
+    """對應 docs/09b_bug_trace.md #45 修法：`python_structure.
+    config_field_mappings`（③ design_agent.global_infra 機械組出，見
+    graph/state.py 該欄位 docstring）記錄了「這個 Java 檔案的哪些欄位是
+    Spring `@Value("${key}")` 注入、對應 Python 端哪個環境變數常數」。
+    這個 task 若剛好要填的函式所在檔案有對應項目，機械附加一段提示到
+    `context` 尾端——⑤ 翻譯到原本讀取 `this.xxx`（`@Value` 欄位）的
+    程式碼時，才有明確依據可用，不會像 #45 實際案例那樣把它跟同一個
+    class 裡其他無關的框架物件（如 `BuildProperties`）混為一談、幻覺出
+    從未存在的型別。純機械字串附加，不呼叫 LLM——property key 到常數
+    名稱的對應是決定性事實，沒有語意判斷空間（見 global_infra.py）。
+
+    對應 docs/09b_bug_trace.md #58：舊版提示只給 `app.core.config.
+    LANGUAGE_CODE` 這種點記法，⑤ 連續三次真實 pipeline run 都把它誤讀
+    成「有一個物件、屬性名稱是 LANGUAGE_CODE」，幻覺出從未存在的
+    `settings` 物件（`from app.core.config import settings;
+    settings.LANGUAGE_CODE`）——即使提示已經明講「不要臆測其他來源」，
+    物件屬性存取仍是它的預設直覺。現在直接把完整 import 陳述式和裸
+    用法拼進提示，並明講 config.py「沒有 settings 物件、沒有 class
+    包裝」，把最常見的錯誤直接點名禁止。
+    """
+    field_map = config_field_mappings.get(file_path)
+    if not field_map:
+        return context
+    field_hints = "；".join(
+        f"`{java_field}` 欄位改成 `from app.core.config import {python_ref.rsplit('.', 1)[-1]}` "
+        f"後直接使用 `{python_ref.rsplit('.', 1)[-1]}`"
+        for java_field, python_ref in field_map.items()
+    )
+    hint = (
+        f"這個類別有 Spring @Value 屬性注入欄位：{field_hints}"
+        "（環境變數注入，已由 ④ 生成，見 app/core/config.py）。"
+        "app/core/config.py 裡只有裸模組層級常數（例如 "
+        '`LANGUAGE_CODE = os.environ["LANGUAGE_CODE"]`），'
+        "沒有 settings 物件、沒有任何 class 包裝——絕對不要寫成 "
+        "`settings.LANGUAGE_CODE` 這種物件屬性存取，也不要臆測其他來源（如框架 bean）。"
+    )
+    return f"{context}\n\n{hint}" if context else hint
+
+
 def _assemble_task_list(
     module_rank: dict[str, int],
     layer_by_id: dict[str, str],
     module_by_id: dict[str, str],
     drafts_by_id: dict[str, _TaskDraft],
     modules_with_schema_file: set[str],
+    config_field_mappings: dict[str, dict[str, str]],
 ) -> list[TaskSpec]:
     """對應 06a 八章「id 產生規則」：全部 task 依「module（依
     `module_list` 原始順序）→ 層級 → `function_name` 字母序（
@@ -411,8 +480,9 @@ def _assemble_task_list(
                 function_name=draft.function_name,
                 description=draft.description,
                 target_files=_build_target_files(draft, module_by_id, layer_by_id, modules_with_schema_file),
-                context=draft.context,
+                context=_augment_context_with_config_hint(draft.context, draft.file_path, config_field_mappings),
                 depends_on=_build_depends_on(draft, iid, module_by_id, order_index),
+                referenced_functions=_build_referenced_functions(draft),
             )
         )
     return tasks
