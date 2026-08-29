@@ -118,6 +118,196 @@ def test_fill_function_end_to_end(tmp_path, monkeypatch):
     assert log.stdout.strip() == "implement: task_001 fill UserRepository.get_by_id in app/repositories/user_repository.py"
 
 
+def test_fill_function_with_fixed_body_skips_ollama_call(tmp_path, monkeypatch):
+    """對應 10a 八章「⑦ 直接產生修正後程式碼」：`fixed_body` 給定時，
+    完全不呼叫 ollama_client.get_function_body()（monkeypatch 成會炸的
+    版本，確認真的沒被叫到），直接用 fixed_body 當本體寫入。
+    """
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    async def _boom(**kwargs):
+        raise AssertionError("fixed_body 給定時不應該呼叫 ollama_client.get_function_body()")
+
+    monkeypatch.setattr(ollama_client, "get_function_body", _boom)
+
+    result = asyncio.run(
+        client.fill_function(
+            str(tmp_path),
+            task_id="task_001",
+            target_file="app/repositories/user_repository.py",
+            class_name="UserRepository",
+            function_name="get_by_id",
+            description="回傳 user_id 乘以 2",
+            context="",
+            context_files=["app/repositories/user_repository.py"],
+            fixed_body="return user_id * 3\n",
+        )
+    )
+
+    assert result.success is True
+    assert "user_id * 3" in result.diff
+
+    written = (tmp_path / "app" / "repositories" / "user_repository.py").read_text(encoding="utf-8")
+    assert "return user_id * 3" in written
+
+
+def test_fill_function_with_fixed_body_invalid_syntax_returns_failure(tmp_path, monkeypatch):
+    """⑦ 給的 fixed_body 一樣要通過既有的語法驗證關卡（見
+    extract_body_statements()），不因為來源是 Claude 而放寬。"""
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    async def _boom(**kwargs):
+        raise AssertionError("fixed_body 給定時不應該呼叫 ollama_client.get_function_body()")
+
+    monkeypatch.setattr(ollama_client, "get_function_body", _boom)
+
+    result = asyncio.run(
+        client.fill_function(
+            str(tmp_path),
+            task_id="task_001",
+            target_file="app/repositories/user_repository.py",
+            class_name="UserRepository",
+            function_name="get_by_id",
+            description="回傳 user_id 乘以 2",
+            context="",
+            context_files=["app/repositories/user_repository.py"],
+            fixed_body="return user_id *\n",
+        )
+    )
+
+    assert result.success is False
+
+
+def test_fill_function_with_fixed_body_nested_same_name_def_rejected_and_logged(tmp_path, monkeypatch, caplog):
+    """對應 docs/09b_bug_trace.md #52 真實案例：⑦ 給的 fixed_body 混雜了
+    import／裝飾器等其他陳述式，同名巢狀函式定義只是其中一筆——這種
+    fixed_body 必須被 extract_body_statements() 的巢狀同名函式檢查擋
+    下來（見 translator_cli/python_adapter.py 的放寬版判斷），不能被
+    當成合法陳述式插入，且要在 log 留下明確紀錄（見 client.py 新增的
+    logger.warning，這條記錄跟一般 fill_failed 的路徑分開，明講是
+    fixed_body 格式契約被違反，不是本地模型的一般格式錯誤）。"""
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    async def _boom(**kwargs):
+        raise AssertionError("fixed_body 給定時不應該呼叫 ollama_client.get_function_body()")
+
+    monkeypatch.setattr(ollama_client, "get_function_body", _boom)
+
+    bad_fixed_body = (
+        "import os\n"
+        "\n"
+        "def get_by_id(user_id: int) -> int:\n"
+        "    return user_id * 2\n"
+    )
+
+    with caplog.at_level("WARNING"):
+        result = asyncio.run(
+            client.fill_function(
+                str(tmp_path),
+                task_id="task_001",
+                target_file="app/repositories/user_repository.py",
+                class_name="UserRepository",
+                function_name="get_by_id",
+                description="回傳 user_id 乘以 2",
+                context="",
+                context_files=["app/repositories/user_repository.py"],
+                fixed_body=bad_fixed_body,
+            )
+        )
+
+    assert result.success is False
+    assert "模型重複輸出函式簽名" in result.error
+    assert any("task_001" in record.message and "#52" in record.message for record in caplog.records)
+
+
+def test_apply_file_fix_replaces_unique_snippet_and_commits(tmp_path):
+    """對應 10a 八章「phase 2：檔案層級修正」：⑦ 給的 file_fix 精確
+    字串替換，不經過 fill_function() 的 AST 函式定位機制。
+    """
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    result = asyncio.run(
+        client.apply_file_fix(
+            str(tmp_path),
+            task_id="task_r2",
+            target_file="app/core/database.py",
+            old_snippet="DATABASE_URL = 1",
+            new_snippet="DATABASE_URL = 2",
+        )
+    )
+
+    assert result.success is True
+    assert "DATABASE_URL = 2" in result.diff
+
+    written = (tmp_path / "app" / "core" / "database.py").read_text(encoding="utf-8")
+    assert "DATABASE_URL = 2" in written
+
+    log = subprocess.run(["git", "log", "-1", "--pretty=%s"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert log.stdout.strip() == "debug: task_r2 apply file-level fix in app/core/database.py"
+
+
+def test_apply_file_fix_snippet_not_found_returns_failure(tmp_path):
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    result = asyncio.run(
+        client.apply_file_fix(
+            str(tmp_path),
+            task_id="task_r2",
+            target_file="app/core/database.py",
+            old_snippet="THIS_DOES_NOT_EXIST = 1",
+            new_snippet="DATABASE_URL = 2",
+        )
+    )
+
+    assert result.success is False
+    assert "找不到" in result.error
+
+
+def test_apply_file_fix_snippet_appears_multiple_times_returns_failure(tmp_path):
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+    (tmp_path / "app" / "core" / "database.py").write_text(
+        "DATABASE_URL = 1\nDATABASE_URL = 1\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    subprocess.run(["git", "commit", "-m", "setup duplicate"], cwd=tmp_path, capture_output=True, text=True, check=True)
+
+    result = asyncio.run(
+        client.apply_file_fix(
+            str(tmp_path),
+            task_id="task_r2",
+            target_file="app/core/database.py",
+            old_snippet="DATABASE_URL = 1",
+            new_snippet="DATABASE_URL = 2",
+        )
+    )
+
+    assert result.success is False
+    assert "2 次" in result.error
+
+
+def test_apply_file_fix_invalid_syntax_returns_failure(tmp_path):
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    result = asyncio.run(
+        client.apply_file_fix(
+            str(tmp_path),
+            task_id="task_r2",
+            target_file="app/core/database.py",
+            old_snippet="DATABASE_URL = 1",
+            new_snippet="DATABASE_URL = ***",
+        )
+    )
+
+    assert result.success is False
+
+
 def test_fill_function_adds_missing_body_imports(tmp_path, monkeypatch):
     # 對應真實 pipeline 案例：qwen 生成的本體引用了簽名以外的名稱
     # （框架例外 HTTPException、跨檔案自訂類別 UserRepository），驗證
@@ -674,6 +864,71 @@ class TestTrimContextFilesIfOversized:
         result = client._trim_context_files_if_oversized(context_files, task_id="task_x")
         assert result == [("app/broken.py", bad_source)]
 
+    def test_schema_path_uses_class_filtering_not_body_stripping(self, monkeypatch):
+        """對應 09b_bug_trace.md #45：app/schemas/ 底下的檔案沒有函式
+        本體可以剝，strip_all_function_bodies() 對這種檔案是空操作——
+        改用 extract_referenced_classes() 依簽名/description 裡出現過的
+        class 名稱過濾，真的能把無關的 class 砍掉。"""
+        monkeypatch.setattr(client, "TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", 10)
+        source = (
+            "class GetExamRq(BaseModel):\n    year: str | None\n\n\n"
+            "class UnrelatedRs(BaseModel):\n    other: str | None\n"
+        )
+        context_files = [("app/schemas/exam.py", source)]
+        result = client._trim_context_files_if_oversized(
+            context_files, task_id="task_x", current_signature="def search(self, rq: GetExamRq) -> None:",
+        )
+        assert len(result) == 1
+        _, trimmed = result[0]
+        assert "GetExamRq" in trimmed
+        assert "UnrelatedRs" not in trimmed
+
+    def test_models_path_also_uses_class_filtering(self, monkeypatch):
+        monkeypatch.setattr(client, "TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", 10)
+        source = "class ExamEntity(Base):\n    id: int\n\n\nclass OtherEntity(Base):\n    id: int\n"
+        context_files = [("app/models/exam.py", source)]
+        result = client._trim_context_files_if_oversized(
+            context_files, task_id="task_x", description="更新至 ExamEntity 並儲存",
+        )
+        _, trimmed = result[0]
+        assert "ExamEntity" in trimmed
+        assert "OtherEntity" not in trimmed
+
+    def test_schema_path_with_no_matching_signal_keeps_full_content(self, monkeypatch):
+        # 抓不到任何候選名稱時（simple 的 str/int 簽名、description 也沒
+        # 提到任何 class 名稱），extract_referenced_classes() 內建的
+        # 「找不到交集就原樣回傳」保守處理會生效，不強行砍到空。
+        monkeypatch.setattr(client, "TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", 10)
+        source = "class GetExamRq(BaseModel):\n    year: str | None\n"
+        context_files = [("app/schemas/exam.py", source)]
+        result = client._trim_context_files_if_oversized(
+            context_files, task_id="task_x", current_signature="def f(self, x: str) -> str:",
+        )
+        assert result == context_files
+
+
+class TestReferencedClassNames:
+    """對應 docs/09b_bug_trace.md #45：從函式簽名／description／context
+    這些文字裡粗略抓出可能是 class 名稱的候選字（大寫開頭的識別字）。"""
+
+    def test_extracts_from_signature_type_hints(self):
+        names = client._referenced_class_names("def create_random(self, card: str) -> Result[CreaterandomRs]:")
+        assert "CreaterandomRs" in names
+        assert "Result" in names
+
+    def test_extracts_from_description_text(self):
+        names = client._referenced_class_names("", "更新至 ExamEntity 並將狀態設為 '1'")
+        assert "ExamEntity" in names
+
+    def test_lowercase_words_not_matched(self):
+        names = client._referenced_class_names("def create_random(self, card: str, db: Session):")
+        assert "card" not in names
+        assert "self" not in names
+
+    def test_combines_multiple_text_sources(self):
+        names = client._referenced_class_names("def f() -> FooRs:", "見 BarRq 的說明")
+        assert {"FooRs", "BarRq"} <= names
+
 
 def test_fill_function_trims_oversized_context_before_calling_ollama(tmp_path, monkeypatch):
     # 端對端驗證：真的超過門檻時，get_function_body() 收到的 context_files
@@ -723,3 +978,119 @@ def test_fill_function_trims_oversized_context_before_calling_ollama(tmp_path, m
     received_content = dict(captured["context_files"])["app/repositories/user_repository.py"]
     assert "range(1000)" not in received_content
     assert "def get_all(self) -> list[int]:" in received_content
+
+
+class TestReadContextFilesReferencedFunctions:
+    """對應 06a 七章新設計「referenced_interfaces 函式層級抽取」，見
+    docs/09b_bug_trace.md #37 根因。"""
+
+    _EXAM_REPO_SOURCE = (
+        "class ExamRepository:\n"
+        "    def find_by_kind(self, kind: str) -> object:\n"
+        "        pass\n"
+        "    def find_by_card(self, card: str) -> object | None:\n"
+        "        return db.query(1).filter(2).one_or_none()\n\n\n"
+        "class ExamSpecification:\n"
+        "    def with_year(self, year: str) -> object:\n"
+        "        return Specification(lambda x: x.year == year)\n"
+    )
+
+    def test_file_with_referenced_functions_entry_gets_precisely_extracted(self, tmp_path):
+        (tmp_path / "exam_repository.py").write_text(self._EXAM_REPO_SOURCE, encoding="utf-8")
+        result = client._read_context_files(
+            tmp_path, ["exam_repository.py"], task_id="task_x",
+            referenced_functions=[("exam_repository.py", "ExamRepository", "find_by_card")],
+        )
+        content = dict(result)["exam_repository.py"]
+        assert "find_by_card" in content
+        assert "find_by_kind" not in content
+        assert "ExamSpecification" not in content
+
+    def test_file_without_referenced_functions_entry_stays_full(self, tmp_path):
+        # 沒有對應項目的檔案（例如 target_files[0] 自己、schemas／models）
+        # 維持整份帶入，這是「沒問題的 prompts 還是沒問題」的核心保證。
+        (tmp_path / "exam_repository.py").write_text(self._EXAM_REPO_SOURCE, encoding="utf-8")
+        result = client._read_context_files(
+            tmp_path, ["exam_repository.py"], task_id="task_x",
+            referenced_functions=[("some_other_file.py", "Foo", "bar")],
+        )
+        content = dict(result)["exam_repository.py"]
+        assert "find_by_kind" in content
+        assert "find_by_card" in content
+        assert "ExamSpecification" in content
+
+    def test_none_referenced_functions_behaves_like_before(self, tmp_path):
+        (tmp_path / "exam_repository.py").write_text(self._EXAM_REPO_SOURCE, encoding="utf-8")
+        result = client._read_context_files(tmp_path, ["exam_repository.py"], task_id="task_x")
+        content = dict(result)["exam_repository.py"]
+        assert content == self._EXAM_REPO_SOURCE
+
+    def test_multiple_files_only_matching_ones_get_extracted(self, tmp_path):
+        (tmp_path / "exam_repository.py").write_text(self._EXAM_REPO_SOURCE, encoding="utf-8")
+        (tmp_path / "schemas_exam.py").write_text("class ExamRs(object):\n    id: int\n", encoding="utf-8")
+        result = client._read_context_files(
+            tmp_path, ["exam_repository.py", "schemas_exam.py"], task_id="task_x",
+            referenced_functions=[("exam_repository.py", "ExamRepository", "find_by_card")],
+        )
+        by_path = dict(result)
+        assert "find_by_kind" not in by_path["exam_repository.py"]
+        assert by_path["schemas_exam.py"] == "class ExamRs(object):\n    id: int\n"
+
+    def test_unparseable_file_falls_back_to_full_content(self, tmp_path):
+        (tmp_path / "broken.py").write_text("def (:\n", encoding="utf-8")
+        result = client._read_context_files(
+            tmp_path, ["broken.py"], task_id="task_x",
+            referenced_functions=[("broken.py", None, "whatever")],
+        )
+        assert dict(result)["broken.py"] == "def (:\n"
+
+
+def test_fill_function_passes_referenced_functions_through_to_context_extraction(tmp_path, monkeypatch):
+    # 端對端驗證：referenced_functions 真的從 fill_function() 一路傳到
+    # get_function_body() 收到的 context_files，且精準抽取生效。
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    exam_repo_source = (
+        "class ExamRepository:\n"
+        "    def find_by_kind(self, kind: str) -> object:\n"
+        "        pass\n"
+        "    def find_by_card(self, card: str) -> object | None:\n"
+        "        return db.query(1).filter(2).one_or_none()\n"
+    )
+    (tmp_path / "app" / "repositories").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "app" / "repositories" / "exam_repository.py").write_text(exam_repo_source, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "test: add exam_repository.py"],
+        cwd=tmp_path, capture_output=True, text=True, check=True,
+    )
+
+    captured = {}
+
+    async def fake_get_function_body(**kwargs):
+        captured["context_files"] = kwargs["context_files"]
+        return "return user_id\n"
+
+    monkeypatch.setattr(ollama_client, "get_function_body", fake_get_function_body)
+
+    result = asyncio.run(
+        client.fill_function(
+            str(tmp_path),
+            task_id="task_001",
+            target_file="app/repositories/user_repository.py",
+            class_name="UserRepository",
+            function_name="get_by_id",
+            description="d",
+            context="",
+            context_files=["app/repositories/user_repository.py", "app/repositories/exam_repository.py"],
+            referenced_functions=[("app/repositories/exam_repository.py", "ExamRepository", "find_by_card")],
+        )
+    )
+
+    assert result.success is True
+    received = dict(captured["context_files"])
+    assert "find_by_card" in received["app/repositories/exam_repository.py"]
+    assert "find_by_kind" not in received["app/repositories/exam_repository.py"]
+    # target_files[0]（自己的檔案）不受影響，維持完整內容。
+    assert "def get_by_id" in received["app/repositories/user_repository.py"]

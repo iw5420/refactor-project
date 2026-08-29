@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 NEWMAN_TIMEOUT_SECONDS = float(os.environ.get("NEWMAN_TIMEOUT_SECONDS", "180"))
 
 
+class NewmanTimeoutError(RuntimeError):
+    """newman 執行逾時，目標服務可能處於「socket 還開著但沒有真的回應」
+    的異常狀態，也可能只是 newman 本身沒退出但工作早就做完了（見下方
+    raise 處的完整判斷）——跟「newman 找不到」／「報表沒產生」這類設定
+    錯誤不同，語意上是暫時性的（見 docs/09b_bug_trace.md #48、10a 二章
+    「⑥ 對外呼叫前必須先確認 Python 服務有回應」），呼叫端（test_nodes.py）
+    只對這個子類別接手當成 service_unreachable 處理，其餘 RuntimeError
+    仍直接往外拋，不掩蓋真正的設定錯誤。"""
+
+
 def _spawn(cmd: list[str]) -> subprocess.Popen:
     """啟動子行程時讓它自成一個獨立的行程群組／session，見
     `_kill_process_tree()` docstring——逾時要砍的時候才砍得到整棵行程樹，
@@ -122,13 +132,33 @@ def run_newman(collection_path: str, base_url: str, folder: str = None) -> dict:
         # 逾時後一定要先把整棵行程樹砍乾淨，才能安全地做收尾讀取。
         _kill_process_tree(process.pid)
         process.communicate()  # 收尾：確認管線真的關閉，避免留下殭屍行程
-        raise RuntimeError(
-            f"newman 執行逾時（timeout={NEWMAN_TIMEOUT_SECONDS}s）：目標服務可能處於"
-            "「socket 還開著但沒有真的回應」的異常狀態（如容器內 app 載入時就掛掉，"
-            "reload watcher 仍在監聽）\n"
-            f"collection: {collection_path}\n"
-            f"base_url: {base_url}"
-        ) from None
+
+        # 見 docs/09b_bug_trace.md #48：真實案例證實逾時不等於「服務沒
+        # 回應」——newman（Node.js）已知會在收到最後一筆回應、報表檔案
+        # 已經完整寫出之後，行程本身卻不結束（很可能是 keep-alive socket
+        # 沒有乾淨關閉，殘留的 handle 讓 Node 事件迴圈不會自然退出），跟
+        # `returncode != 0` 那條既有規則是同一種情況的延伸：newman 這個
+        # 行程「有沒有正常結束」，不等於「這次執行到底有沒有成功產生報
+        # 表」。逾時當下先檢查報表檔案是否已經是完整合法 JSON，是的話
+        # 直接當成功回傳，不誤判成執行失敗、不誤導呼叫端以為服務掛了。
+        try:
+            with open(output_path, encoding="utf-8") as f:
+                result = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            raise NewmanTimeoutError(
+                f"newman 執行逾時（timeout={NEWMAN_TIMEOUT_SECONDS}s）且報表檔案未完整寫出："
+                "目標服務可能處於「socket 還開著但沒有真的回應」的異常狀態（如容器內 app "
+                "載入時就掛掉，reload watcher 仍在監聽）\n"
+                f"collection: {collection_path}\n"
+                f"base_url: {base_url}"
+            ) from None
+        logger.warning(
+            "newman 逾時（timeout=%ss）但報表檔案已完整寫出，視為執行成功——"
+            "已知的 Node.js 行程退出延遲問題，不是服務沒回應，見 "
+            "docs/09b_bug_trace.md #48: collection=%s base_url=%s",
+            NEWMAN_TIMEOUT_SECONDS, collection_path, base_url,
+        )
+        return result
 
     # newman 的 exit code 只反映「collection 裡的 test script 斷言是否全部
     # 通過」，不是「這次執行本身有沒有成功產生報表」——鏈式依賴注入的

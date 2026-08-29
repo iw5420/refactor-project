@@ -45,6 +45,118 @@ def strip_all_function_bodies(source: str) -> str:
     return ast.unparse(tree)
 
 
+def extract_referenced_classes(source: str, seed_names: set[str]) -> str:
+    """對應 `docs/09b_bug_trace.md #45`：`strip_all_function_bodies()`
+    （見上方）對「純資料宣告、沒有函式本體」的檔案（`app/schemas/`／
+    `app/models/` 這類 Pydantic／SQLAlchemy 資料類別檔）是完全無效的
+    空操作——這些檔案的膨脹來源是「一堆無關的 class 定義」，不是「函式
+    本體寫太長」，剝函式本體剝不到東西。受控實驗證實：把這類檔案裁到
+    只留這個 task 真的用得到的 class，跟裁到完整未裁剪版本比，成功率
+    與耗時差異巨大（12-25s vs 逾時 21 分鐘），不是裁不裁都差不多。
+
+    `seed_names`：呼叫端已經算出、這個 task 可能用到的 class 名稱（通常
+    來自函式簽名的型別標註／description 文字裡出現的名稱，見
+    `client.py::_referenced_class_names()`）。這裡在種子集合之上做**一層
+    遞迴閉包**：被留下的 class，若它自己的欄位型別標註又指到另一個這個
+    檔案裡定義的 class（最常見的模式：`ResponseResultXxxRs.data: XxxRs`，
+    `XxxRs` 不會出現在目標函式簽名或 description 裡，卻是理解
+    `ResponseResultXxxRs` 結構的必要資訊），也一併留下，直到不再有新
+    class 被加入為止（`defined_names` 是有限集合，保證會收斂）。
+
+    `seed_names` 為空、或跟這個檔案實際定義的 class 完全沒有交集
+    （代表呼叫端的文字比對機制沒抓到任何線索，不是「這個檔案真的用不到
+    任何東西」）時，**原樣回傳整份原始內容，不做任何過濾**——寧可裁不動
+    也不要錯砍模型真正需要的資訊，這是跟 `strip_all_function_bodies()`
+    失敗時「退回原始內容」一致的保守處理方式。
+
+    只處理模組頂層 `ClassDef`，不處理巢狀 class；import／模組層級的
+    非 class 陳述式（常數指派等）維持不變，跟 `extract_specific_functions()`
+    對非目標函式陳述式的處理方式一致。
+    """
+    tree = ast.parse(source)
+
+    class_nodes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    if not seed_names & class_nodes.keys():
+        return source
+
+    kept = set(seed_names) & class_nodes.keys()
+    changed = True
+    while changed:
+        changed = False
+        for name in list(kept):
+            for referenced in _referenced_names_in_class_body(class_nodes[name]):
+                if referenced in class_nodes and referenced not in kept:
+                    kept.add(referenced)
+                    changed = True
+
+    new_body = [
+        node for node in tree.body
+        if not isinstance(node, ast.ClassDef) or node.name in kept
+    ]
+    tree.body = new_body
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
+def _referenced_names_in_class_body(node: ast.ClassDef) -> set[str]:
+    """掃這個 class 定義本身（欄位型別標註、base class 等）裡出現過的
+    識別字——不下鑽進巢狀 class／函式，只看這個 class 自己的直接內容，
+    足以涵蓋 Pydantic／SQLAlchemy 欄位型別標註這個目標情境。"""
+    names: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            names.add(child.id)
+    names.discard(node.name)
+    return names
+
+
+def extract_specific_functions(source: str, targets: list[tuple[str | None, str]]) -> str:
+    """對應 06a 七章新設計「`referenced_interfaces` 函式層級抽取」：從
+    `source` 裡只抽出 `targets` 指定的 `(class_name, function_name)` 組合
+    ——完整保留這些函式的簽名與本體，其餘函式／方法／完全沒被引用到的
+    class 一律捨棄；import、模組層級的非函式陳述式（常數指派等）維持
+    不變。對應 `docs/09b_bug_trace.md` #37 根因：這類參考檔案不需要看到
+    無關函式的實作細節，也不需要它們的簽名——只需要 `targets` 指定的那
+    幾個函式的完整定義，不多不少。
+
+    跟 `strip_all_function_bodies()`（門檻式安全網，見
+    `translator_cli/client.py::_trim_context_files_if_oversized()`）方向
+    相反：那個是「全部保留簽名、砍掉本體」的粗略裁減；這個是「精準只留
+    被引用到的函式，其餘整個不出現」，是結構上更精確的做法，優先套用；
+    裁減只在精準抽取後 context 仍然過大時才當最後一道安全網介入。
+
+    `targets` 裡指定但在 `source` 找不到的組合（理論上不該發生，
+    `interface_id` 來自③的真實輸出，見 06a 五章核對規則）不視為錯誤，
+    單純不出現在結果裡——找不到的原因交由呼叫端既有的「`context_files`
+    讀取容錯」機制處理，這裡不重複那層責任。
+    """
+    tree = ast.parse(source)
+    wanted = set(targets)
+
+    new_body: list[ast.stmt] = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            kept_methods = [
+                n
+                for n in node.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and (node.name, n.name) in wanted
+            ]
+            if kept_methods:
+                node.body = kept_methods
+                new_body.append(node)
+            # 沒有任何方法被引用到的 class 整個捨棄，不留空殼。
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if (None, node.name) in wanted:
+                new_body.append(node)
+            # 沒被引用的自由函式捨棄。
+        else:
+            new_body.append(node)
+
+    tree.body = new_body
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
 def extract_body_statements(body_source: str, function_name: str) -> list[ast.stmt]:
     """對應 07a 六章步驟 6／6a／6b。`body_source` 是 delimiter 抽取出的
     「未縮排」陳述式文字（07a 六章「delimiter 契約：模型回傳格式」）。
@@ -59,12 +171,18 @@ def extract_body_statements(body_source: str, function_name: str) -> list[ast.st
       的殘缺程式碼，要等最終檢查重新 parse 這段輸出時才會炸
       `SyntaxError`，但那時候已經不在這裡的重試觸發範圍內（見 07a
       六章步驟 6a 完整說明）
-    - 解析出的陳述式清單恰好只有一筆、且是與 `function_name` 同名的
+    - 解析出的陳述式清單裡，任何一筆是與 `function_name` 同名的
       `FunctionDef`／`AsyncFunctionDef`（六章步驟 6b「模型重複輸出函式
-      簽名」）——模型把整個函式簽名連同本體一起包進 delimiter，這在
-      AST 層級是合法的巢狀函式定義，不會被前兩種檢查攔到，替換後目標
-      函式的 body 會變成「只宣告一個從未被呼叫的同名巢狀函式」，語法
-      合法但語意錯誤，因此需要單獨判斷
+      簽名」，2026-08 因 `docs/09b_bug_trace.md #52` 從「只有一筆時才算」
+      放寬成「不論混在多少其他陳述式之間都算」）——模型把整個函式簽名
+      連同本體一起包進 delimiter，這在 AST 層級是合法的巢狀函式定義，
+      不會被前兩種檢查攔到，替換後目標函式的 body 會變成「宣告一個從
+      未被呼叫的同名巢狀函式」，語法合法但語意錯誤，因此需要單獨判斷。
+      原本只檢查「body 恰好只有一筆陳述式」的版本，攔不住 ⑦
+      Debug Agent 的 `fixed_body` 夾帶 import／裝飾器等其他陳述式、
+      同名巢狀函式只是其中一筆的情況（真實案例：`fixed_body` 開頭帶了
+      5 行 import，最後一筆才是同名巢狀 `async def`，`len(body)==1`
+      判斷不成立，巢狀污染沒被攔下，見 #52 完整重現）
     """
     try:
         body_tree = ast.parse(body_source)
@@ -76,13 +194,15 @@ def extract_body_statements(body_source: str, function_name: str) -> list[ast.st
             "body_text 解析出的陳述式清單為空（delimiter 標記之間只有空白／換行，見 07a 六章步驟 6a）"
         )
 
-    if (
-        len(body_tree.body) == 1
-        and isinstance(body_tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef))
-        and body_tree.body[0].name == function_name
-    ):
+    nested_same_name_defs = [
+        stmt.name
+        for stmt in body_tree.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == function_name
+    ]
+    if nested_same_name_defs:
         raise TranslatorCliModelOutputError(
-            f"模型重複輸出函式簽名：body_text 只包含一個與目標函式同名的巢狀函式定義 {function_name!r}（見 07a 六章步驟 6b）"
+            f"模型重複輸出函式簽名：body_text 裡包含一個與目標函式同名的巢狀函式定義 "
+            f"{function_name!r}（不限於整段 body 只有這一筆才算，見 09b_bug_trace.md #52）"
         )
 
     return body_tree.body

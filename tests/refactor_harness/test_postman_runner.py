@@ -197,6 +197,41 @@ def test_run_newman_kills_full_process_tree_on_timeout_not_just_the_wrapper(monk
     assert communicate_calls["n"] == 2
 
 
+def test_run_newman_treats_timeout_as_success_when_report_already_complete(monkeypatch):
+    """對應 docs/09b_bug_trace.md #48 真實案例：用獨立診斷腳本直接驗證過，
+    newman（Node.js）逾時當下，報表檔案其實早就完整寫出（17 筆
+    executions，最後一筆是 collection 真正的最後一個請求）——newman 已經
+    把所有測試工作做完，只是行程本身因為 keep-alive socket 沒有乾淨關閉
+    而不會自然結束，`subprocess.communicate(timeout=...)` 在等一個不會
+    發生的行程結束事件。逾時當下若報表已經是完整合法 JSON，該當成功
+    處理，不能誤判成「服務沒回應」（那會讓 debug_agent 3.2 節的
+    service_unreachable 分支被錯誤觸發，⑦ 完全看不到 harness_failures，
+    無法真正分析任何問題）。"""
+    def _fake_which(name):
+        return "/usr/local/bin/newman"
+
+    calls = {"n": 0}
+
+    def _communicate(self, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # 模擬 newman 在逾時之前就已經把報表寫完，只是行程沒退出
+            output_path = self.cmd[self.cmd.index("--reporter-json-export") + 1]
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump({"run": {"executions": [{"item": {"name": "schools"}}]}}, f)
+            raise subprocess.TimeoutExpired(cmd=self.cmd, timeout=timeout)
+        return ("", "")  # 逾時後 _kill_process_tree() 已砍乾淨，收尾正常返回
+
+    monkeypatch.setattr(postman_runner.shutil, "which", _fake_which)
+    monkeypatch.setattr(postman_runner.subprocess, "Popen", _fake_popen(_communicate))
+    monkeypatch.setattr(postman_runner, "_kill_process_tree", lambda pid: None)
+
+    result = postman_runner.run_newman("postman/collection_mutation.json", "http://localhost:8000")
+
+    assert len(result["run"]["executions"]) == 1
+    assert result["run"]["executions"][0]["item"]["name"] == "schools"
+
+
 def test_run_newman_raises_when_nonzero_exit_and_no_report_produced(monkeypatch):
     """跟上面那個測試相反的情境：exit code 非 0，且報表根本沒產生
     （服務沒起來、collection 路徑錯誤等真正的執行失敗）——這才是應該

@@ -21,14 +21,14 @@
 | `main.py` | 07a 二章 | `initial_state` 新增 `python_project_path` |
 | `graph/nodes/scaffold_node.py` | 07a 十二章 | 接上 `translator_cli.generate_scaffold()`（取代 stub） |
 | `graph/nodes/implement_node.py` | 07a 十二章 | `_run_one_task()` 接上 `translator_cli.fill_function()` 完整引數（取代 stub） |
-| `tests/translator_cli/test_python_adapter.py` | 07a 六、十章 | `PythonAdapter`／`extract_body_statements()` 測試（14 個） |
-| `tests/translator_cli/test_scaffold.py` | 07a 四、五章 | 型別正規化、Schema 合併、import 解析、端對端 `build_files()` 測試、填空模式本體 import 解析測試（37 個） |
+| `tests/translator_cli/test_python_adapter.py` | 07a 六、十章 | `PythonAdapter`／`extract_body_statements()`／`strip_all_function_bodies()`／`extract_specific_functions()` 測試（36 個） |
+| `tests/translator_cli/test_scaffold.py` | 07a 四、五章 | 型別正規化、Schema 合併、import 解析、端對端 `build_files()` 測試、填空模式本體 import 解析測試（43 個） |
 | `tests/translator_cli/test_git_ops.py` | 07a 八、九章 | 真實 git repo 整合測試，含 rollback 復原（19 個） |
-| `tests/translator_cli/test_ollama_client.py` | 07a 七章 | delimiter 抽取、格式錯誤重試、網路層重試、環境變數缺失測試（13 個，`monkeypatch` 假造 httpx／ollama 回應） |
-| `tests/translator_cli/test_client.py` | 07a 二、四、五、八、九章 | `generate_scaffold()`／`fill_function()` 端對端測試（19 個，真實 tmp_path git repo＋假造模型回應） |
+| `tests/translator_cli/test_ollama_client.py` | 07a 七章 | delimiter 抽取、格式錯誤重試、網路層重試、環境變數缺失、`UPSTREAM_DEGRADED_THRESHOLD` 升級、呼叫記錄測試（17 個，`monkeypatch` 假造 httpx／ollama 回應） |
+| `tests/translator_cli/test_client.py` | 07a 二、四、五、八、九章 | `generate_scaffold()`／`fill_function()` 端對端測試、`referenced_functions` 抽取與 context 裁減測試（32 個，真實 tmp_path git repo＋假造模型回應） |
 | `tests/translator_cli/test_formatting.py` | — | `formatting.format_paths()` 硬性依賴行為測試（5 個） |
 
-**已驗證**：`python -m pytest tests/ -q` 全數通過（340 個），見十一章列出尚未能驗證的部分。`translator_cli` 套件在 `graph` 套件完全不可 import 的情況下仍能正常 import（見二章），跟 `graph/`（LangGraph 編排層）之間沒有 import-time 依賴。已對真實 ollama／nginx 環境＋真實 Java 專案（93 個檔案）跑過端對端測試：真實 pipeline 70 個 task 中 69 個成功，delimiter 修正重試、網路層重試、填空模式本體 import 解析都真實觸發並驗證過，詳見十一章。
+**已驗證**：`python -m pytest tests/ -q` 588 個通過（另有 1 個 `tests/python_service/test_reload_probe_integration.py` 依賴真實啟動 Python 服務等待 reload probe，在本環境逾時失敗，與 translator_cli 無關，不計入）。見十一章列出尚未能驗證的部分。`translator_cli` 套件在 `graph` 套件完全不可 import 的情況下仍能正常 import（見二章），跟 `graph/`（LangGraph 編排層）之間沒有 import-time 依賴。已對真實 ollama／nginx 環境＋真實 Java 專案（93 個檔案）跑過端對端測試：真實 pipeline 70 個 task 中 69 個成功，delimiter 修正重試、網路層重試、填空模式本體 import 解析都真實觸發並驗證過，詳見十一章。
 
 ---
 
@@ -249,6 +249,143 @@ from typing import Protocol
 from translator_cli.exceptions import TranslatorCliModelOutputError
 
 
+def strip_all_function_bodies(source: str) -> str:
+    """把 `source` 裡「所有」函式／方法本體替換成單一 `pass`，只保留
+    簽名、裝飾器、import、class 定義與 class 層級屬性宣告（SQLAlchemy
+    Column／Pydantic 欄位這類定義資料形狀的陳述式，不是函式本體，不受
+    影響）。對應 09b_bug_trace.md #37：`context_files` 純粹是參考用途，
+    模型只需要知道「這裡有哪些函式／類別可用、簽名長怎樣」就能正確
+    呼叫，不需要看到其他（非目前要填的）函式的完整實作細節——真實環境
+    量化證實，prompt 越大，本地模型跑題與生成耗時暴增的機率越高（見
+    `translator_cli/client.py` 的 `_trim_context_files_if_oversized()`）。
+
+    只在呼叫端判斷 context 過大時才會被呼叫，不是無條件套用（見
+    `client.py`）。用 `ast.walk()` 找出所有 `FunctionDef`／
+    `AsyncFunctionDef`（不分是否巢狀、是否為 class 方法）逐一替換
+    `body`，其餘節點原封不動。輸入若通不過 `ast.parse()`，讓
+    `SyntaxError` 原樣往外傳，由呼叫端決定要不要退回原始內容（裁減本身
+    不該變成新的失敗來源）。
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            node.body = [ast.Pass()]
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
+def extract_referenced_classes(source: str, seed_names: set[str]) -> str:
+    """對應 `docs/09b_bug_trace.md #45`：`strip_all_function_bodies()`
+    （見上方）對「純資料宣告、沒有函式本體」的檔案（`app/schemas/`／
+    `app/models/` 這類 Pydantic／SQLAlchemy 資料類別檔）是完全無效的
+    空操作——這些檔案的膨脹來源是「一堆無關的 class 定義」，不是「函式
+    本體寫太長」，剝函式本體剝不到東西。受控實驗證實：把這類檔案裁到
+    只留這個 task 真的用得到的 class，跟裁到完整未裁剪版本比，成功率
+    與耗時差異巨大（12-25s vs 逾時 21 分鐘），不是裁不裁都差不多。
+
+    `seed_names`：呼叫端已經算出、這個 task 可能用到的 class 名稱（通常
+    來自函式簽名的型別標註／description 文字裡出現的名稱，見
+    `client.py::_referenced_class_names()`）。這裡在種子集合之上做**一層
+    遞迴閉包**：被留下的 class，若它自己的欄位型別標註又指到另一個這個
+    檔案裡定義的 class（最常見的模式：`ResponseResultXxxRs.data: XxxRs`，
+    `XxxRs` 不會出現在目標函式簽名或 description 裡，卻是理解
+    `ResponseResultXxxRs` 結構的必要資訊），也一併留下，直到不再有新
+    class 被加入為止（`defined_names` 是有限集合，保證會收斂）。
+
+    `seed_names` 為空、或跟這個檔案實際定義的 class 完全沒有交集
+    （代表呼叫端的文字比對機制沒抓到任何線索，不是「這個檔案真的用不到
+    任何東西」）時，**原樣回傳整份原始內容，不做任何過濾**——寧可裁不動
+    也不要錯砍模型真正需要的資訊，這是跟 `strip_all_function_bodies()`
+    失敗時「退回原始內容」一致的保守處理方式。
+
+    只處理模組頂層 `ClassDef`，不處理巢狀 class；import／模組層級的
+    非 class 陳述式（常數指派等）維持不變，跟 `extract_specific_functions()`
+    對非目標函式陳述式的處理方式一致。
+    """
+    tree = ast.parse(source)
+
+    class_nodes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    if not seed_names & class_nodes.keys():
+        return source
+
+    kept = set(seed_names) & class_nodes.keys()
+    changed = True
+    while changed:
+        changed = False
+        for name in list(kept):
+            for referenced in _referenced_names_in_class_body(class_nodes[name]):
+                if referenced in class_nodes and referenced not in kept:
+                    kept.add(referenced)
+                    changed = True
+
+    new_body = [
+        node for node in tree.body
+        if not isinstance(node, ast.ClassDef) or node.name in kept
+    ]
+    tree.body = new_body
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
+def _referenced_names_in_class_body(node: ast.ClassDef) -> set[str]:
+    """掃這個 class 定義本身（欄位型別標註、base class 等）裡出現過的
+    識別字——不下鑽進巢狀 class／函式，只看這個 class 自己的直接內容，
+    足以涵蓋 Pydantic／SQLAlchemy 欄位型別標註這個目標情境。"""
+    names: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            names.add(child.id)
+    names.discard(node.name)
+    return names
+
+
+def extract_specific_functions(source: str, targets: list[tuple[str | None, str]]) -> str:
+    """對應 06a 七章「`referenced_functions`：函式層級抽取」：從
+    `source` 裡只抽出 `targets` 指定的 `(class_name, function_name)` 組合
+    ——完整保留這些函式的簽名與本體，其餘函式／方法／完全沒被引用到的
+    class 一律捨棄；import、模組層級的非函式陳述式（常數指派等）維持
+    不變。對應 `docs/09b_bug_trace.md` #37 根因：這類參考檔案不需要看到
+    無關函式的實作細節，也不需要它們的簽名——只需要 `targets` 指定的那
+    幾個函式的完整定義，不多不少。
+
+    跟 `strip_all_function_bodies()`（門檻式安全網，見
+    `translator_cli/client.py::_trim_context_files_if_oversized()`）方向
+    相反：那個是「全部保留簽名、砍掉本體」的粗略裁減；這個是「精準只留
+    被引用到的函式，其餘整個不出現」，是結構上更精確的做法，優先套用；
+    裁減只在精準抽取後 context 仍然過大時才當最後一道安全網介入。
+
+    `targets` 裡指定但在 `source` 找不到的組合（理論上不該發生，
+    `interface_id` 來自③的真實輸出，見 06a 五章核對規則）不視為錯誤，
+    單純不出現在結果裡——找不到的原因交由呼叫端既有的「`context_files`
+    讀取容錯」機制處理，這裡不重複那層責任。
+    """
+    tree = ast.parse(source)
+    wanted = set(targets)
+
+    new_body: list[ast.stmt] = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            kept_methods = [
+                n
+                for n in node.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and (node.name, n.name) in wanted
+            ]
+            if kept_methods:
+                node.body = kept_methods
+                new_body.append(node)
+            # 沒有任何方法被引用到的 class 整個捨棄，不留空殼。
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if (None, node.name) in wanted:
+                new_body.append(node)
+            # 沒被引用的自由函式捨棄。
+        else:
+            new_body.append(node)
+
+    tree.body = new_body
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
 def extract_body_statements(body_source: str, function_name: str) -> list[ast.stmt]:
     """對應 07a 六章步驟 6／6a／6b。`body_source` 是 delimiter 抽取出的
     「未縮排」陳述式文字（07a 六章「delimiter 契約：模型回傳格式」）。
@@ -263,12 +400,18 @@ def extract_body_statements(body_source: str, function_name: str) -> list[ast.st
       的殘缺程式碼，要等最終檢查重新 parse 這段輸出時才會炸
       `SyntaxError`，但那時候已經不在這裡的重試觸發範圍內（見 07a
       六章步驟 6a 完整說明）
-    - 解析出的陳述式清單恰好只有一筆、且是與 `function_name` 同名的
+    - 解析出的陳述式清單裡，任何一筆是與 `function_name` 同名的
       `FunctionDef`／`AsyncFunctionDef`（六章步驟 6b「模型重複輸出函式
-      簽名」）——模型把整個函式簽名連同本體一起包進 delimiter，這在
-      AST 層級是合法的巢狀函式定義，不會被前兩種檢查攔到，替換後目標
-      函式的 body 會變成「只宣告一個從未被呼叫的同名巢狀函式」，語法
-      合法但語意錯誤，因此需要單獨判斷
+      簽名」，2026-08 因 `docs/09b_bug_trace.md #52` 從「只有一筆時才算」
+      放寬成「不論混在多少其他陳述式之間都算」）——模型把整個函式簽名
+      連同本體一起包進 delimiter，這在 AST 層級是合法的巢狀函式定義，
+      不會被前兩種檢查攔到，替換後目標函式的 body 會變成「宣告一個從
+      未被呼叫的同名巢狀函式」，語法合法但語意錯誤，因此需要單獨判斷。
+      原本只檢查「body 恰好只有一筆陳述式」的版本，攔不住 ⑦
+      Debug Agent 的 `fixed_body` 夾帶 import／裝飾器等其他陳述式、
+      同名巢狀函式只是其中一筆的情況（真實案例：`fixed_body` 開頭帶了
+      5 行 import，最後一筆才是同名巢狀 `async def`，`len(body)==1`
+      判斷不成立，巢狀污染沒被攔下，見 #52 完整重現）
     """
     try:
         body_tree = ast.parse(body_source)
@@ -280,13 +423,15 @@ def extract_body_statements(body_source: str, function_name: str) -> list[ast.st
             "body_text 解析出的陳述式清單為空（delimiter 標記之間只有空白／換行，見 07a 六章步驟 6a）"
         )
 
-    if (
-        len(body_tree.body) == 1
-        and isinstance(body_tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef))
-        and body_tree.body[0].name == function_name
-    ):
+    nested_same_name_defs = [
+        stmt.name
+        for stmt in body_tree.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == function_name
+    ]
+    if nested_same_name_defs:
         raise TranslatorCliModelOutputError(
-            f"模型重複輸出函式簽名：body_text 只包含一個與目標函式同名的巢狀函式定義 {function_name!r}（見 07a 六章步驟 6b）"
+            f"模型重複輸出函式簽名：body_text 裡包含一個與目標函式同名的巢狀函式定義 "
+            f"{function_name!r}（不限於整段 body 只有這一筆才算，見 09b_bug_trace.md #52）"
         )
 
     return body_tree.body
@@ -389,7 +534,7 @@ class PythonAdapter:
         ast.parse(source)
 ```
 
-**已驗證**（`tests/translator_cli/test_python_adapter.py`，14 個測試）：涵蓋 `locate_function()` 定位、`extract_body_statements()` 的正常／語法錯誤／空 body／簽名重複輸出等驗證分支、`splice_body()` 成功與失敗兩種路徑。
+**已驗證**（`tests/translator_cli/test_python_adapter.py`，44 個測試）：涵蓋 `locate_function()` 定位、`extract_body_statements()` 的正常／語法錯誤／空 body／簽名重複輸出等驗證分支（含 09b_bug_trace.md #52 放寬版判斷：巢狀同名函式混在其他陳述式之間仍要攔下）、`splice_body()` 成功與失敗兩種路徑，以及 `strip_all_function_bodies()`／`extract_specific_functions()`（09b_bug_trace.md #37 修法）——保留 import／class 定義／屬性宣告／裝飾器、正確裁減巢狀函式與 async 函式、對真實膨脹案例的裁減幅度驗證；`extract_referenced_classes()`（09b_bug_trace.md #45 修法，`TestExtractReferencedClasses`，7 個測試）——只留種子集合命中的 class、遞迴閉包跟著欄位型別標註走、種子集合為空或無交集時原樣回傳不做任何過濾、保留 import。
 
 ---
 
@@ -698,6 +843,14 @@ def build_user_prompt(
 ollama，而是打 `.env` 的 `OLLAMA_BASE_URL`（指向另一台 Mac 上的
 nginx，已含 `/v1` 路徑前綴），帶 `Authorization: Bearer
 {OLLAMA_API_KEY}`（見 00 三、四、五章已定案的架構）。
+
+**呼叫記錄**：對應 `11a_logging_architecture.md` 九章。每個格式修正
+attempt 各自記一筆 trace（見 `get_function_body()`），不是只記最後一次；
+`_call_ollama_once()` 本身不記錄，因為它只知道單次 HTTP 請求結果，不知道
+這是第幾次格式修正重試。每個 attempt 在呼叫發出「之前」先寫入
+`status="running"` 的 row（只含 prompt），呼叫結束才 upsert 補齊
+response／status／latency_ms——本地模型單次生成可能耗時數十秒到數分鐘，
+這段等待期間 prompt 已經可以被 `llmlog` 查到，不必等呼叫結束。
 """
 from __future__ import annotations
 
@@ -705,14 +858,19 @@ import asyncio
 import logging
 import os
 import re
+import time
+from uuid import uuid4
 
 import httpx
 
+from common.llm_trace import record_llm_call, record_llm_call_start
+from common.trace_context import current_trace_id
 from translator_cli import python_adapter
 from translator_cli.exceptions import (
     TranslatorCliConfigError,
     TranslatorCliModelOutputError,
     TranslatorCliNetworkError,
+    TranslatorCliUpstreamDegradedError,
 )
 from translator_cli.prompts import BODY_END, BODY_START, SYSTEM_PROMPT, build_user_prompt
 
@@ -733,6 +891,21 @@ _NETWORK_RETRY_DELAY_SECONDS = 3.0
 # 多、邏輯複雜），qwen 第一次回應違反 delimiter 格式的機率不低，固定
 # 重試 1 次不一定夠——調成 2 次仍是有界重試，不是無限重試。
 _FORMAT_RETRY_COUNT = 2
+
+# 見 docs/09b_bug_trace.md #35：單一 task 自己的網路層重試（見
+# `_call_ollama_once()`）解決不了「上游服務本身異常」這種系統性問題，只
+# 是各自獨立地把自己的重試預算燒完。這裡加一個跨 task、模組層級的連續
+# 失敗計數器——`MODEL_SEMAPHORE(1)` 本來就把所有呼叫序列化成一個接一個，
+# 「連續」在這裡天然對應「最近這幾次呼叫，不管是哪個 task 的，是不是都
+# 在傳輸層失敗」，不需要額外的鎖或跨 task 協調機制。任何一次成功拿到
+# 回應（含收到錯誤狀態碼的 HTTPStatusError，那也證明連線本身是通的）就
+# 歸零；連續失敗次數達到門檻，代表這不太可能是單一 task 的暫時性問題，
+# 改拋出 `TranslatorCliUpstreamDegradedError`，讓呼叫端（見
+# `client.py::fill_function()`）能提早停下來，不要繼續逐一重試。
+UPSTREAM_DEGRADED_THRESHOLD = int(
+    os.environ.get("TRANSLATOR_CLI_UPSTREAM_DEGRADED_THRESHOLD", "3")
+)
+_consecutive_transport_failures = 0
 
 _DELIMITER_RE = re.compile(re.escape(BODY_START) + r"\n?(.*?)\n?" + re.escape(BODY_END), re.DOTALL)
 
@@ -787,6 +960,8 @@ async def _call_ollama_once(system_prompt: str, user_prompt: str) -> str:
     }
     headers = {"Authorization": f"Bearer {api_key}"}
 
+    global _consecutive_transport_failures
+
     last_error: Exception | None = None
     async with httpx.AsyncClient(timeout=TRANSLATOR_CLI_TIMEOUT_SECONDS) as client:
         for attempt in range(TRANSLATOR_CLI_NETWORK_RETRIES + 1):
@@ -794,7 +969,10 @@ async def _call_ollama_once(system_prompt: str, user_prompt: str) -> str:
                 response = await client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                # 有收到回應，只是狀態碼是錯誤——立即失敗，不進重試迴圈。
+                # 有收到回應，只是狀態碼是錯誤——連線本身是通的，歸零連續
+                # 失敗計數器（見模組層級 _consecutive_transport_failures
+                # 說明），立即失敗，不進重試迴圈。
+                _consecutive_transport_failures = 0
                 raise TranslatorCliNetworkError(
                     f"ollama 回應 HTTP 錯誤狀態碼（非傳輸層錯誤，不重試）：{exc}"
                 ) from exc
@@ -811,12 +989,24 @@ async def _call_ollama_once(system_prompt: str, user_prompt: str) -> str:
                     await asyncio.sleep(_NETWORK_RETRY_DELAY_SECONDS)
                 continue
 
+            _consecutive_transport_failures = 0
             data = response.json()
             return data["choices"][0]["message"]["content"]
 
-    raise TranslatorCliNetworkError(
+    _consecutive_transport_failures += 1
+    message = (
         f"ollama 連線失敗，已重試 {TRANSLATOR_CLI_NETWORK_RETRIES} 次仍失敗：{last_error}"
     )
+    # `from last_error` 讓 __cause__ 帶著真正的傳輸層例外——get_function_body()
+    # 靠這個判斷 status 該記 "timeout" 還是 "error"（見 11a 九章），也讓
+    # traceback 保留原始成因，不只是這裡重新組的訊息字串。
+    if _consecutive_transport_failures >= UPSTREAM_DEGRADED_THRESHOLD:
+        raise TranslatorCliUpstreamDegradedError(
+            f"連續 {_consecutive_transport_failures} 次（跨不同呼叫）都在傳輸層失敗"
+            f"（門檻 {UPSTREAM_DEGRADED_THRESHOLD}），懷疑是上游 ollama／nginx 服務本身"
+            f"異常（掛了／重啟中／過載），不是單一暫時性問題：{message}"
+        ) from last_error
+    raise TranslatorCliNetworkError(message) from last_error
 
 
 async def get_function_body(
@@ -826,6 +1016,10 @@ async def get_function_body(
     context: str,
     context_files: list[tuple[str, str]],
     function_name: str,
+    task_id: str | None = None,
+    target_file: str | None = None,
+    class_name: str | None = None,
+    run_id: str,
 ) -> str:
     """對外唯一入口，對應 07a 七章「模型輸出格式錯誤的修正重試」。
 
@@ -842,6 +1036,15 @@ async def get_function_body(
     回傳已驗證過的 `body_source` 原始文字（未縮排陳述式）；固定重試
     2 次仍失敗，拋出 `TranslatorCliModelOutputError`，交由呼叫端
     （`client.fill_function()`）轉成 `FillResult(success=False, ...)`。
+
+    `run_id` 是必填參數：`fill_function()` 已經在最外層解析成具體值
+    （見 11a 九章「run_id 的解析只在 fill_function() 做一次」），這裡不
+    再自己判斷，避免同一個 task 的三次格式修正 attempt 拿到不同 run_id。
+    `task_id`／`target_file`／`class_name` 是純記錄用的選填參數。
+
+    **每個 attempt（不論成功、格式錯誤、還是傳輸層例外）恰好產生一筆
+    trace row，寫入時機統一在該次 attempt 的 `finally` 區塊**（見 11a
+    九章），不是只記最後一次。
     """
     error_feedback: str | None = None
     last_error: Exception | None = None
@@ -854,23 +1057,82 @@ async def get_function_body(
             context_files=context_files,
             error_feedback=error_feedback,
         )
-        raw_text = await _call_ollama_once(SYSTEM_PROMPT, user_prompt)
+
+        trace_id = str(uuid4())
+        token = current_trace_id.set(trace_id)
+        start = time.monotonic()
+        status, error_msg, raw_text = "error", None, None
+        prompt_text = f"=== SYSTEM ===\n{SYSTEM_PROMPT}\n\n=== USER ===\n{user_prompt}"
+
+        # 呼叫實際發出「之前」就寫入 status="running" 的 row（見
+        # 11a_logging_architecture.md 七章「呼叫開始即寫入 running row」）：
+        # 本地模型單次生成可能耗時數十秒到數分鐘，這段等待期間 prompt
+        # 已經可以被 llmlog 查到，不必等下面 finally 補上最終結果——這是
+        # 真實環境「長時間等待本地 Ollama、事後查不出當時送了什麼」這個
+        # 缺口的直接對策。
+        record_llm_call_start(
+            trace_id=trace_id, run_id=run_id, vendor="ollama", model=OLLAMA_MODEL,
+            caller="ollama_client.get_function_body",
+            task_id=task_id, attempt=attempt,
+            target_file=target_file, class_name=class_name, function_name=function_name,
+            prompt=prompt_text,
+        )
 
         try:
+            raw_text = await _call_ollama_once(SYSTEM_PROMPT, user_prompt)
             body_source = _extract_delimited_body(raw_text)
             python_adapter.extract_body_statements(body_source, function_name)
+            status = "ok"
             return body_source
+        except (TranslatorCliNetworkError, TranslatorCliConfigError) as exc:
+            # 傳輸層／環境變數缺失：既有設計本來就不進格式重試迴圈，直接
+            # 往外拋（見 07a 七章），這裡只是在拋出之前，先讓 finally
+            # 保證這次 attempt 留痕。
+            error_msg = str(exc)
+            status = "timeout" if isinstance(exc.__cause__, httpx.TimeoutException) else "error"
+            raise
         except TranslatorCliModelOutputError as exc:
+            # delimiter／語法驗證失敗：進格式修正重試迴圈，raw_text 依然
+            # 有值（模型確實回應了，只是內容不符契約），留在下面正常記錄。
+            error_msg = str(exc)
             last_error = exc
             error_feedback = str(exc)
             if attempt < _FORMAT_RETRY_COUNT:
                 logger.warning("模型輸出格式錯誤（第 %d 次），重新呼叫一次修正：%s", attempt + 1, exc)
                 continue
+            # 未達上限時已經 continue；這裡是最後一次 attempt 也失敗，
+            # 落到迴圈自然結束，finally 仍會先記錄這次 attempt，然後在
+            # 迴圈外統一拋出（見下方）。
+        except Exception as exc:
+            # 涵蓋以上兩類以外的意外例外（如 extract_body_statements()
+            # 內部真正非預期的錯誤），理由同 common/llm_client.py 的同類
+            # 兜底分支——確保 error_msg 一定有內容，不留一筆查不出原因的
+            # status='error' row。
+            status = "error"
+            error_msg = repr(exc)
+            raise
+        finally:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            # current_trace_id.reset() 必須排在 record_llm_call() 之前，
+            # 理由同 common/llm_client.py（見 11a 八章「為什麼 reset()
+            # 要排在 record_llm_call() 之前」）。
+            current_trace_id.reset(token)
+            record_llm_call(
+                trace_id=trace_id, run_id=run_id, vendor="ollama", model=OLLAMA_MODEL,
+                caller="ollama_client.get_function_body",
+                task_id=task_id, attempt=attempt,
+                target_file=target_file, class_name=class_name, function_name=function_name,
+                prompt=prompt_text,
+                response=raw_text,
+                latency_ms=latency_ms, status=status, error_msg=error_msg,
+            )
 
     raise TranslatorCliModelOutputError(f"模型輸出格式錯誤，修正重試仍失敗：{last_error}")
 ```
 
-**已驗證**（`tests/translator_cli/test_ollama_client.py`，13 個測試，`monkeypatch` 假造 `httpx.AsyncClient`／`_call_ollama_once`，不需要真的連線）：涵蓋 delimiter 抽取成功／失敗、格式錯誤重試（含兩次都失敗、第二次重試才成功）、網路層重試與耗盡後拋出 `TranslatorCliNetworkError`（不是 `TranslatorCliModelOutputError`，見一章「為什麼分開」）、`httpx.HTTPStatusError` 立即失敗不進重試迴圈、環境變數缺失轉成 `TranslatorCliConfigError`、同一次呼叫的多次重試只建立一個 `httpx.AsyncClient` 實例。
+`_call_ollama_once()` 逾時後累積到 `UPSTREAM_DEGRADED_THRESHOLD` 次連續傳輸層失敗時改拋 `TranslatorCliUpstreamDegradedError`（`TranslatorCliNetworkError` 子類別，見 `docs/09b_bug_trace.md` #35）；`get_function_body()` 每個 attempt 的呼叫記錄機制見 `11a_logging_architecture.md`／`11b_logging_code.md`，不在這裡重複。
+
+**已驗證**（`tests/translator_cli/test_ollama_client.py`，17 個測試，`monkeypatch` 假造 `httpx.AsyncClient`／`_call_ollama_once`／`record_llm_call`／`record_llm_call_start`，不需要真的連線）：涵蓋 delimiter 抽取成功／失敗、格式錯誤重試（含兩次都失敗、第二次重試才成功、三次都失敗才放棄）、網路層重試與耗盡後拋出 `TranslatorCliNetworkError`（不是 `TranslatorCliModelOutputError`，見一章「為什麼分開」）、`httpx.HTTPStatusError` 立即失敗不進重試迴圈、環境變數缺失轉成 `TranslatorCliConfigError`、同一次呼叫的多次重試只建立一個 `httpx.AsyncClient` 實例、連續跨呼叫傳輸層失敗達門檻時升級成 `TranslatorCliUpstreamDegradedError`、成功呼叫歸零連續失敗計數器（`docs/09b_bug_trace.md` #35）、`record_llm_call_start()` 在真正打 ollama 之前就被呼叫且帶完整 prompt、start／finish 共用同一個 `trace_id`。
 
 ---
 
@@ -1620,20 +1882,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
-from translator_cli import formatting, git_ops, ollama_client, scaffold
+from common.run_context import adhoc_run_id
+from translator_cli import formatting, git_ops, ollama_client, python_adapter, scaffold
 from translator_cli.exceptions import (
     TranslatorCliConfigError,
     TranslatorCliError,
     TranslatorCliModelOutputError,
     TranslatorCliNetworkError,
     TranslatorCliScaffoldMismatchError,
+    TranslatorCliUpstreamDegradedError,
 )
 from translator_cli.python_adapter import PythonAdapter
 from translator_cli.types import FillResult, PythonStructure, ScaffoldResult
 
 logger = logging.getLogger(__name__)
+
+# 對應 09b_bug_trace.md #37：真實環境量化證實，context_files 總量超過
+# 這個量級時，本地模型（qwen2.5-coder:32b）明顯更容易跑題、生成耗時
+# 暴增到正常值的 7～20 倍。門檻值取自真實資料：那次重跑裡所有「成功」
+# 呼叫的 context_files 總量最高 12942 bytes，所有「三次 attempt 全部
+# 失敗」的呼叫最低 15590 bytes，兩者之間留有餘裕，13000 bytes 取在
+# 安全側。之後若有更多真實資料，這個值可以直接調整，不影響裁減機制
+# 本身的結構。
+TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES = int(
+    os.environ.get("TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES", "13000")
+)
 
 
 async def generate_scaffold(
@@ -1718,7 +1994,13 @@ def _read_target_file(root: Path, target_file: str) -> str:
         raise TranslatorCliError(f"讀取 {target_file} 失敗：{exc}") from exc
 
 
-def _read_context_files(root: Path, context_files: list[str], *, task_id: str) -> list[tuple[str, str]]:
+def _read_context_files(
+    root: Path,
+    context_files: list[str],
+    *,
+    task_id: str,
+    referenced_functions: list[tuple[str, str | None, str]] | None = None,
+) -> list[tuple[str, str]]:
     """對應 07a 七章「`context_files` 讀取容錯」：`context_files[0]`
     （＝`target_file`）已在呼叫端（六章步驟 1）確認存在，這裡不會再
     踩到；其餘項目遇到 `FileNotFoundError` 記警告並跳過，不中斷整個
@@ -1728,7 +2010,22 @@ def _read_context_files(root: Path, context_files: list[str], *, task_id: str) -
     其餘 `OSError`（權限問題等）是環境層級的真實錯誤，不屬於 07a
     原文界定的「檔案不存在」容錯範圍，讓它往外傳、中止這次呼叫，避免
     靜默吞掉磁碟權限這類需要人工排查的問題。
+
+    `referenced_functions`：對應 06a 七章「`referenced_interfaces`
+    函式層級抽取」（見 `docs/09b_bug_trace.md` #37 根因）。`(file_path,
+    class_name, function_name)` 三元組清單——某個 `rel_path` 若在這份
+    清單裡有對應項目，代表這個檔案是「因為引用才被拉進來」的參考檔案，
+    只抽取被引用到的那幾個函式（`python_adapter.extract_specific_functions()`），
+    不整份帶入。沒有對應項目的檔案（`target_files[0]` 自己的檔案、
+    schemas／models 這類資料形狀定義檔）維持整份帶入，理由見
+    `plan_agent/planning.py::_build_referenced_functions()` 的排除規則。
+    抽取失敗（理論上不該發生，內容一定是合法 Python）時退回完整內容，
+    裁減本身不該變成新的失敗來源。
     """
+    targets_by_file: dict[str, list[tuple[str | None, str]]] = {}
+    for file_path, class_name, function_name in referenced_functions or []:
+        targets_by_file.setdefault(file_path, []).append((class_name, function_name))
+
     resolved: list[tuple[str, str]] = []
     for rel_path in context_files:
         try:
@@ -1741,8 +2038,94 @@ def _read_context_files(root: Path, context_files: list[str], *, task_id: str) -
                 exc,
             )
             continue
+
+        targets = targets_by_file.get(rel_path)
+        if targets:
+            try:
+                content = python_adapter.extract_specific_functions(content, targets)
+            except SyntaxError as exc:
+                logger.warning(
+                    "task %s：%s 函式層級抽取失敗，改用完整檔案內容（見 06a 七章新設計）：%s",
+                    task_id, rel_path, exc,
+                )
         resolved.append((rel_path, content))
     return resolved
+
+
+_SCHEMA_MODEL_PATH_PREFIXES = ("app/schemas/", "app/models/")
+_CLASS_NAME_CANDIDATE_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
+
+
+def _referenced_class_names(*texts: str) -> set[str]:
+    """對應 09b_bug_trace.md #45：從函式簽名／description／context 這些
+    文字裡粗略抓出可能是 class 名稱的候選字（大寫字母開頭的識別字）。
+    抓到的候選字不保證真的是目標檔案定義的 class（一般大寫英文詞也會
+    命中），但 `extract_referenced_classes()` 會再跟該檔案實際定義的
+    class 集合取交集，誤命中不會造成任何影響。"""
+    names: set[str] = set()
+    for text in texts:
+        names.update(_CLASS_NAME_CANDIDATE_RE.findall(text))
+    return names
+
+
+def _trim_context_files_if_oversized(
+    context_files: list[tuple[str, str]], *, task_id: str, current_signature: str = "", description: str = "",
+    context: str = "",
+) -> list[tuple[str, str]]:
+    """對應 09b_bug_trace.md #37「context 過大時的裁減」：只在總大小
+    超過 `TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES` 時才裁減，小
+    context 維持原始完整內容不動——真實資料顯示大部分呼叫的
+    context_files 遠低於這個門檻，裁減只該發生在真的需要的時候。
+
+    **這是第二道安全網，不是主要修法**：`_read_context_files()` 若拿到
+    `referenced_functions`，已經先把「因引用而拉進來」的參考檔案精準
+    抽取成只含被引用函式（見 06a 七章新設計、`plan_agent/planning.py::
+    _build_referenced_functions()`），多數情況下總量已經降到門檻以下，
+    這裡不會被觸發。這裡處理的是精準抽取覆蓋不到的情況（`target_files[0]`
+    自己的檔案、schemas／models 這類本來就整份帶入的資料形狀定義檔，
+    萬一其中之一本身就異常龐大）。
+
+    **裁減方式依檔案性質分兩種**（見 `docs/09b_bug_trace.md #45` 受控
+    實驗）：`app/schemas/`／`app/models/` 底下的檔案是純欄位宣告的
+    Pydantic／SQLAlchemy 資料類別，`strip_all_function_bodies()`（剝函式
+    本體）對這類檔案是空操作——受控實驗證實這正是這批 task 持續失敗的
+    機制性根因：門檻正常觸發，裁減正常跑完，但檔案裡沒有函式本體可剝，
+    輸出跟輸入一樣大，模型還是拿到全量無關 class 定義。改用
+    `python_adapter.extract_referenced_classes()`，依 `current_signature`／
+    `description`／`context` 這三處文字裡出現過的候選名稱，只留這個 task
+    可能用到的 class；其餘檔案（真正有函式本體可以剝的一般程式碼檔）
+    維持既有的 `strip_all_function_bodies()`。單一檔案裁減失敗（理論上
+    不該發生——這裡的內容一定是合法 Python，`ast.parse()` 沒有理由失敗，
+    但裁減本身不該變成新的失敗來源）時，那個檔案退回原始內容，不影響
+    其他檔案／整體流程。純 AST 記憶體操作，不是 I/O，不需要
+    `asyncio.to_thread()`（見模組 docstring）。
+    """
+    total_bytes = sum(len(content.encode("utf-8")) for _, content in context_files)
+    if total_bytes < TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES:
+        return context_files
+
+    candidate_class_names = _referenced_class_names(current_signature, description, context)
+
+    trimmed: list[tuple[str, str]] = []
+    for path, content in context_files:
+        try:
+            if path.startswith(_SCHEMA_MODEL_PATH_PREFIXES):
+                trimmed.append((path, python_adapter.extract_referenced_classes(content, candidate_class_names)))
+            else:
+                trimmed.append((path, python_adapter.strip_all_function_bodies(content)))
+        except SyntaxError as exc:
+            logger.warning(
+                "task %s：context_files 裁減 %s 失敗，保留原始內容（見 09b_bug_trace.md #37）：%s",
+                task_id, path, exc,
+            )
+            trimmed.append((path, content))
+
+    trimmed_bytes = sum(len(content.encode("utf-8")) for _, content in trimmed)
+    logger.info(
+        "task %s：context_files 總量 %d bytes 超過門檻 %d bytes，已裁減至 %d bytes（見 09b_bug_trace.md #37／#45）",
+        task_id, total_bytes, TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES, trimmed_bytes,
+    )
+    return trimmed
 
 
 async def fill_function(
@@ -1754,11 +2137,35 @@ async def fill_function(
     description: str,
     context: str,
     context_files: list[str],
+    run_id: str | None = None,
+    referenced_functions: list[tuple[str, str | None, str]] | None = None,
+    fixed_body: str | None = None,
 ) -> FillResult:
     """對應 07a 五、六、七章。呼叫失敗時不寫入任何內容（見五章「呼叫
     失敗時不寫入任何內容」）——每個失敗分支都在寫入磁碟之前 return，
     是九章「衝突偵測」成立的前提。
+
+    `run_id`：選填，省略時用 `adhoc_run_id()`。這裡是 Ollama 呼叫鏈的
+    最外層（見 `11a_logging_architecture.md` 九章「run_id 的解析只在
+    fill_function() 做一次」），只在這裡解析一次再往下傳給
+    `ollama_client.get_function_body()`，同一個 task 的多次格式修正
+    attempt 才會落在同一個 run_id 底下，不會各自 fallback 出不同的值。
+
+    `referenced_functions`：選填，`(file_path, class_name, function_name)`
+    三元組清單，對應 `graph/state.py::TaskSpec.referenced_functions`（見
+    06a 七章新設計）。傳給 `_read_context_files()` 決定 `context_files`
+    裡哪些檔案該只抽取指定函式、哪些該整份帶入，見該函式 docstring。
+
+    `fixed_body`：選填，見 `10a_debug_agent_architecture.md` 八章「⑦
+    直接產生修正後程式碼」。非 `None` 時代表呼叫端（⑦ Debug Agent）已經
+    產生好正確的函式本體（跟 `ollama_client.get_function_body()` 回傳的
+    格式一樣：未縮排陳述式文字，不含 `def` 簽名行），直接拿來
+    `splice_body()`，完全跳過 `ollama_client.get_function_body()` 呼叫與
+    它需要的 `context_files` 讀取——這種情境下不是「重新翻譯」，是「套用
+    已知正確的修正」，不需要 ⑤ 本地模型參與。定位函式節點、import 解析、
+    語法驗證、寫入＋git commit 等既有步驟不變。
     """
+    resolved_run_id = run_id or adhoc_run_id()
     root = Path(python_project_path)
 
     try:
@@ -1777,43 +2184,67 @@ async def fill_function(
     except TranslatorCliError as exc:
         return FillResult(success=False, error=str(exc), diff="")
 
-    current_signature = adapter.render_signature(node)
-    try:
-        resolved_context_files = await asyncio.to_thread(_read_context_files, root, context_files, task_id=task_id)
-    except OSError as exc:
-        # _read_context_files() 只吞 FileNotFoundError（見該函式 docstring）；
-        # 其餘 OSError（權限問題等）是真實環境錯誤，這裡轉成
-        # FillResult(success=False)，不讓原生例外洩漏擊穿合約。
-        return FillResult(success=False, error=f"讀取 context_files 失敗：{exc}", diff="")
+    if fixed_body is not None:
+        body_source = fixed_body
+    else:
+        current_signature = adapter.render_signature(node)
+        try:
+            resolved_context_files = await asyncio.to_thread(
+                _read_context_files, root, context_files,
+                task_id=task_id, referenced_functions=referenced_functions,
+            )
+        except OSError as exc:
+            # _read_context_files() 只吞 FileNotFoundError（見該函式 docstring）；
+            # 其餘 OSError（權限問題等）是真實環境錯誤，這裡轉成
+            # FillResult(success=False)，不讓原生例外洩漏擊穿合約。
+            return FillResult(success=False, error=f"讀取 context_files 失敗：{exc}", diff="")
 
-    try:
-        body_source = await ollama_client.get_function_body(
-            current_signature=current_signature,
-            description=description,
-            context=context,
-            context_files=resolved_context_files,
-            function_name=function_name,
+        resolved_context_files = _trim_context_files_if_oversized(
+            resolved_context_files, task_id=task_id,
+            current_signature=current_signature, description=description, context=context,
         )
-    except (TranslatorCliModelOutputError, TranslatorCliNetworkError, TranslatorCliConfigError) as exc:
-        # TranslatorCliNetworkError（網路層重試耗盡）／TranslatorCliConfigError
-        # （缺 OLLAMA_BASE_URL／OLLAMA_API_KEY，見
-        # ollama_client._call_ollama_once()）都不會被 get_function_body()
-        # 的格式重試迴圈攔截、會直接往外傳到這裡——這是刻意的：網路層
-        # 錯誤與環境變數缺失都不該進「模型輸出格式錯誤」的重試邏輯，那
-        # 救不了連線失敗或缺環境變數這兩件事，一樣轉成
-        # FillResult(success=False) 讓這個 task 明確失敗、不讓例外洩漏
-        # 擊穿合約。
-        return FillResult(success=False, error=str(exc), diff="")
+
+        try:
+            body_source = await ollama_client.get_function_body(
+                current_signature=current_signature,
+                description=description,
+                context=context,
+                context_files=resolved_context_files,
+                function_name=function_name,
+                task_id=task_id,
+                target_file=target_file,
+                class_name=class_name,
+                run_id=resolved_run_id,
+            )
+        except (TranslatorCliModelOutputError, TranslatorCliNetworkError, TranslatorCliConfigError) as exc:
+            # TranslatorCliNetworkError（網路層重試耗盡）／TranslatorCliConfigError
+            # （缺 OLLAMA_BASE_URL／OLLAMA_API_KEY，見
+            # ollama_client._call_ollama_once()）都不會被 get_function_body()
+            # 的格式重試迴圈攔截、會直接往外傳到這裡——這是刻意的：網路層
+            # 錯誤與環境變數缺失都不該進「模型輸出格式錯誤」的重試邏輯，那
+            # 救不了連線失敗或缺環境變數這兩件事，一樣轉成
+            # FillResult(success=False) 讓這個 task 明確失敗、不讓例外洩漏
+            # 擊穿合約。TranslatorCliUpstreamDegradedError 是
+            # TranslatorCliNetworkError 的子類別，一樣會被這裡接住，差別只是
+            # 額外標記 upstream_degraded=True，讓 implement_node.py 決定要不要
+            # 提早停止重試（見該例外類別 docstring、docs/09b_bug_trace.md #35）。
+            return FillResult(
+                success=False,
+                error=str(exc),
+                diff="",
+                upstream_degraded=isinstance(exc, TranslatorCliUpstreamDegradedError),
+            )
 
     try:
         adapter.splice_body(node, body_source)
     except TranslatorCliModelOutputError as exc:
         return FillResult(success=False, error=str(exc), diff="")
 
-    # 填空模式的本體 import 解析（見 07a 五章）：node.body 現在是 qwen
-    # 生成的本體，可能引用簽名以外的名稱（跨檔案自訂類別、框架例外），
-    # 骨架階段的 import 解析看不到這些，這裡針對新本體重新掃一次補上。
-    # 掃描專案磁碟找自訂型別索引是 I/O，包 to_thread；純 AST 插入不是。
+    # 填空模式的本體 import 解析（見 07a 五章）：node.body 現在是新本體
+    # （qwen 生成，或 fixed_body 給定），可能引用簽名以外的名稱（跨檔案
+    # 自訂類別、框架例外），骨架階段的 import 解析看不到這些，這裡針對
+    # 新本體重新掃一次補上。掃描專案磁碟找自訂型別索引是 I/O，包
+    # to_thread；純 AST 插入不是。
     bound_names = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
     if node.args.vararg:
         bound_names.add(node.args.vararg.arg)
@@ -1894,7 +2325,7 @@ async def fill_function(
     return FillResult(success=True, error=None, diff=diff)
 ```
 
-**已驗證**（`tests/translator_cli/test_client.py`，19 個測試，真實 `tmp_path` git repo＋`monkeypatch` 假造 ollama／git／磁碟呼叫，`formatting.format_paths()` 用 autouse fixture stub 成 no-op）：`generate_scaffold()` 涵蓋 precondition 失敗與寫入／commit 失敗時自動 rollback；`fill_function()` 端對端涵蓋成功填空並正確 commit、本體引用簽名以外名稱時正確補 import、**同一個 task 重複呼叫且生成內容與現有版本相同時視為冪等成功、不建立空 commit**（見 07a 五章「冪等」）、`target_file`／函式找不到、`context_files` 部分缺失的容錯、working tree 不乾淨時拒絕寫入（含模型生成期間才被改動的競態）、commit／格式化失敗時分別走對應的 rollback 路徑、環境變數缺失轉成 `FillResult(success=False)` 而非原生例外洩漏。
+**已驗證**（`tests/translator_cli/test_client.py`，46 個測試，真實 `tmp_path` git repo＋`monkeypatch` 假造 ollama／git／磁碟呼叫，`formatting.format_paths()` 用 autouse fixture stub 成 no-op）：`generate_scaffold()` 涵蓋 precondition 失敗與寫入／commit 失敗時自動 rollback；`fill_function()` 端對端涵蓋成功填空並正確 commit、本體引用簽名以外名稱時正確補 import、**同一個 task 重複呼叫且生成內容與現有版本相同時視為冪等成功、不建立空 commit**（見 07a 五章「冪等」）、`target_file`／函式找不到、`context_files` 部分缺失的容錯、working tree 不乾淨時拒絕寫入（含模型生成期間才被改動的競態）、commit／格式化失敗時分別走對應的 rollback 路徑、環境變數缺失轉成 `FillResult(success=False)` 而非原生例外洩漏、`TranslatorCliUpstreamDegradedError` 正確標記 `upstream_degraded=True`；`fixed_body` 給定時跳過 Ollama 呼叫、巢狀同名函式被拒絕且正確記 log（09b_bug_trace.md #52，`caplog` 鎖住訊息帶 task_id 與 #52 編號）。另涵蓋 09b_bug_trace.md #37／#45 修法：`_trim_context_files_if_oversized()` 門檻觸發／未觸發兩種情況、`referenced_functions` 精準抽取與未命中檔案維持完整內容、`fill_function()` 端對端確認 `referenced_functions` 正確傳到 `get_function_body()`、`app/schemas/`／`app/models/` 路徑改用 `extract_referenced_classes()` 依候選類別名稱過濾而非剝函式本體、無候選信號時保留完整內容（`TestTrimContextFilesIfOversized`、`TestReadContextFilesReferencedFunctions`、`TestReferencedClassNames`）。
 
 ### `formatting.py`
 
@@ -2082,7 +2513,7 @@ refactor-project/
     ├── types.py            # FillResult／ScaffoldResult／PythonStructure／InterfaceSpec 等輸出入契約
     ├── python_adapter.py   # LanguageAdapter Protocol、PythonAdapter：ast 定位／替換／渲染／語法驗證
     ├── scaffold.py          # directory_tree 解析、interfaces 分組渲染、import 解析、db_models 併入
-    ├── ollama_client.py     # httpx 呼叫 ollama（經 nginx）、delimiter 抽取、修正重試
+    ├── ollama_client.py     # httpx 呼叫 ollama（經 nginx）、delimiter 抽取、修正重試、上游異常偵測、呼叫記錄（11a 九章）
     ├── prompts.py           # 七章 system/user prompt 模板
     ├── git_ops.py            # commit、git status 衝突偵測、rollback
     ├── formatting.py         # ruff format（硬性依賴）

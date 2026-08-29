@@ -7,6 +7,8 @@ from translator_cli.exceptions import TranslatorCliModelOutputError
 from translator_cli.python_adapter import (
     PythonAdapter,
     extract_body_statements,
+    extract_referenced_classes,
+    extract_specific_functions,
     strip_all_function_bodies,
 )
 
@@ -82,6 +84,23 @@ def test_extract_body_statements_nested_function_with_different_name_is_allowed(
     body = "def _helper(x):\n    return x\nreturn _helper(1)\n"
     stmts = extract_body_statements(body, "get_by_id")
     assert len(stmts) == 2
+
+
+def test_extract_body_statements_duplicate_signature_mixed_with_other_statements_raises():
+    # 對應 docs/09b_bug_trace.md #52 真實案例：⑦ Debug Agent 的 fixed_body
+    # 夾帶了 import／裝飾器等其他陳述式，同名巢狀函式只是其中一筆，不是
+    # body 唯一的陳述式——舊版 len(body)==1 判斷攔不住這種情況，會被
+    # splice_body() 當成合法陳述式插進去，寫出巢狀死程式碼。
+    body = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "\n"
+        "@router.post('/api/file/image')\n"
+        "async def image(kind: str) -> None:\n"
+        "    return None\n"
+    )
+    with pytest.raises(TranslatorCliModelOutputError, match="模型重複輸出函式簽名"):
+        extract_body_statements(body, "image")
 
 
 def test_splice_body_and_render_roundtrip():
@@ -210,3 +229,161 @@ class TestStripAllFunctionBodies:
         source = "class ExamSpecification:\n" + source
         trimmed = strip_all_function_bodies(source)
         assert len(trimmed.encode("utf-8")) < len(source.encode("utf-8")) * 0.6
+
+
+class TestExtractSpecificFunctions:
+    """對應 06a 七章新設計「referenced_interfaces 函式層級抽取」，見
+    docs/09b_bug_trace.md #37 根因。"""
+
+    _SOURCE = (
+        "from __future__ import annotations\n\n"
+        "from sqlalchemy.orm import Session\n\n\n"
+        "class ExamRepository:\n"
+        "    def find_by_kind(self, kind: str, db: Session) -> object:\n"
+        "        pass\n"
+        "    def find_by_card(self, card: str, db: Session) -> object | None:\n"
+        "        return db.query(1).filter(2).one_or_none()\n\n\n"
+        "class ExamSpecification:\n"
+        "    def with_year(self, year: str) -> object:\n"
+        "        return Specification(lambda x: x.year == year)\n\n\n"
+        "def standalone_helper() -> int:\n"
+        "    return 42\n"
+    )
+
+    def test_keeps_only_the_targeted_method_full_body(self):
+        result = extract_specific_functions(self._SOURCE, [("ExamRepository", "find_by_card")])
+        assert "def find_by_card(self, card: str, db: Session) -> object | None:" in result
+        assert "return db.query(1).filter(2).one_or_none()" in result
+
+    def test_drops_untargeted_sibling_method_entirely(self):
+        result = extract_specific_functions(self._SOURCE, [("ExamRepository", "find_by_card")])
+        assert "find_by_kind" not in result
+
+    def test_drops_untargeted_class_entirely(self):
+        result = extract_specific_functions(self._SOURCE, [("ExamRepository", "find_by_card")])
+        assert "ExamSpecification" not in result
+        assert "with_year" not in result
+
+    def test_drops_untargeted_standalone_function(self):
+        result = extract_specific_functions(self._SOURCE, [("ExamRepository", "find_by_card")])
+        assert "standalone_helper" not in result
+
+    def test_keeps_module_level_imports(self):
+        result = extract_specific_functions(self._SOURCE, [("ExamRepository", "find_by_card")])
+        assert "from __future__ import annotations" in result
+        assert "from sqlalchemy.orm import Session" in result
+
+    def test_supports_multiple_targets_across_different_classes(self):
+        result = extract_specific_functions(
+            self._SOURCE, [("ExamRepository", "find_by_card"), ("ExamSpecification", "with_year")]
+        )
+        assert "find_by_card" in result
+        assert "with_year" in result
+        assert "find_by_kind" not in result
+
+    def test_supports_standalone_function_target(self):
+        result = extract_specific_functions(self._SOURCE, [(None, "standalone_helper")])
+        assert "return 42" in result
+        assert "ExamRepository" not in result
+        assert "ExamSpecification" not in result
+
+    def test_no_targets_drops_all_functions_and_classes(self):
+        result = extract_specific_functions(self._SOURCE, [])
+        assert "class" not in result
+        assert "def" not in result
+        assert "from __future__ import annotations" in result  # import 維持不變
+
+    def test_missing_target_is_silently_absent_not_an_error(self):
+        # 對應 docstring：找不到的組合不視為錯誤，單純不出現在結果裡，
+        # 由呼叫端既有的 context_files 讀取容錯機制處理。
+        result = extract_specific_functions(self._SOURCE, [("NoSuchClass", "no_such_method")])
+        assert "ExamRepository" not in result
+
+    def test_output_is_valid_python(self):
+        result = extract_specific_functions(self._SOURCE, [("ExamRepository", "find_by_card")])
+        ast.parse(result)  # 不應拋出
+
+    def test_invalid_source_raises_syntax_error(self):
+        with pytest.raises(SyntaxError):
+            extract_specific_functions("def (:\n", [(None, "x")])
+
+    def test_significantly_smaller_than_full_bloated_file(self):
+        # 對應真實案例（09b_bug_trace.md #37）：只抽一個方法，應該遠小於
+        # strip_all_function_bodies() 那種「保留所有簽名」的裁減方式。
+        big_source = "class ExamSpecification:\n" + "\n".join(
+            f"    def with_{name}(self, {name}: str) -> object:\n"
+            f"        validator = ValidationUtil()\n"
+            f"        if validator.is_valid_field({name}):\n"
+            f"            return Specification(lambda x: x.{name} == {name})\n"
+            f"        else:\n"
+            f"            return conjunction()\n"
+            for name in ("year", "grade", "classes", "kind", "status", "card", "random_id")
+        )
+        result = extract_specific_functions(big_source, [("ExamSpecification", "with_year")])
+        assert len(result.encode("utf-8")) < len(big_source.encode("utf-8")) * 0.25
+        assert "with_grade" not in result
+
+
+class TestExtractReferencedClasses:
+    """對應 docs/09b_bug_trace.md #45：schemas／models 這類純欄位宣告
+    檔案沒有函式本體可以剝，strip_all_function_bodies() 對這類檔案是
+    空操作，改用這個函式依 class 名稱過濾。"""
+
+    _SOURCE = (
+        "from __future__ import annotations\n\n"
+        "from pydantic import BaseModel\n\n\n"
+        "class ResponseResultCreaterandomRs(BaseModel):\n"
+        "    code: int | None\n"
+        "    msg: str | None\n"
+        "    data: CreaterandomRs | None\n\n\n"
+        "class CreaterandomRs(BaseModel):\n"
+        "    randomId: str | None\n"
+        "    result: str | None\n\n\n"
+        "class GetExamRq(BaseModel):\n"
+        "    year: str | None\n\n\n"
+        "class ResponseResultGetExamRs(BaseModel):\n"
+        "    code: int | None\n"
+        "    data: GetExamRs | None\n\n\n"
+        "class GetExamRs(BaseModel):\n"
+        "    exam: list[str] | None\n"
+    )
+
+    def test_keeps_only_seeded_class(self):
+        result = extract_referenced_classes(self._SOURCE, {"GetExamRq"})
+        assert "class GetExamRq" in result
+
+    def test_drops_unrelated_class_entirely(self):
+        result = extract_referenced_classes(self._SOURCE, {"GetExamRq"})
+        assert "CreaterandomRs" not in result
+        assert "ResponseResultGetExamRs" not in result
+
+    def test_transitive_closure_follows_field_type_reference(self):
+        """種子集合只給 ResponseResultCreaterandomRs，但它的 data 欄位型別
+        標註指到 CreaterandomRs——這個真實案例（task_045）就是靠這一層
+        遞迴閉包才不會漏掉 data 欄位實際指向的類別，光看函式簽名／
+        description 通常抓不到這種只出現在欄位型別標註裡的名稱。"""
+        result = extract_referenced_classes(self._SOURCE, {"ResponseResultCreaterandomRs"})
+        assert "class ResponseResultCreaterandomRs" in result
+        assert "class CreaterandomRs" in result
+        assert "GetExamRq" not in result
+        assert "GetExamRs" not in result
+
+    def test_empty_seed_names_returns_source_unchanged(self):
+        result = extract_referenced_classes(self._SOURCE, set())
+        assert result == self._SOURCE
+
+    def test_seed_names_with_no_intersection_returns_source_unchanged(self):
+        # 種子集合完全命中不到這個檔案定義的任何 class——代表呼叫端的
+        # 文字比對機制沒抓到線索，不是「這個檔案真的用不到任何東西」，
+        # 寧可不裁也不要錯砍掉模型可能需要的資訊。
+        result = extract_referenced_classes(self._SOURCE, {"SomethingElseEntirely"})
+        assert result == self._SOURCE
+
+    def test_keeps_module_level_imports(self):
+        result = extract_referenced_classes(self._SOURCE, {"GetExamRq"})
+        assert "from __future__ import annotations" in result
+        assert "from pydantic import BaseModel" in result
+
+    def test_output_is_valid_python(self):
+        result = extract_referenced_classes(self._SOURCE, {"ResponseResultCreaterandomRs"})
+        ast.parse(result)  # 不應拋出

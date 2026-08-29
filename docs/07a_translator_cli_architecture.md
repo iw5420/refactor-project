@@ -272,6 +272,7 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
 | `description` | `task.description` | 業務邏輯描述——**不是原始 Java 原始碼**，是 [P] 的 LLM 已經整合過 Java method 業務邏輯後產出的任務描述（見 06a 五章），translator-cli 不需要、也不會拿到逐字的 `.java` 檔案內容。00 三章「Java 原始邏輯」這個措辭在這裡具體落地成這份已經被 Claude 消化過的自然語言描述，不是文字檔案內容——這樣才符合 00 六章「Context 控制策略」控制 context 大小的目的：塞整段原始 Java 方法本文只會放大 context，不會提高正確率，[P] 產生 `description` 時已經把「該做什麼」萃取出來了 |
 | `context` | `task.context` | 補充依賴關係／邊界條件文字（06a 五章），現況 `implement_node.py` 尚未傳遞這個欄位，需要補上（見二章「與既有程式碼的介面異動」第 2 項） |
 | `context_files` | `task.target_files` | 這次呼叫要讀進 prompt 的檔案清單（含 `target_files[0]` 自己＋06a 七章組裝進來的 referenced 檔案／schemas／models），控制 context 大小的關鍵（00 六章）。**讀取容錯見七章「User / System Prompt 組裝」** |
+| `referenced_functions`（選填） | `task.referenced_functions` | `(file_path, class_name, function_name)` 三元組清單，對應 06a 七章「`referenced_functions`：函式層級抽取」（`docs/09b_bug_trace.md` #37 修法）——`context_files` 裡「因引用而拉進來」的檔案，只抽取這裡指定的函式，不整份帶入，見七章「User / System Prompt 組裝」新增小節 |
 
 ### 輸出契約
 
@@ -349,14 +350,20 @@ class FillResult:
     這段輸出時才會炸 SyntaxError——但那時候已經不在七章既有的重試觸發條件（「body_text 通不過
     ast.parse()」）涵蓋範圍內，因為 body_text 自己是能被 parse 的。因此必須在步驟 6 之後、
     步驟 7 之前就攔下，不能依賴步驟 10 的最終檢查
-6b. 若 body_tree.body 恰好只有一筆陳述式，且是 FunctionDef／AsyncFunctionDef，且其 .name ==
+6b. 若 body_tree.body 裡**任何一筆**陳述式是 FunctionDef／AsyncFunctionDef，且其 .name ==
     function_name → 視為「模型重複輸出函式簽名」（模型把整個函式簽名連同本體一起包進 delimiter，
     而不是只回傳本體陳述式）。這在 AST 層級是合法的巢狀函式定義，不會被步驟 6a 或後續的
-    ast.parse() 驗證攔到——替換後目標函式的 body 會變成「只宣告一個從未被呼叫的同名巢狀函式」，
-    隱含 return None，語法完全合法但語意錯誤，這個錯誤能通過步驟 10 的驗證，卻不是正確的實作。
+    ast.parse() 驗證攔到——替換後目標函式的 body 會變成「宣告一個從未被呼叫的同名巢狀函式」，
+    語法完全合法但語意錯誤，這個錯誤能通過步驟 10 的驗證，卻不是正確的實作。
     命中 → 視為與 delimiter 抽取失敗同一類「模型輸出格式錯誤」，觸發七章修正重試，不進入步驟 7、
     不嘗試自動剝離取 .body[0].body——保持跟 6a 一致的處理方式：格式錯誤一律回饋給模型自己修正，
-    不靜默接受再加工過的內容
+    不靜默接受再加工過的內容。**2026-08：判斷式原本寫成「body_tree.body 恰好只有一筆陳述式、
+    且是同名巢狀函式」，只在整段 body 只有這一筆時才觸發**——真實案例（`docs/09b_bug_trace.md
+    #52`）撞到 ⑦ Debug Agent 的 `fixed_body` 開頭夾帶了 5 行 import，同名巢狀函式定義只是
+    第 6 筆陳述式，`len(body)==1` 不成立，這道防線沒攔住，巢狀污染直接寫入磁碟。放寬成「不論
+    混在多少其他陳述式之間都算」才是目前這裡描述的版本；#52 也連帶暴露 `known_fill_failures`
+    以外的呼叫路徑（⑦ 的 `fixed_body`，見 10a 八章）跟 ⑤ 本地模型走的是同一段
+    `extract_body_statements()` 檢查，不是各自獨立的防線
 7. 目標函式節點.body = body_tree.body
 8. ast.fix_missing_locations(tree)
 9. new_source = ast.unparse(tree)
@@ -407,7 +414,7 @@ statement_2
 1. 六章 delimiter 抽取失敗（找不到 sentinel）
 2. 抽取出來的 `body_text` 通不過 `ast.parse()`（`SyntaxError`）
 3. `body_text` 能 `ast.parse()`，但解析出的陳述式清單是空的（六章步驟 6a「空本體」——delimiter 標記之間只有空白／換行，沒有任何陳述式）——這個情況單獨列成第三種觸發條件，不能只看「`body_text` 通不過 `ast.parse()`」就以為涵蓋了它：空字串本身是合法的 Python（等同空 module），`ast.parse()` 不會報錯，只有把這個空 body 塞進函式節點、重新 `ast.unparse()` 再 `ast.parse()` 之後才會炸，若不單獨攔，這個錯誤會晚兩步才被發現、而且繞過了這裡的重試機制，見六章步驟 6a 完整說明
-4. `body_text` 解析出的陳述式清單恰好只有一筆，且是與 `function_name` 同名的 FunctionDef／AsyncFunctionDef（六章步驟 6b「簽名重複輸出」——模型把整個函式簽名連同本體一起包進 delimiter，而不是只回傳本體陳述式）——這在 AST 層級是合法的巢狀函式定義，不會被上面兩種檢查攔到，需單獨判斷，見六章步驟 6b 完整說明
+4. `body_text` 解析出的陳述式清單裡任何一筆是與 `function_name` 同名的 FunctionDef／AsyncFunctionDef（六章步驟 6b「簽名重複輸出」——模型把整個函式簽名連同本體一起包進 delimiter，而不是只回傳本體陳述式；不限於「整段清單恰好只有這一筆」才算，見 `docs/09b_bug_trace.md #52` 放寬理由）——這在 AST 層級是合法的巢狀函式定義，不會被上面兩種檢查攔到，需單獨判斷，見六章步驟 6b 完整說明
 
 兩次重試仍然失敗（不論是同一種錯誤還是不同錯誤）→ 放棄，`FillResult(success=False, error=...)`，不無限重試——固定重試次數（而非無限重試）的理由跟 04a 的「一次性的固定延遲已經夠用」同構：這是扛過模型偶發輸出品質不穩的緩衝，不是要取代 ⑦ Debug Agent 那種「業務邏輯寫錯了」層級的修正機制。次數從最初的 1 次調整為 2 次，是接上真實 qwen2.5-coder:32b 後的實測校準（見上方表格）。
 

@@ -105,6 +105,21 @@ def commit_fill(
         raise TranslatorCliError(f"fill_function commit 失敗（task {task_id}）：{result.stderr.strip()}")
 
 
+def commit_file_fix(python_project_path: str, *, task_id: str, target_file: str) -> None:
+    """對應 `client.apply_file_fix()`（10a 八章「phase 2：檔案層級
+    修正」）：⑦ Debug Agent 給的修正若碰的是函式本體以外的內容（如
+    import 敘述），不是「填某個函式」，用跟 `commit_fill()` 不同的訊息
+    格式，讓 `git log` 能區分「⑤ 生成函式」跟「⑦ 直接修正檔案層級
+    內容」這兩種性質不同的變更。
+    """
+    _run_git(python_project_path, "add", target_file)
+    result = _run_git(
+        python_project_path, "commit", "-m", f"debug: {task_id} apply file-level fix in {target_file}"
+    )
+    if result.returncode != 0:
+        raise TranslatorCliError(f"apply_file_fix commit 失敗（task {task_id}）：{result.stderr.strip()}")
+
+
 def discard_file_changes(python_project_path: str, target_file: str) -> bool:
     """`commit_fill()` 失敗後的復原路徑用（見 `client.fill_function()`）：
     把 `target_file` 還原回目前 HEAD 的內容，撤銷這次失敗的 commit 之前
