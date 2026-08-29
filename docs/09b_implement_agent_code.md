@@ -116,23 +116,44 @@ _RELATIONSHIP_GAP_NOTICE = (
     "repository 查詢，或在這個函式內手動用外鍵欄位值另外查詢、自行組裝回傳"
     "結構。"
 )
+# 對應 09a 五章「缺口三」（docs/09b_bug_trace.md「反覆出現的翻譯模式
+# 錯誤」）：跟上面的 relationship 提示不同，任何層級的 task 都可能建構
+# ResponseResult／Result 回應，不分層級無條件疊加。
+_RESULT_FACTORY_INSTANCE_METHOD_NOTICE = (
+    "ResponseResult／Result 這類回應包裝類別（app/services/common_service.py）"
+    "的 ok()／error()／success() 等方法在 Python 端是 instance method（帶 self"
+    "，不是 Java 原始碼裡的 static 工廠方法），呼叫前必須先建立實例，例如 "
+    "ResponseResult().ok_2(data)、Result().success(data)——不要直接寫成 "
+    "ResponseResult.ok_2(data) 或 Result.success(data)，那樣在 Python 會因為"
+    "缺少 self 引數而拋出 TypeError。"
+    "如果這個 task 正是在實作 ResponseResult／Result 自己的 ok_2()／error_2()"
+    "／success()／failure() 這些方法本體，絕對不要在方法內部呼叫"
+    "「ResponseResult().ok_2(...)」或「self.error_2(...)」這種同名／同族方法"
+    "呼叫自己（會造成無窮遞迴，永遠不會返回，任何呼叫端都會撞"
+    "RecursionError）——正確做法是直接建立一個新實例、把欄位值設好後回傳，"
+    "例如 result = ResponseResult(); result.code = code; result.msg = msg; "
+    "result.data = data; return result（見 docs/09b_bug_trace.md #53 真實案例）。"
+)
 
 
 def _augment_task_io(task: TaskSpec) -> tuple[str, list[str]]:
-    """對應 09a 五章「疊加規則」：只對 services／repositories 層疊加，
-    routers 層原樣返回。不修改 task 本身（[P] 的權威輸出），只回傳疊加
-    後的 context／context_files 給呼叫端傳給 fill_function()。
+    """對應 09a 五章「疊加規則」：缺口一／二只對 services／repositories 層
+    疊加，routers 層不動；缺口三（`_RESULT_FACTORY_INSTANCE_METHOD_NOTICE`）
+    不分層級，無條件疊加給每一個 task。不修改 task 本身（[P] 的權威輸出），
+    只回傳疊加後的 context／context_files 給呼叫端傳給 fill_function()。
     """
     target_file = task["target_files"][0]
-    if not (target_file.startswith("app/repositories/") or target_file.startswith("app/services/")):
-        return task.get("context", ""), task["target_files"]
+    if target_file.startswith("app/repositories/") or target_file.startswith("app/services/"):
+        context_files = list(task["target_files"])
+        if _ENUMS_FILE not in context_files:
+            context_files.append(_ENUMS_FILE)
+        existing = task.get("context", "")
+        context = f"{existing}\n\n{_RELATIONSHIP_GAP_NOTICE}" if existing else _RELATIONSHIP_GAP_NOTICE
+    else:
+        context_files = task["target_files"]
+        context = task.get("context", "")
 
-    context_files = list(task["target_files"])
-    if _ENUMS_FILE not in context_files:
-        context_files.append(_ENUMS_FILE)
-
-    existing = task.get("context", "")
-    context = f"{existing}\n\n{_RELATIONSHIP_GAP_NOTICE}" if existing else _RELATIONSHIP_GAP_NOTICE
+    context = f"{context}\n\n{_RESULT_FACTORY_INSTANCE_METHOD_NOTICE}" if context else _RESULT_FACTORY_INSTANCE_METHOD_NOTICE
     return context, context_files
 
 
@@ -471,8 +492,12 @@ async def main():
 python_service/
 ├── __init__.py          # 對外匯出 PythonServiceContainer、ensure_reload_probe_infra 等
 ├── reload_probe.py       # WRAPPER_TEMPLATE、ensure_reload_probe_infra()
-└── process.py            # PythonServiceContainer：docker run 啟動、就緒判定、關閉
+├── process.py            # PythonServiceContainer：docker run 啟動、就緒判定、關閉
+├── java_properties.py    # 新增（10a／10b #46）：解析 Java application-{profile}.properties
+└── manager.py             # 新增（10a 八章）：_python_service 單例，見下方說明
 ```
+
+**這個套件的單例管理後來從 `implement_node.py` 下沉到獨立的 `manager.py`**（10a 八章「診斷資料改走 State，不是 `debug_agent/` 直接 import `implement_node`」）——本章以下 `_ensure_python_service_started()`／`_python_service` 相關程式碼片段是這個套件**最初**加入時的版本，`manager.py` 誕生後的目前實際架構、`_ensure_python_service_started()` 目前的簽名，以及新增的 `java_properties.py`（解析 Java 端 `application-{profile}.properties`，對應 `docs/09b_bug_trace.md` #46）完整程式碼，見 `10b_debug_agent_code.md` 五章「新增檔案：`python_service/manager.py`」——這裡不重複貼一份會漂移的副本，只維持本章其餘部分（`reload_probe.py`／`process.py`／五、六章的問題根因敘事）作為這個套件最初設計動機的完整記錄。
 
 ### `reload_probe.py`
 
@@ -600,7 +625,15 @@ RELOAD_PROBE_PATH = "/__reload_probe__"
 # 目標 Python 服務的技術棧已在 00 三章定案（FastAPI + SQLAlchemy）；
 # 容器內只安裝這個已知的最小基線集合。**這是刻意簡化，不是完整的依賴
 # 管理方案**——若目標專案還需要更多套件，見九章「已知限制」。
-BASELINE_PACKAGES = ("fastapi", "uvicorn[standard]", "sqlalchemy", "psycopg2-binary")
+#
+# `python-multipart` 是基線的一部分，不是「目標專案依賴」那條未解決的
+# 一般缺口：真實環境重跑才發現，任何 endpoint 只要簽名帶 File／Form
+# （multipart/form-data），FastAPI 在 import 階段就會直接 RuntimeError，
+# 讓整個 app.main 連 import 都失敗，容器完全起不來（不是這一個 endpoint
+# 壞掉）——這是 00 三章定案技術棧本身、只要用到檔案上傳就一定需要的
+# 套件，跟 psycopg2-binary 同一種「技術棧固定依賴」性質，見
+# docs/09b_bug_trace.md。
+BASELINE_PACKAGES = ("fastapi", "uvicorn[standard]", "sqlalchemy", "psycopg2-binary", "python-multipart")
 
 DOCKER_IMAGE = "python:3.12-slim"
 
@@ -614,6 +647,7 @@ class PythonServiceStartupTimeout(RuntimeError):
 class PythonServiceContainer:
     def __init__(
         self, *, python_project_path: str, base_url: str, database_url: str,
+        extra_env: dict[str, str] | None = None,
         container_name: str = "refactor_python_service",
         startup_timeout: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
         poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
@@ -622,6 +656,12 @@ class PythonServiceContainer:
         self.python_project_path = str(Path(python_project_path).resolve())
         self.base_url = base_url.rstrip("/")
         self.database_url = database_url
+        # 見 docs/09b_bug_trace.md #46：③ 決定「用環境變數」這個機制、
+        # 算出常數名稱（PythonStructure.config_env_vars），呼叫端
+        # （python_service/manager.py::ensure_started()）負責解析出實際
+        # 值（python_service/java_properties.py），這裡只負責機械把
+        # 已經解析好的 {常數名: 值} 對照表轉成額外的 -e 旗標。
+        self.extra_env = extra_env or {}
         self.container_name = container_name
         self.startup_timeout = startup_timeout
         self.poll_interval = poll_interval
@@ -635,6 +675,11 @@ class PythonServiceContainer:
         subprocess.run(["docker", "rm", "-f", self.container_name], capture_output=True, text=True)
 
         pip_install = " ".join(BASELINE_PACKAGES)
+        # 見 docs/09b_bug_trace.md #51：容器缺套件崩潰時完全沒有 log 線索
+        # 能直接看出這次到底裝了哪些套件，事後只能靠 docker logs 反查
+        # ——把即將安裝的完整套件清單記下來，之後再缺套件，第一時間就能
+        # 從這行 log 核對，不用再重新 docker logs 一次。
+        logger.info("PythonServiceContainer 即將安裝的基線套件：%s", pip_install)
         cmd = [
             "docker", "run", "-d", "--name", self.container_name,
             # 容器內的 127.0.0.1／localhost 指向容器自己，不是跑這個
@@ -647,6 +692,13 @@ class PythonServiceContainer:
             "-v", f"{self.python_project_path}:/srv", "-w", "/srv",
             "-p", f"{self._port()}:8000",
             "-e", f"DATABASE_URL={self._container_database_url()}",
+        ]
+        # 見 docs/09b_bug_trace.md #46：③ 掃出的 @Value 屬性注入環境變數，
+        # 依 self.extra_env 逐一附加成 -e 旗標。extra_env 為空（預設值）
+        # 時這裡完全不做事，docker run 指令跟修改前逐字相同。
+        for key, value in self.extra_env.items():
+            cmd += ["-e", f"{key}={value}"]
+        cmd += [
             DOCKER_IMAGE, "bash", "-c",
             f"pip install --quiet {pip_install} && "
             "uvicorn _reload_probe_wrapper:wrapper_app --reload --host 0.0.0.0 --port 8000",
@@ -658,11 +710,21 @@ class PythonServiceContainer:
         self._started = True
         if not self._poll_until_ready():
             diagnostics = self.diagnostics
+            # 見 docs/09b_bug_trace.md #51：容器啟動失敗時，docker logs
+            # 診斷輸出直接印進 orchestrator.log，不用再手動查容器。
+            logger.error(
+                "PythonServiceContainer 在 %.0f 秒內未能就緒，容器診斷輸出：\n%s",
+                self.startup_timeout, diagnostics,
+            )
             self.stop()
             raise PythonServiceStartupTimeout(
                 f"Python 服務容器在 {self.startup_timeout} 秒內未能就緒",
                 diagnostics=diagnostics,
             )
+        logger.info(
+            "PythonServiceContainer 就緒（container=%s, base_url=%s, extra_env keys=%s）",
+            self.container_name, self.base_url, sorted(self.extra_env),
+        )
 
     def _port(self) -> str:
         return str(urlparse(self.base_url).port or 8000)
@@ -852,7 +914,7 @@ excluded_cases: ["get_version_GET_api_general_version"]（正確排除，非失�
 
 ## 十、已知限制與待驗證事項
 
-- [ ] **容器內的依賴集合是刻意簡化，不是完整的依賴管理方案**：`PythonServiceContainer` 目前只安裝 `BASELINE_PACKAGES`（FastAPI／uvicorn／SQLAlchemy／psycopg2-binary，對應 00 三章已定案的技術棧），若目標專案實際還需要更多套件（如 alembic），容器會在 import 階段直接失敗——目標專案本身的依賴清單（`requirements.txt`）如何產生、如何餵給容器，目前完全沒有文件涵蓋，需要 05a／08a 或另一份操作文件補齊
+- [ ] **容器內的依賴集合是刻意簡化，不是完整的依賴管理方案**：`PythonServiceContainer` 目前只安裝 `BASELINE_PACKAGES`（FastAPI／uvicorn／SQLAlchemy／psycopg2-binary／`python-multipart`，見四章，`python-multipart` 是 2026-08-26 真實環境重跑才發現的必要基線套件，見 `docs/09b_bug_trace.md`），若目標專案實際還需要更多套件（如 alembic），容器會在 import 階段直接失敗——目標專案本身的依賴清單（`requirements.txt`）如何產生、如何餵給容器，目前完全沒有文件涵蓋，需要 05a／08a 或另一份操作文件補齊
 - [ ] **Docker 是新的環境前提，尚未寫進 00 五章「環境建立」**：目前只記錄在本文件與程式碼註解裡，00 五章目前完全沒有提到 Python 目標服務的啟動方式
 - [ ] **`SERVICE_READY_TIMEOUT_SECONDS` 正式預設值未定案**：程式碼目前仍是 `120` 秒／輪詢間隔 `2` 秒，第二輪重跑診斷用 300 秒才穩定不逾時（見九章），是否要把預設值正式調高、或改成依批次 task 數量動態計算，尚未決定
 - [ ] **`scaffold_skipped` 是否該讓整條 pipeline 提早 `give_up`**：留給 `10a_debug_agent_architecture.md`（待建立）評估，本次未變動

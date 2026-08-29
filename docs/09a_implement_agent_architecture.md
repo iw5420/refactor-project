@@ -193,7 +193,7 @@ scheduler.module_ready_for_verification(module) 為 True
 
 ## 五、`context`／`context_files` 補強：ORM `relationship()` 缺失提示與 `_enums.py`
 
-`06a_plan_agent_architecture.md` 七章的 `target_files` 組裝規則、`07a_translator_cli_architecture.md` 五章的 `fill_function()` 輸入契約，都只機械處理「檔案存不存在」層級的問題，沒有涵蓋兩個 08a 已知、但一直沒有文件真正接手的 prompt 內容缺口。**這兩項補強都只發生在 `services`／`repositories` 層**：06a 七章已經定案 `routers` 層方法不納入 `models`（改用 `schemas`），代表 routers 層本來就不該直接碰觸 ORM entity 或其欄位型別，兩項補強對它沒有意義。
+`06a_plan_agent_architecture.md` 七章的 `target_files` 組裝規則、`07a_translator_cli_architecture.md` 五章的 `fill_function()` 輸入契約，都只機械處理「檔案存不存在」層級的問題，沒有涵蓋三個已知、但一直沒有文件真正接手的 prompt 內容缺口。**前兩項補強只發生在 `services`／`repositories` 層**：06a 七章已經定案 `routers` 層方法不納入 `models`（改用 `schemas`），代表 routers 層本來就不該直接碰觸 ORM entity 或其欄位型別，兩項補強對它沒有意義；**第三項（缺口三）不分層級，`routers`／`services`／`repositories` 都要**，見下方。
 
 ### 缺口一：ORM `relationship()` 缺失
 
@@ -203,13 +203,35 @@ scheduler.module_ready_for_verification(module) 為 True
 
 08a 七章「Enum 欄位」定案 Enum class 一律渲染進單一共用檔案 `app/models/_enums.py`，**不落在任何 `models/{module}.py` 裡**。但 06a 七章 `target_files` 組裝規則表只提到「本 module 的 `models/{module}.py`」，從未提及 `_enums.py`——這代表任何一個 services／repositories 層的 task，只要牽涉到欄位型別是 Enum 的資料（狀態欄位在企業專案極常見，見 08a 四章「同時掃描 `EnumDeclaration`」），context 裡完全看不到這個 Enum 有哪些合法成員（如 `OrderStatus.PENDING`），qwen 只能瞎猜字面值，大幅提高型別與數值幻覺的機率。
 
+### 缺口三：`ResponseResult`／`Result` 這類回應包裝類別的 static／instance 落差（真實環境重跑才發現）
+
+`docs/09b_bug_trace.md`「反覆出現的翻譯模式錯誤」記錄了三個獨立真實案例：`exam_service.py::create_random()` 呼叫 `Result.ok(rs)`（無此方法，應為 `Result().success(rs)`）；`file_router.py::voice()`／`image()` 全部呼叫 `ResponseResult.ok_2(...)`／`ResponseResult.error_4(...)`（缺 `()`）。根因：Java 端 `ResponseResult<T>`／`Result<T>`（`app/services/common_service.py`，`09b_bug_trace.md #49` 的零 endpoint 模組）的 `ok()`／`error()`／`success()` 在 Java 原始碼裡是 `static` 工廠方法（可以直接 `ResponseResult.ok(x)` 呼叫），但④骨架生成階段（05a 四章「多載方法的處理」既有機制）並不區分 Java 的 `static`／instance 修飾詞，一律渲染成帶 `self` 的一般 instance method——⑤ 翻譯時若直接照抄 Java 原始碼的呼叫寫法，在 Python 端會因為缺少 `self` 引數拋出 `TypeError`，必須先實例化才能呼叫（`ResponseResult().ok_2(data)`）。
+
+這不是本文件要修正④骨架生成本身（保留 Java `static`／`@staticmethod` 對應是更完整的根治方案，但範圍已超出本次修正——見 `docs/09b_bug_trace.md`「先不動」的取捨），而是先用跟缺口一同樣的「固定提示」機制緩解：**跟缺口一／二不同，這個提示不分層級**——任何一層（`routers`／`services`／`repositories`）的 task 都可能建構 `ResponseResult`／`Result` 回應（`voice`／`image` 案例正是 `routers` 層），不像 relationship／Enum 缺口只在 `services`／`repositories` 導覽 ORM 資料時才會踩到。
+
+**2026-08-28 延伸出第二種、更嚴重的錯誤模式（見 `docs/09b_bug_trace.md #53`）**：上面談的是「呼叫端」漏打 `()`；真實重跑抓到 `common_service.py::ResponseResult.ok_2()`／`error_2()` 這兩個方法**本體自己**寫成 `return ResponseResult().ok_2(data)`——呼叫自己，無窮遞迴，任何呼叫端都會撞 `RecursionError`（且波及全域例外處理器 `exception_handlers.py::handle_all()`，因為它自己也呼叫 `ResponseResult().error(...)` 組裝錯誤回應，等於「回報錯誤」這個動作也一起崩潰）。這是完全不同的成因（方法本體自己寫錯，不是呼叫方式錯），但同屬「`ResponseResult`／`Result` 怎麼正確實作與使用」這個主題，因此直接延伸 `_RESULT_FACTORY_INSTANCE_METHOD_NOTICE`（不新增獨立常數）：新增一段提醒——若這個 task 正是在實作 `ok_2()`／`error_2()`／`success()`／`failure()` 這些方法本體，禁止在方法內部呼叫自己（或同族方法），必須直接建立新實例、設定欄位後回傳。這個提醒只能防止「未來重新生成」時再犯，這次已經生成、已經卡死整條 pipeline 的 `common_service.py`／`exception_handlers.py` 是直接人工比對 Java 原始碼修正的，不是靠這則提示自動修好。
+
+### 缺口四：每端點專屬 Pydantic 回應型別被誤當成 `ResponseResult` 呼叫（真實環境重跑才發現）
+
+`docs/09b_bug_trace.md #55`：③ 依 OpenAPI spec 為每個端點產生專屬回應 schema（`app/schemas/*.py` 的 `ResponseResultXxxRs`／`ResponseResultXxxRq`，純資料欄位的 Pydantic `BaseModel`，沒有任何方法），跟缺口三談的共用 `ResponseResult`／`Result`（`app/services/common_service.py`，有 `ok_2()`／`error_4()` 等工廠方法）是兩種不同性質的類別，但 ⑤ 翻譯時把「Java 端 `ResponseResult<T>` 呼叫慣例（先建實例再呼叫 `.ok_2()`）」無差別套用到這些型別化物件上——`ResponseResultLanguageRq().ok_2(...)` 這種寫法在 Python 端是 `AttributeError`（型別化物件根本沒有 `ok_2` 這個方法），不是缺口三那種「忘記加 `()`」的 `TypeError`。真實案例橫跨 `exam_router.py`（9 處）／`school_router.py`（7 處），只要一個 task 的回傳型別注解是型別化 schema、又需要組裝業務錯誤碼／成功回應，就可能踩到。
+
+跟這個問題同一批出現、但成因完全獨立的兩個相關缺口（同樣記在 #55／#56）：(1) 部分 `.error_4(ErrorCode.XXX)` 引用的錯誤碼名稱本身是幻覺（如 `ErrorCode.NO_DATA_FOUND`），Java 原始碼與 Python `CommonErrorCode`／`ExamErrorCode` 列舉裡都沒有這個名稱——這代表 ⑤ 有時連「這個業務情境該回哪個具體錯誤碼」都是憑感覺編的，不是照 Java 原始碼查出來的，缺口一／二／三的「固定提示」機制對這類問題無能為力（無法預先窮舉每個業務情境該用哪個錯誤碼常數）；(2) `school_router.py::grades()` 從錯誤的模組（`app.schemas.registration`）匯入了同名但不同 class identity 的 `ResponseResultGetAllGradeRs`——`school`／`registration` 兩個模組各自獨立生成了一份同名 schema（因為 Java 端剛好有兩個不同端點都叫「grades」），③ 各自產出本身沒錯，是 ⑤／④ 讓匯入端匯錯了模組，Pydantic v2 對巢狀 `BaseModel` 欄位做嚴格 class identity 檢查，同名不同源的物件會在執行期直接 `ValidationError`。
+
+**這個缺口目前只在已生成的程式碼上直接修正（比對 Java 原始碼逐一還原正確的類別／錯誤碼／匯入來源），沒有比照缺口一／二／三那樣補一段「固定提示」防止未來重新生成時再犯**——待決是否要開發、以及範圍多大：型別化 schema 該不該有工廠方法本身是一個設計選擇（也可以反過來讓④骨架階段替每個 `ResponseResultXxxRs` 產生對應的 `ok`／`error` classmethod，從根本上讓 ⑤ 的既有呼叫慣例直接可用，不需要靠提示糾正呼叫方式）——這條路線改動範圍比疊加提示大，留待之後評估。
+
 ### 疊加規則：`_run_one_task()` 呼叫 `fill_function()` 前補強，不修改 `task_list`
 
-`_run_one_task()` 呼叫 `fill_function()` 之前，先依這個 task 的 `target_files[0]` 判斷所屬層級（路徑前綴 `app/repositories/` → repositories、`app/services/` → services、其餘 → routers，跟 06a 四章「module 歸屬判定」用的是同一種路徑前綴判斷方式，只是這裡判斷的是層級不是 module）。只有 services／repositories 層才疊加：`context_files` 若還沒包含 `app/models/_enums.py` 就加入；`context` 附加上缺口一描述的固定提示文字（若 `task.context` 原本非空，接在後面，中間空一行分隔；原本是空字串就直接整段替換）。這一層疊加**不修改 `task` 本身**——`task_list` 是 [P] 的權威輸出，⑤ 不應該就地竄改，只在傳給 `fill_function()` 的 `context`／`context_files` 這兩個引數上疊加。固定提示文字的內容：
+`_run_one_task()` 呼叫 `fill_function()` 之前，先依這個 task 的 `target_files[0]` 判斷所屬層級（路徑前綴 `app/repositories/` → repositories、`app/services/` → services、其餘 → routers，跟 06a 四章「module 歸屬判定」用的是同一種路徑前綴判斷方式，只是這裡判斷的是層級不是 module）。只有 services／repositories 層才疊加缺口一／二：`context_files` 若還沒包含 `app/models/_enums.py` 就加入；`context` 附加上缺口一描述的固定提示文字（若 `task.context` 原本非空，接在後面，中間空一行分隔；原本是空字串就直接整段替換）。這一層疊加**不修改 `task` 本身**——`task_list` 是 [P] 的權威輸出，⑤ 不應該就地竄改，只在傳給 `fill_function()` 的 `context`／`context_files` 這兩個引數上疊加。固定提示文字的內容：
 
 > 本專案的 SQLAlchemy model（`app/models/{module}.py`）只有外鍵純量欄位，沒有 `relationship()` 物件導覽屬性（見 `08a_scaffold_agent_architecture.md` 八章）。禁止用「`.關聯屬性`」的方式取得關聯物件（例如 `order.user` 這種寫法一定會在執行期拋出 `AttributeError`）；需要關聯資料時，改用額外的 repository 查詢，或在這個函式內手動用外鍵欄位值另外查詢、自行組裝回傳結構。
 
 **`_enums.py` 無條件加入，不做存在性判斷**：比照 06a 七章「`models/{module}.py` 為什麼是無條件加入」的既有慣例——這個專案是否有任何 Enum 欄位、因此這個檔案存不存在，`_run_one_task()` 這一層無法（也不需要）預先判斷，缺檔案的情況交給 07a 七章「`context_files` 讀取容錯」既有機制（`FileNotFoundError` 記警告、跳過，不中斷任務），不是新規則。
+
+**缺口三的提示不分層級、無條件疊加給每一個 task**（在缺口一／二的 if/else 分支之外另外附加，兩者互不影響）：
+
+> `ResponseResult`／`Result` 這類回應包裝類別（`app/services/common_service.py`）的 `ok()`／`error()`／`success()` 等方法在 Python 端是 instance method（帶 `self`，不是 Java 原始碼裡的 `static` 工廠方法），呼叫前必須先建立實例，例如 `ResponseResult().ok_2(data)`、`Result().success(data)`——不要直接寫成 `ResponseResult.ok_2(data)` 或 `Result.success(data)`，那樣在 Python 會因為缺少 `self` 引數而拋出 `TypeError`。
+
+原本 `task.context` 若已經因為缺口一被替換／附加，這則提示接在後面（同樣空一行分隔）；`task.context` 原本就是空字串、且不屬於 services／repositories 層（因此缺口一／二完全不適用）時，這則提示就是 `context` 唯一的內容。
 
 ---
 
@@ -303,6 +325,18 @@ already_failed=set(state.get("failed_tasks", [])),   # ← 問題所在
 **這個修正同時解決兩件事**：(1) 翻譯品質問題造成的失敗，`debug → implement` 重入後會被重新排程，不再永久卡死；(2) scaffold 缺口造成的失敗，不會在每一輪都被重新送進 `fill_function()`、浪費一次本地模型呼叫——`scaffold_gap_task_ids` 每輪重算的結果必然包含它，`already_failed` 因此持續排除它，直到（理論上不會發生，因為 `scaffold` 不在重試迴圈裡）`skipped_interfaces` 本身改變為止。
 
 **這個修正不影響 `task_done`（成功）的正確性，也不影響 regression 偵測**：`check_upstream_regression()` 只依賴 `module_owned_files`（從 `task_list` 靜態算出，與 task 成敗無關）與當下的 `module_status`，跟 `task_failed` 集合無關。
+
+### 本節後續被 10a 推翻的部分：`fill_failed` 不該「每輪都當新 task 重排」
+
+**這是本文件的正式修正，補記一個真實環境重跑才發現、且橫跨 09a／10a 兩份文件才看得出全貌的落差**：上面「這個修正同時解決兩件事」第 (1) 點——「翻譯品質問題造成的失敗，`debug → implement` 重入後會被重新排程」——在 10a 落地、⑦ Debug Agent 開始接手除錯迴圈之後，**已經不再是正確的行為**，但這一節從未回頭修正。原本的推理成立的前提是：這一節定案時（09a 階段）還沒有 ⑦ 可以接手，「重新排給 ⑤ 本地模型再試一次」是當時唯一可用的重試手段，`scaffold_gap_task_ids`／`fill_failed` 的區分只是為了不要把 scaffold 缺口也白白重排。10a 後來訂下「⑤ 的本地模型一旦進入除錯迴圈就完全退出」（見 10a 一章、八章），這條原則邏輯上必然涵蓋 `fill_failed`——但 10a 落地時只顧著接上「⑦ 產生 `fixed_body` 時如何繞過本地模型」（`force_reschedule()`），沒有回頭檢查「`fill_failed` 沒被 ⑦ 特別處理時，排程器預設還是會怎麼做」，兩份文件的決策因此沒有真正對齊。
+
+**真實後果**：2026-08-27 真實環境重跑（run_id `20260827_015722_639ebd`）證實，`app/services/exam_service.py` 底下 6 個 task 連續 3 輪、每輪最多 3 次 attempt，9/9 全部透過 Ollama 重試、全部失敗——不是因為 ⑦ 沒被要求處理它們（10a 四章另有一條獨立修正處理這一半），是因為**排程器每一輪重建時，只要這個 task_id 不在 `scaffold_gap_task_ids` 裡，就會被當成全新、可以再排給 ⑤ 的 task**，跟 ⑦ 那一輪到底有沒有分析到它完全無關——即使 10a 那條修正生效、⑦ 完全不管這個 task，排程器照樣會把它送回 Ollama。
+
+**修正**：`already_failed` 引數改傳 `scaffold_gap_task_ids | fill_failed_task_ids`（`fill_failed_task_ids` 是 `state["task_failures"]` 裡 `reason=="fill_failed"` 的 task_id 集合，逐輪重算，反映到目前為止累積的翻譯失敗歷史）——`fill_failed` 從此比照 `scaffold_gap` 同一種「機械永久排除、只由更高權限機制解除」的處理方式；唯一能讓它重新被排到的路徑是 `force_reschedule()`（10a 八章，只由 ⑦ 產生的 `pending_fixed_bodies` 觸發）。**這不是走回頭路、回到本節開頭「`state["failed_tasks"]` 永久排除」那個被推翻的舊版本**：差別在於解除排除的權限——舊版本沒有任何機制能讓一個失敗的 task 重新被排到；這次的修正把「解除排除」的權限從「排程器每輪自動重試」收斂成「只有 ⑦ 明確給出修正時才解除」，跟 `scaffold_gap_task_ids` 目前的既有處理方式（永久排除、無解除機制，因為 scaffold 缺口本來就不會自己變好）是同一個光譜上的兩個點，不是同一個 bug 重演。
+
+**這條修正在時序上天然只影響「已經進入除錯迴圈」的輪次，不需要額外的條件判斷**：`fill_failed_task_ids` 直接從 `state["task_failures"]` 算出——一個 task 在還沒被嘗試過的第一輪，`task_failures` 裡不會有它的記錄，`fill_failed_task_ids` 自然不包含它，排程行為與修正前完全相同（正常送 ⑤ 本地模型）；只有在它**已經**失敗過、留下記錄之後，才會被這條規則排除，不需要另外判斷「這是不是第一輪」。
+
+完整設計見 `10a_debug_agent_architecture.md` 四章「`known_fill_failures`：一旦失敗過一次，不再退回本地模型」；程式碼見 `graph/nodes/implement_node.py::run()`（`fill_failed_task_ids` 計算）；單元測試見 `tests/graph/test_implement_node.py::TestFillFailedTasksExcludedFromLocalModelRetry`。
 
 **`already_failed` 目前只餵 `scaffold_gap_task_ids`，不代表這是唯一能餵給它的東西**：`ModuleScheduler.__init__` 收的是一個普通 `set[str]`，不是專屬於「scaffold 缺口」這個概念的型別——未來若 10a（⑦ Debug Agent）判斷某個 task 屬於另一種永久性、重試也無法修復的失敗（如需要一個目前拿不到的外部依賴），要讓排程器同樣永久跳過它，只需要在建構 `already_failed` 時把 `scaffold_gap_task_ids` 跟 10a 那時候定義的任何一個 task id 集合取聯集即可，`ModuleScheduler` 這一層完全不需要改動。這裡不預先新增一個 `permanently_failed_tasks` 之類的 `RefactorState` 欄位——10a 目前還沒建立，這種永久失敗判斷該用什麼資料形狀（單一 task 粒度？附原因？跟 `task_failures` 合併還是分開？）都還沒有答案，09a 猜一個形狀出來，等 10a 真正設計時多半要重改，不如等 10a 定案時再由那份文件決定怎麼併入這個既有的聯集點。
 
