@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "recorded_at": "2026-09-04T05:19:29.797680Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "GET",
+    "path": [
+      "api",
+      "registration",
+      "exam",
+      "schools"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": {
+        "school": [
+          "北投國小",
+          "萬里國小",
+          "淡水國小"
+        ]
+      }
+    }
+  }
+}

@@ -18,7 +18,9 @@ with open("config/harness.yaml", encoding="utf-8") as f:
     HARNESS_CONFIG = yaml.safe_load(f)
 
 TABLES = HARNESS_CONFIG["databases"]["test"]["tables_to_truncate"]
-MAX_RETRY = 3  # 已定案（見 00 九、State 表格 retry_count）
+MAX_RETRY = 1  # 使用者決定：能修就該在第一輪修出來，第二、三輪的邊際效益太低，
+# 不值得多花那些 LLM 呼叫額度；改壞的話，翻譯品質問題該去強化 ⑤／⑦ 第一輪
+# 本身的機制，不是靠多跑幾輪碰運氣（原值 3，見 docs/refactor_bug_trace.md #11）
 
 # Java 服務位置不放進 RefactorState，直接讀 .env
 JAVA_BASE_URL = os.environ["JAVA_BASE_URL"]

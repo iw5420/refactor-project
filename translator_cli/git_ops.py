@@ -6,17 +6,35 @@
 比照 `refactor_harness/core/postman_runner.py` 既有的 `run_newman()`
 寫法，跨平台一致（見 01 八章「跨平台注意事項」`shell=False` 建議）。
 
-**不需要鎖機制**：見 07a 八章「決策：每個 task 一個 commit，不需要鎖
-機制」——`MODEL_SEMAPHORE(1)`（`implement_node.py`）與 scaffold/implement
-的圖結構先後順序，已經從結構上保證任何時刻最多一個呼叫端在寫入這個
-git repo，這裡不重複實作一層檔案鎖。
+**寫入段用細粒度鎖序列化**（見 07a 八章「決策：每個 task 一個 commit，
+寫入段用細粒度鎖序列化」）：雙後端下，Claude 路徑刻意讓模型呼叫可以
+平行（見 07a 七章），因此「系統結構上任何時刻最多一個 `fill_function()`
+呼叫在跑」不成立——多個 Claude task 可能同時執行到「讀檔→AST替換→
+寫入→commit」這段，寫同一個 git repo 有真實 race condition 風險（06a
+三章允許同一檔案對應多個 task，如同一個 router 檔案有多個端點函式）。
+`WRITE_LOCK` 是這段的細粒度鎖：`client.py::fill_function()` 在組
+prompt、呼叫模型取得 `body_text`（不持鎖，qwen／Claude 皆然）之後、
+開始讀檔／AST 替換／寫入／commit（本模組其餘函式）之前 `await
+WRITE_LOCK.acquire()`，全程持鎖到 commit 完成才釋放——這段快（次秒
+等級），序列化不影響整體吞吐量。
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 from translator_cli.exceptions import TranslatorCliDirtyWorkingTreeError, TranslatorCliError, TranslatorCliNotGitRepoError
+
+logger = logging.getLogger(__name__)
+
+# 見上方模組 docstring「寫入段用細粒度鎖序列化」。不分 backend、不分
+# generate_scaffold()／fill_function()，任何時刻只有一個呼叫在動這個
+# git repo 的寫入段。
+WRITE_LOCK = asyncio.Lock()
 
 
 def _run_git(python_project_path: str, *args: str) -> subprocess.CompletedProcess:
@@ -25,10 +43,105 @@ def _run_git(python_project_path: str, *args: str) -> subprocess.CompletedProces
     )
 
 
+def reset_python_project_dir(python_project_path: str, run_id: str) -> Path | None:
+    """對應 docs/refactor_bug_trace.md #28／#29：`python_project_path`
+    這個生成專案目錄過去是「每一輪 pipeline 重跑都沿用同一份、只手動
+    `git init` 過一次」，導致 Reduce 每輪對模組切法／命名的判斷一旦跟
+    上一輪不同，上一輪產生、這一輪已經不需要的舊檔案會原封不動留在
+    目錄裡（`write_files()` 只會寫入這一輪需要的檔案，從不刪除任何
+    既有檔案）——真實案例：`general_router.py`／`app/models/candidate.py`
+    等上一輪的殘留檔案，跟這一輪的 `school_router.py`／`app/models/
+    exam.py` 各自宣告同一張資料表，真實觸發 `sqlalchemy.exc.
+    InvalidRequestError: Table 'exam_component_config' is already
+    defined`。
+
+    修法（跟使用者確認過的方向）：每輪 pipeline 開始前，若
+    `python_project_path` 已存在，整個改名成帶這輪 `run_id` 的備份
+    資料夾（例如 `exam-platform-api.bak-20260905_161715_4b2116`）
+    ——**不刪除**，上一輪的完整內容原封不動保留在備份資料夾裡，事後
+    要拿回某個檔案直接從備份資料夾複製過來即可；接著建立一個全新、
+    空的資料夾並執行 `git init`，確保這一輪絕對看不到任何上一輪殘留
+    的檔案，也不需要使用者每輪開始前手動介入。
+
+    命名沿用 `common/run_context.py::new_run_id()` 的既有格式（呼叫端
+    直接傳入同一個 `run_id`，不在這裡另外呼叫一次或自己組時間戳記）——
+    這個備份代表的是「這一輪開始之前的舊內容」，用**這一輪**的 run_id
+    命名，跟其他所有 log／report 用同一個 run_id 互相對應的既有慣例
+    一致，方便事後比對是哪一輪造成了這次改名。
+
+    回傳這次建立的備份資料夾路徑（`python_project_path` 本來就不存在、
+    沒有東西可備份時回傳 `None`）——對應 docs/refactor_bug_trace.md
+    #31：呼叫端（`main.py`）如果這一輪 pipeline 整個失敗（連
+    `write_run_report()` 都沒執行到），需要這個路徑呼叫
+    `rollback_python_project_dir()` 把備份還原回來，不能讓一個半成品的
+    新目錄取代上一輪的真實產物。
+    """
+    path = Path(python_project_path)
+    backup_path: Path | None = None
+    if path.exists():
+        backup_path = path.with_name(f"{path.name}.bak-{run_id}")
+        logger.warning(
+            "%s 已存在（上一輪的殘留內容，見 docs/refactor_bug_trace.md "
+            "#28／#29）——整個改名成 %s 保留，不刪除；這一輪重新建立一個"
+            "全新的空目錄",
+            python_project_path, backup_path,
+        )
+        path.rename(backup_path)
+    path.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(["git", "init"], cwd=str(path), capture_output=True, text=True, encoding="utf-8")
+    if result.returncode != 0:
+        raise TranslatorCliError(f"{python_project_path} 的 git init 失敗：{result.stderr.strip()}")
+    return backup_path
+
+
+def rollback_python_project_dir(python_project_path: str, backup_path: Path | None) -> None:
+    """對應 docs/refactor_bug_trace.md #31：這一輪 pipeline 如果整個
+    crash（連 `write_run_report()` 都沒執行到，例如真實案例
+    `20260906_060030_4019f4` 的 API 額度不足），代表
+    `reset_python_project_dir()` 這次建立的新目錄只是半成品，不該留著
+    取代上一輪的真實產物，也不該讓下一輪把這個半成品又搬進備份堆、
+    真正有意義的舊產物反而被越埋越深。`main.py` 在最外層 catch 到例外時
+    呼叫這裡：直接刪掉這次的半成品新目錄，若這一輪有把上一輪內容搬進
+    備份（`backup_path` 非 `None`）就改名還原回 `python_project_path`，
+    下一輪重新開始時看到的仍是上一輪的真實產物；`backup_path` 是
+    `None` 代表這一輪開始前本來就沒有東西可備份，只需要刪掉半成品，
+    沒有東西可還原。
+
+    對應真實案例 `20260906_152648_d36540`：這裡原本直接對半成品新目錄
+    `shutil.rmtree()`，在 Windows 上遇到剛 `git init` 產生的 `.git`
+    內部檔案短暫的作業系統層級鎖定，丟出 `PermissionError:
+    [WinError 5]`——若在還原備份「之前」就失敗，會讓真正有價值的備份
+    留在原地沒被還原，`python_project_path` 卻已經被刪到一半，兩邊都
+    是壞狀態。改成：先把半成品新目錄改名讓出 `python_project_path`
+    這個路徑（改名是原子操作，不會半途而廢），還原備份，最後才盡力
+    刪除改名後的半成品殘骸——刪不掉只記警告，不影響前面已經完成的
+    還原結果。
+    """
+    path = Path(python_project_path)
+    half_finished_path: Path | None = None
+    if path.exists():
+        half_finished_path = path.with_name(f"{path.name}.rollback-tmp-{uuid.uuid4().hex[:8]}")
+        path.rename(half_finished_path)
+    if backup_path is not None and backup_path.exists():
+        backup_path.rename(path)
+    if half_finished_path is not None:
+        try:
+            shutil.rmtree(half_finished_path)
+        except OSError as exc:
+            logger.warning(
+                "刪除半成品目錄 %s 失敗（不影響前面的還原結果，"
+                "見 docs/refactor_bug_trace.md #42）：%s",
+                half_finished_path, exc,
+            )
+
+
 def ensure_git_repo(python_project_path: str) -> None:
     """對應 07a 二章「一次性前置準備」：`generate_scaffold()` 執行前
     檢查目標目錄是不是一個 git repo，不是則直接中止並回報明確錯誤——
-    這是輸入端環境沒準備好，不是可以自動補救的情況。
+    這是輸入端環境沒準備好，不是可以自動補救的情況。**這個檢查現在
+    理論上不會再失敗**：`main.py` 在 `graph.ainvoke()` 之前已經先呼叫
+    `reset_python_project_dir()` 確保目標目錄一定是全新 `git init` 過的
+    空目錄，這裡繼續保留這個檢查是防禦性的，不是因為預期還會踩到。
 
     不另外檢查目錄是否存在：`git -C {不存在的路徑}` 本身就會乾淨地
     失敗（`fatal: cannot change to '...': No such file or directory`，

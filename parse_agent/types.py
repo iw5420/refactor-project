@@ -88,6 +88,9 @@ class ClassInfo:
     imports: list[str] = field(default_factory=list)  # 這個檔案 import 的簡單類別名稱（非 wildcard、非 static），見 call_graph.py _extract_project_imports()——補足欄位/呼叫圖都解析不到的依賴（靜態呼叫、方法參考等），供 grouping.py controller_dependency_closure() 使用
     annotations: list[str] = field(default_factory=list)  # class 上所有 annotation 名稱（不只 stereotype），供 grouping.py 判斷是否為純資料類別（@Entity/@Data/@Getter/@Setter 等）
     uses_dynamic_query_signal: bool = False  # 這個檔案是否 import 了已知會承載動態查詢邏輯的型別（如 org.springframework.data.jpa.domain.Specification），見 call_graph.py _uses_dynamic_query_signal()
+    is_self_returning_static_factory: bool = False  # 這個 class 是不是「自我回傳靜態工廠」模式（如 ResponseResult<T>/Result<T> 的 ok()/error()/success()/failure()，或 UserProfileRs.fromEntity()）：至少一個 static 方法宣告回傳型別是自己。比類別名稱比對更精準的結構訊號，見 call_graph.py::_is_self_returning_static_factory()。對應 docs/refactor_bug_trace.md #38：原本要求 class 本身宣告泛型型別參數（欄位原名 is_generic_response_wrapper），但真實案例 UserProfileRs（非泛型 DTO）證明「必須泛型」只是多餘的額外限制，真正可靠的訊號只有「有 static 方法回傳自己」——已核對整個 Java 專案，拿掉泛型限制後不會誤判任何其他類別
+    is_utils_class: bool = False  # 這個 class 的 package 是否落在 xxx.utils 底下（如 CollectionUtil／CodeUtil 這類純靜態工具類），見 call_graph.py::_is_utils_package()。對應 docs/refactor_bug_trace.md #15：這類靜態工具類呼叫（ClassName.staticMethod()）不透過欄位，_resolve_qualifier_string() 既有的兩個特例（uses_dynamic_query_signal／is_self_returning_static_factory）都不涵蓋，需要第三個結構訊號才能讓呼叫圖看得到這條呼叫關係
+    jpa_base_entity: str | None = None  # 這個 interface 若繼承了 Spring Data 基底介面（JpaRepository/CrudRepository/PagingAndSortingRepository），這裡存它的 entity 型別簡單名稱；沒有繼承則為 None。見 common/jpa_base_repository.py::detect_jpa_base_entity()。對應 docs/refactor_bug_trace.md #16：examRepository.findAll() 這類繼承來、從未顯式宣告的方法呼叫，靠這個欄位讓呼叫圖能合成一條指向 Python 端 BaseRepository 對應方法的參考座標，不需要窮舉每個 repository 該有哪些方法
 
 
 @dataclass

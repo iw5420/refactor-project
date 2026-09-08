@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from common.java_type_mapping import _GENERIC_RE, camel_to_snake, map_java_type
+from common.java_type_mapping import _GENERIC_RE, _SIMPLE_JAVA_TYPES, camel_to_snake, map_java_type
 from common.openapi_ref_resolver import resolve_refs
 from design_agent.types import JavaMethodSignature, JavaParam, UncoveredParam
 from graph.state import ParamSpec
@@ -25,6 +25,11 @@ __all__ = ["camel_to_snake", "map_java_type"]  # 供 `type_mapping.xxx` 既有�
 
 
 _OPENAPI_SCALAR_TYPE = {"integer": "int", "number": "float", "string": "str", "boolean": "bool"}
+
+# 對應 docs/refactor_bug_trace.md #41：extract_schema_fields() 判斷一個
+# 裸 object schema 是「真的沒有更多資訊」還是「帶著看不懂的其他線索」
+# 時，這幾個鍵不算「線索」——只是敘述性中繼資料，不影響型別本身的判斷。
+_NON_STRUCTURAL_SCHEMA_KEYS = {"type", "description", "example", "nullable", "title"}
 
 
 def openapi_type_to_python(schema: dict) -> str:
@@ -41,6 +46,35 @@ def openapi_type_to_python(schema: dict) -> str:
     openapi_ref_resolver.resolve_refs()` 把巢狀 `$ref` 展開完才判斷，
     展開後巢狀物件只剩 `type: "object"`，沒有名稱可用，只能退回不合法
     的 `"object"` 字面字串。
+
+    **`type: "object"` 帶 `additionalProperties` 時是 OpenAPI 表示 Map／
+    dict 型別的標準寫法，要優先判斷**（對應 docs/refactor_bug_trace.md
+    #40）：真實案例 `GetAllExamRs.allExams` 對應 Java `Map<String,
+    List<ExamkindEntity>>`，springdoc 產生的 schema 是 `{"type":
+    "object", "additionalProperties": {"type": "array", "items":
+    {"$ref": ...}}}`，`additionalProperties` 才是真正的 value 型別，不是
+    隨便一個可以忽略的欄位。修復前這裡直接落到最後一行
+    `return schema.get("title") or schema_type or "Any"`，沒有 `title`
+    時回傳字面字串 `"object"`——這個字串看起來像合法的型別註記，實際上
+    完全不做型別檢查，⑤ 看到這種「型別隨便」的欄位會合理但錯誤地推論
+    「不需要把 entity 轉成 schema 物件」，直接把原始 ORM entity 塞進去，
+    序列化階段才真正壞掉（真實案例：`get_all()` 整個 `data` 變成
+    `null`）。**有 `additionalProperties` 且沒有 `properties`（代表這是
+    Map，不是固定形狀物件）時，正確轉成 `dict[str, V]`**；其餘 object
+    情況（沒有 additionalProperties，可能有也可能沒有 title）維持原本
+    退回 `title`／裸型別字串的既有寬容行為——**這個函式本身刻意不對
+    「猜不出來」的情況 raise**：它同時服務 `_classify_params()`／
+    `resolve_api_boundary_signature()` 這條「參數分類」呼叫路徑，那裡
+    對 `object` 這個 fallback 值是已知、已測試、刻意容忍的合法結果
+    （見 `TestMultipartFileBodyParam::test_non_multipart_body_param_
+    unaffected`：一般 JSON request body 沒有更精確的 schema 資訊時，
+    回傳裸 `"object"` 本來就是預期行為，呼叫端只是要知道「這個參數是
+    body」，不需要精確型別）。真正會被這種裸 `"object"` 型別害到的是
+    schema 欄位宣告這條路徑（`extract_schema_fields()`），那裡才會把
+    這個字串直接當成 Pydantic 欄位型別寫進成品——「遇到猜不出來的
+    object 就直接失敗」這個更嚴格的規則放在 `extract_schema_fields()`
+    自己身上判斷，不要放在這個共用函式裡，才不會誤傷參數分類這條路徑
+    既有、已測試過的容忍行為。
     """
     ref = schema.get("$ref")
     if isinstance(ref, str):
@@ -48,6 +82,17 @@ def openapi_type_to_python(schema: dict) -> str:
     schema_type = schema.get("type")
     if schema_type == "array":
         return f"list[{openapi_type_to_python(schema.get('items', {}))}]"
+    if schema_type == "object":
+        additional_properties = schema.get("additionalProperties")
+        if isinstance(additional_properties, dict) and "properties" not in schema:
+            value_type = openapi_type_to_python(additional_properties)
+            logger.info(
+                "openapi_type_to_python()：object schema 帶 additionalProperties"
+                "（無 properties），判定為 Map，轉成 dict[str, %s]（見"
+                " docs/refactor_bug_trace.md #40）：%s",
+                value_type, schema,
+            )
+            return f"dict[str, {value_type}]"
     if schema_type in _OPENAPI_SCALAR_TYPE:
         return _OPENAPI_SCALAR_TYPE[schema_type]
     return schema.get("title") or schema_type or "Any"
@@ -123,6 +168,11 @@ def _classify_params(
     判斷。這個啟發式被觸發時會記一筆 `logger.warning`（含
     `signature_key`），供接上真實專案後統計觸發比例，判斷這個保守假設
     是否需要升級。
+
+    **`MultipartFile` 搭配多個 `@RequestParam` 的 multipart 端點**（對應
+    docs/refactor_bug_trace.md #20）：這種端點剩餘參數通常不只一個（檔案
+    本身 + 好幾個一般欄位），上面「剩餘參數剛好只有一個」的啟發式不會
+    觸發，改在 `remaining` 迴圈之後另外處理——見函式尾端。
     """
     resolved_operation = resolve_api_boundary(operation, openapi_spec)
     path_query_by_name = {
@@ -151,16 +201,61 @@ def _classify_params(
             )
         body_param = by_type[0] if by_type else (remaining[0] if len(remaining) == 1 else None)
         if body_param is not None:
-            # 型別一律用 openapi_type_to_python() 在**未展開**的
-            # requestBody schema 上算（見 _first_media_schema()），不是
-            # 直接沿用 body_schema_name 這個裸名稱——body_schema_name
-            # 若是陣列包裝（見 schema_name_for() docstring「陣列包裝的
-            # 具名 schema 也算」）只帶 items 的類別名稱，直接當型別字串
-            # 會弄丟 list[...] 容器語意；openapi_type_to_python() 才會
-            # 正確處理陣列，回傳 "list[UserDto]" 而不是 "UserDto"。
-            body_type = openapi_type_to_python(_first_media_schema(request_body_content))
+            # docs/refactor_bug_trace.md #7：Spring 的 MultipartFile 參數
+            # springdoc 幾乎不會產生具名 schema（multipart/form-data 的
+            # requestBody 常常是 inline object、沒有 $ref／title），上面
+            # 的型別名稱比對必然落空、退回「唯一剩餘參數」啟發式，這裡若
+            # 再照舊呼叫 openapi_type_to_python() 去猜，schema 給不出
+            # 名稱時只能吐出裸字串 "object"。Java 型別本身才是可靠依據：
+            # Spring MVC 框架裡「這是檔案上傳」只會宣告成 MultipartFile
+            # 這個型別，跟這個方法叫什麼名字、路徑長什麼樣無關，不需要
+            # 靠 endpoint 名稱／參數名稱猜語意。命中就直接對應 FastAPI
+            # 的 UploadFile，不再嘗試從 openapi schema 算型別。
+            if _simple_type_name(body_param.java_type) == "MultipartFile":
+                body_type = "UploadFile"
+            else:
+                # 型別一律用 openapi_type_to_python() 在**未展開**的
+                # requestBody schema 上算（見 _first_media_schema()），不是
+                # 直接沿用 body_schema_name 這個裸名稱——body_schema_name
+                # 若是陣列包裝（見 schema_name_for() docstring「陣列包裝的
+                # 具名 schema 也算」）只帶 items 的類別名稱，直接當型別字串
+                # 會弄丟 list[...] 容器語意；openapi_type_to_python() 才會
+                # 正確處理陣列，回傳 "list[UserDto]" 而不是 "UserDto"。
+                body_type = openapi_type_to_python(_first_media_schema(request_body_content))
             covered.append((body_param, ParamSpec(name=camel_to_snake(body_param.name), type=body_type)))
             remaining = [p for p in remaining if p is not body_param]
+
+    # 對應 docs/refactor_bug_trace.md #20：Spring 多個 @RequestParam 逐一
+    # 宣告的 multipart 端點（如 FileController.voice()：4 個字串參數 +
+    # 1 個 MultipartFile，不是單一 DTO body），openapi 不會把這些欄位放進
+    # `parameters`（不是 path/query），上面的 requestBody 邏輯又只在
+    # 「剩餘參數剛好只有一個」時才嘗試判定 body 參數——5 個剩餘參數完全
+    # 不會觸發，全部原封不動留給 `find_uncovered_framework_params()` 交
+    # 六章 LLM 逐一亂猜型別，猜出的其餘欄位維持裸 str，FastAPI 因此把它們
+    # 當 query parameter 解析，真實 multipart 請求被判定缺必填參數。
+    #
+    # 這裡比照上面 `MultipartFile` → `UploadFile` 同一種「Java 型別本身
+    # 就是可靠依據，不需要靠名稱猜語意」的既有原則：`remaining` 裡只要
+    # 找得到一個 `MultipartFile`，同一組 `@RequestParam` 就是 Spring 對
+    # 這個端點的既定綁定慣例，其餘欄位都是要從同一個 multipart form 讀
+    # 的一般欄位。只對「經 `_SIMPLE_JAVA_TYPES` 確認是基本型別」的欄位
+    # 補 `Form(...)`（見 `_SIMPLE_JAVA_TYPES` docstring）——刻意排除
+    # `HttpServletRequest` 這類框架注入物件型別，那些不是 multipart
+    # 表單欄位，不應該被誤包成 `Form(...)`，維持留在 `remaining` 交六章
+    # LLM 判斷（05a 五章「框架注入物件」既有路徑，這裡不重複處理）。
+    multipart_param = next(
+        (p for p in remaining if _simple_type_name(p.java_type) == "MultipartFile"), None
+    )
+    if multipart_param is not None:
+        still_remaining: list[JavaParam] = []
+        for p in remaining:
+            if p is multipart_param:
+                covered.append((p, ParamSpec(name=p.name, type="UploadFile")))
+            elif p.java_type.strip() in _SIMPLE_JAVA_TYPES:
+                covered.append((p, ParamSpec(name=p.name, type=f"{map_java_type(p.java_type)} = Form(...)")))
+            else:
+                still_remaining.append(p)
+        remaining = still_remaining
 
     return covered, remaining
 
@@ -387,12 +482,54 @@ def extract_schema_fields(raw_schema: dict) -> list[tuple[str, str]]:
     已是完整的欄位宣告右手邊。`X | None` 語法要求目標 Python 服務
     ≥ 3.10（見 00 三章），若前提改變，這裡跟 `map_java_type()` 都需要
     一併改成 `typing.Optional[T]`。
+
+    **`openapi_type_to_python()` 回傳裸字面字串 `"object"` 時直接
+    raise，不寫進成品**（對應 docs/refactor_bug_trace.md #40）：那個
+    共用函式對「猜不出來的 object」故意保留寬容 fallback（給
+    `_classify_params()` 這條參數分類路徑用，見該函式 docstring），但
+    這裡是在產生**真正會寫進 Pydantic model 的欄位型別宣告**——裸
+    `object` 完全不做型別檢查，語法合法但語意等於沒有型別，會讓⑤合理
+    但錯誤地推論「這個欄位不用把 entity 轉成 schema 物件」，真實案例
+    `GetAllExamRs.allExams` 序列化階段才真正壞掉。
+
+    **裸 `object` 進一步分流（對應 docs/refactor_bug_trace.md #41）**：
+    真實重跑證實不能無條件 raise——`ResponseResultVoid.data` 這個真實
+    案例對應 Java `ResponseResult<Void>`，`data` 這個欄位的 schema
+    就只有 `{"type": "object"}`，除了 `type`沒有任何其他資訊，這不是
+    漏掉了什麼可以救回來的結構，是 Java `Void` 泛型抹除後**本來就沒有
+    資料可以描述**——這種情況正確答案是 `Any`（誠實表示「這裡本來就
+    沒有更精確的型別」），不該讓整條 pipeline 為了一個本來就沒問題的
+    欄位而崩潰。真正該 raise 的是「這個 schema 除了 `type` 之外還帶著
+    其他這個函式看不懂的線索」（例如 `oneOf`／`patternProperties` 這類
+    目前沒處理的鍵）——那才代表可能真的漏接了一個能救回來的結構，跟
+    `GetAllExamRs.allExams`（有 `additionalProperties` 這個明確線索，
+    只是沒被辨識）是同一種情況。
     """
     properties = raw_schema.get("properties", {})
     required = set(raw_schema.get("required", []))
     fields: list[tuple[str, str]] = []
     for name, prop_schema in properties.items():
         python_type = openapi_type_to_python(prop_schema)
+        if python_type == "object":
+            unexplained_keys = set(prop_schema) - _NON_STRUCTURAL_SCHEMA_KEYS
+            if unexplained_keys:
+                logger.warning(
+                    "extract_schema_fields()：欄位 %s 的型別解析成裸 object"
+                    "，而且 schema 還帶著這個函式看不懂的其他鍵 %s，拒絕"
+                    "寫進成品，見 docs/refactor_bug_trace.md #40：%s",
+                    name, sorted(unexplained_keys), prop_schema,
+                )
+                raise ValueError(
+                    f"欄位 {name!r} 無法解析出明確型別（openapi_type_to_python() 只能"
+                    f"回傳裸 \"object\"，且 schema 還帶著看不懂的其他鍵 {sorted(unexplained_keys)}）：{prop_schema}"
+                )
+            logger.info(
+                "extract_schema_fields()：欄位 %s 除了 type 沒有其他資訊"
+                "（像 Java Void 這種泛型抹除後沒有實際資料的情況），退回"
+                " Any，見 docs/refactor_bug_trace.md #41：%s",
+                name, prop_schema,
+            )
+            python_type = "Any"
         is_required = name in required
         if not is_required:
             python_type = f"{python_type} | None"

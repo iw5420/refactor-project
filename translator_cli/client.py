@@ -25,9 +25,10 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 from common.run_context import adhoc_run_id
-from translator_cli import formatting, git_ops, ollama_client, python_adapter, scaffold
+from translator_cli import claude_client, formatting, git_ops, ollama_client, python_adapter, scaffold
 from translator_cli.exceptions import (
     TranslatorCliConfigError,
     TranslatorCliError,
@@ -37,7 +38,12 @@ from translator_cli.exceptions import (
     TranslatorCliUpstreamDegradedError,
 )
 from translator_cli.python_adapter import PythonAdapter
-from translator_cli.types import FillResult, PythonStructure, ScaffoldResult
+from translator_cli.types import FillResult, PythonStructure, ReferencedSourceItem, ScaffoldResult
+
+# 依 translator_backend 分派，見 07a 七章「分派方式」——兩個模組的
+# get_function_body() 是同一份契約（引數、回傳、拋出的例外類型都一致），
+# 這裡只是查表決定要呼叫哪一個。
+_BACKEND_CLIENTS = {"qwen": ollama_client, "claude": claude_client}
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +221,8 @@ def _read_context_files(
 
 
 def _trim_context_files_if_oversized(
-    context_files: list[tuple[str, str]], *, task_id: str, current_signature: str = "", description: str = "",
+    context_files: list[tuple[str, str]], *, task_id: str, current_signature: str = "",
+    java_source: str = "", referenced_source: list[ReferencedSourceItem] | None = None,
     context: str = "",
 ) -> list[tuple[str, str]]:
     """對應 09b_bug_trace.md #37「context 過大時的裁減」：只在總大小
@@ -236,8 +243,11 @@ def _trim_context_files_if_oversized(
     Pydantic／SQLAlchemy 資料類別，`strip_all_function_bodies()`
     （剝函式本體）對這類檔案是空操作——改用
     `python_adapter.extract_referenced_classes()`，依 `current_signature`／
-    `description`／`context` 這三處文字裡出現過的候選名稱，只留這個 task
-    可能用到的 class；其餘檔案（真正有函式本體可以剝的一般程式碼檔）
+    `java_source`／`referenced_source`／`context` 這幾處文字裡出現過的
+    候選名稱（見 07a 五章「為什麼是 `java_source`／`referenced_source`」
+    ——這兩個欄位是真正帶著原始碼文字的輸入，`description` 不承載這類
+    內容，不適合當候選名稱來源），只留這個
+    task 可能用到的 class；其餘檔案（真正有函式本體可以剝的一般程式碼檔）
     維持既有的 `strip_all_function_bodies()`。單一檔案裁減失敗（理論上
     不該發生——這裡的內容一定是合法 Python，`ast.parse()` 沒有理由失敗，
     但裁減本身不該變成新的失敗來源）時，那個檔案退回原始內容，不影響
@@ -248,7 +258,8 @@ def _trim_context_files_if_oversized(
     if total_bytes < TRANSLATOR_CLI_CONTEXT_TRIM_THRESHOLD_BYTES:
         return context_files
 
-    candidate_class_names = _referenced_class_names(current_signature, description, context)
+    referenced_texts = [item["source"] for item in (referenced_source or [])]
+    candidate_class_names = _referenced_class_names(current_signature, java_source, context, *referenced_texts)
 
     trimmed: list[tuple[str, str]] = []
     for path, content in context_files:
@@ -278,6 +289,9 @@ async def fill_function(
     target_file: str,
     class_name: str | None,
     function_name: str,
+    translator_backend: Literal["qwen", "claude"],
+    java_source: str,
+    referenced_source: list[ReferencedSourceItem],
     description: str,
     context: str,
     context_files: list[str],
@@ -285,53 +299,82 @@ async def fill_function(
     referenced_functions: list[tuple[str, str | None, str]] | None = None,
     fixed_body: str | None = None,
 ) -> FillResult:
-    """對應 07a 五、六、七章。呼叫失敗時不寫入任何內容（見五章「呼叫
+    """對應 07a 五、六、七、八章。呼叫失敗時不寫入任何內容（見五章「呼叫
     失敗時不寫入任何內容」）——每個失敗分支都在寫入磁碟之前 return，
     是九章「衝突偵測」成立的前提。
 
-    `run_id`：選填，省略時用 `adhoc_run_id()`。這裡是 Ollama 呼叫鏈的
+    `translator_backend` 決定走 qwen 還是 Claude 兩條模型呼叫路徑（見
+    `_BACKEND_CLIENTS`、07a 七章「分派方式」）；`java_source`／
+    `referenced_source` 是模型輸入，`description` 不是（06a 五章：
+    `description` 是純機械模板，只供 log／除錯人眼辨識用途，這裡只用
+    一行 `logger.debug()` 留痕，不送進 prompt，見 07a 五章）。
+
+    **寫入段用細粒度鎖序列化**（見 `git_ops.WRITE_LOCK`、07a 八章）：
+    模型呼叫（`_BACKEND_CLIENTS[translator_backend].get_function_body()`）
+    不持鎖——qwen 靠自己模組內的 `OLLAMA_MODEL_SEMAPHORE` 天然序列化，
+    Claude 可以真正平行呼叫。取得 `body_source` 之後才 `await
+    git_ops.WRITE_LOCK.acquire()`，在鎖底下**重新讀取一次 `target_file`**
+    （不是重用模型呼叫之前那份 `tree`/`node`）——模型呼叫可能耗時數十秒
+    到數分鐘，這段等待期間，另一個平行跑的 Claude task 完全可能已經對
+    同一個檔案的另一個函式寫入並 commit 過；若沿用舊的 `tree` 直接
+    `splice_body()` 再整檔 `ast.unparse()`，等於用一份過時的檔案內容
+    覆蓋掉那次已經 commit 的變更（見 07a 八章「為什麼不能只靠『結構上
+    不存在並行寫入』這個論證」的 race condition 說明）。取得
+    `current_signature`（給 prompt 用）的那次讀取不受這個限制——目標
+    函式自己的簽名在骨架階段之後不會被其他
+    task 修改，讀到的值必然穩定，不需要在鎖底下重讀。
+
+    `run_id`：選填，省略時用 `adhoc_run_id()`。這裡是模型呼叫鏈的
     最外層（見 `11a_logging_architecture.md` 九章「run_id 的解析只在
-    fill_function() 做一次」），只在這裡解析一次再往下傳給
-    `ollama_client.get_function_body()`，同一個 task 的多次格式修正
-    attempt 才會落在同一個 run_id 底下，不會各自 fallback 出不同的值。
+    fill_function() 做一次」），只在這裡解析一次再往下傳，同一個 task
+    的多次格式修正 attempt 才會落在同一個 run_id 底下，不會各自
+    fallback 出不同的值。
 
     `referenced_functions`：選填，`(file_path, class_name, function_name)`
-    三元組清單，對應 `graph/state.py::TaskSpec.referenced_functions`（見
-    06a 七章新設計）。傳給 `_read_context_files()` 決定 `context_files`
-    裡哪些檔案該只抽取指定函式、哪些該整份帶入，見該函式 docstring。
+    三元組清單，對應 `graph/state.py::TaskSpec.referenced_functions`（06a
+    改版前的舊機制，[P] 已不再產生這份資料，見 `plan_agent/planning.py`
+    ——保留這個參數與底下 `_read_context_files()` 的既有行為，缺席時
+    安全地什麼都不做，不強制呼叫端更新）。傳給 `_read_context_files()`
+    決定 `context_files` 裡哪些檔案該只抽取指定函式、哪些該整份帶入，
+    見該函式 docstring。
 
     `fixed_body`：選填，見 10a 八章「⑦ 直接產生修正後程式碼」。非
     `None` 時代表呼叫端（⑦ Debug Agent）已經產生好正確的函式本體（跟
-    `ollama_client.get_function_body()` 回傳的格式一樣：未縮排陳述式
-    文字，不含 `def` 簽名行），直接拿來 `splice_body()`，完全跳過
-    `ollama_client.get_function_body()` 呼叫與它需要的 `context_files`
-    讀取——這種情境下不是「重新翻譯」，是「套用已知正確的修正」，不需要
-    本地模型參與。定位函式節點、import 解析、語法驗證、寫入＋git commit
-    等既有步驟不變。
+    `get_function_body()` 回傳的格式一樣：未縮排陳述式文字，不含 `def`
+    簽名行），直接拿來 `splice_body()`，完全跳過模型呼叫與它需要的
+    `context_files` 讀取——這種情境下不是「重新翻譯」，是「套用已知
+    正確的修正」，不需要模型參與。定位函式節點、import 解析、語法驗證、
+    寫入＋git commit 等既有步驟不變。
     """
     resolved_run_id = run_id or adhoc_run_id()
     root = Path(python_project_path)
+    adapter = PythonAdapter()
+    logger.debug("task %s：%s", task_id, description)
 
+    # 快速失敗（非權威檢查，見上方 docstring「寫入段用細粒度鎖序列化」）：
+    # 在花時間讀檔／呼叫模型之前，先看一眼 working tree 是否已經不乾淨
+    # （例如上一輪執行被強制中斷留下殘留），避免浪費一次可能數十秒到
+    # 數分鐘的模型呼叫。真正權威的檢查在下面取得 WRITE_LOCK 之後再做
+    # 一次。
     try:
         await asyncio.to_thread(git_ops.check_clean_working_tree, python_project_path)
-    except TranslatorCliError as exc:
-        return FillResult(success=False, error=str(exc), diff="")
-
-    adapter = PythonAdapter()
-    try:
-        source = await asyncio.to_thread(_read_target_file, root, target_file)
-        tree = adapter.parse(source)
-        node = adapter.locate_function(tree, class_name, function_name)
-        if node is None:
-            label = f"{class_name}.{function_name}" if class_name else function_name
-            raise TranslatorCliScaffoldMismatchError(f"scaffold/task 不一致：{label} 在 {target_file} 找不到")
     except TranslatorCliError as exc:
         return FillResult(success=False, error=str(exc), diff="")
 
     if fixed_body is not None:
         body_source = fixed_body
     else:
-        current_signature = adapter.render_signature(node)
+        try:
+            source = await asyncio.to_thread(_read_target_file, root, target_file)
+            preview_tree = adapter.parse(source)
+            preview_node = adapter.locate_function(preview_tree, class_name, function_name)
+            if preview_node is None:
+                label = f"{class_name}.{function_name}" if class_name else function_name
+                raise TranslatorCliScaffoldMismatchError(f"scaffold/task 不一致：{label} 在 {target_file} 找不到")
+        except TranslatorCliError as exc:
+            return FillResult(success=False, error=str(exc), diff="")
+
+        current_signature = adapter.render_signature(preview_node)
         try:
             resolved_context_files = await asyncio.to_thread(
                 _read_context_files, root, context_files,
@@ -345,141 +388,184 @@ async def fill_function(
 
         resolved_context_files = _trim_context_files_if_oversized(
             resolved_context_files, task_id=task_id,
-            current_signature=current_signature, description=description, context=context,
+            current_signature=current_signature, java_source=java_source,
+            referenced_source=referenced_source, context=context,
         )
 
-        try:
-            body_source = await ollama_client.get_function_body(
-                current_signature=current_signature,
-                description=description,
-                context=context,
-                context_files=resolved_context_files,
-                function_name=function_name,
-                task_id=task_id,
-                target_file=target_file,
-                class_name=class_name,
-                run_id=resolved_run_id,
-            )
-        except (TranslatorCliModelOutputError, TranslatorCliNetworkError, TranslatorCliConfigError) as exc:
-            # TranslatorCliNetworkError（網路層重試耗盡）／TranslatorCliConfigError
-            # （缺 OLLAMA_BASE_URL／OLLAMA_API_KEY，見
-            # ollama_client._call_ollama_once()）都不會被 get_function_body()
-            # 的格式重試迴圈攔截、會直接往外傳到這裡——這是刻意的：網路層
-            # 錯誤與環境變數缺失都不該進「模型輸出格式錯誤」的重試邏輯，那
-            # 救不了連線失敗或缺環境變數這兩件事，一樣轉成
-            # FillResult(success=False) 讓這個 task 明確失敗、不讓例外洩漏
-            # 擊穿合約。TranslatorCliUpstreamDegradedError 是
-            # TranslatorCliNetworkError 的子類別，一樣會被這裡接住，差別只是
-            # 額外標記 upstream_degraded=True，讓 implement_node.py 決定要不要
-            # 提早停止重試（見該例外類別 docstring、docs/09b_bug_trace.md #35）。
-            return FillResult(
-                success=False,
-                error=str(exc),
-                diff="",
-                upstream_degraded=isinstance(exc, TranslatorCliUpstreamDegradedError),
-            )
-
-    try:
-        adapter.splice_body(node, body_source)
-    except TranslatorCliModelOutputError as exc:
-        if fixed_body is not None:
-            # 見 docs/09b_bug_trace.md #52：這是 ⑦ Debug Agent 給的
-            # fixed_body 被 extract_body_statements() 的巢狀同名函式檢查
-            # 攔下來的情況（不是 ⑤ 本地模型的一般格式錯誤重試），值得在
-            # 即時 log 裡明講——這代表 ⑦ 這次的修正違反了 fixed_body 的
-            # 格式契約（可能混進了裝飾器／簽名行），task_id=%s 這筆
-            # pending_fixed_bodies 沒有被套用，需要人工或下一輪 ⑦ 重新
-            #處理，不會像一般 fill_failed 那樣有排程器自動重試機制。
-            logger.warning(
-                "task %s：⑦ 給的 fixed_body 被 extract_body_statements() 拒絕（%s），"
-                "這筆修正沒有寫入，見 docs/09b_bug_trace.md #52",
-                task_id, exc,
-            )
-        return FillResult(success=False, error=str(exc), diff="")
-
-    # 填空模式的本體 import 解析（見 07a 五章）：node.body 現在是新本體
-    # （qwen 生成，或 fixed_body 給定），可能引用簽名以外的名稱（跨檔案
-    # 自訂類別、框架例外），骨架階段的 import 解析看不到這些，這裡針對
-    # 新本體重新掃一次補上。掃描專案磁碟找自訂型別索引是 I/O，包
-    # to_thread；純 AST 插入不是。
-    bound_names = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
-    if node.args.vararg:
-        bound_names.add(node.args.vararg.arg)
-    if node.args.kwarg:
-        bound_names.add(node.args.kwarg.arg)
-    missing_imports = await asyncio.to_thread(
-        scaffold.resolve_body_imports, python_project_path, tree, node.body, bound_names
-    )
-    scaffold.insert_import_lines(tree, missing_imports)
-
-    new_source = adapter.render(tree)
-    try:
-        adapter.validate_syntax(new_source)
-    except SyntaxError as exc:
-        return FillResult(success=False, error=f"寫入前最終語法驗證失敗（理論上不應發生）：{exc}", diff="")
-
-    # 動筆寫入前重新檢查一次 working tree（見九章「衝突偵測」）：本地
-    # 模型單次生成可能耗時數十秒到數分鐘（見 07a 七章），函式最開頭那次
-    # check_clean_working_tree() 檢查的是「開始等模型回應之前」的狀態，
-    # 這段漫長的 I/O 等待期間人工完全可能手動修改 target_file——若不
-    # 在真正落筆前再檢查一次，這裡的 write_text() 會在人不知鬼不覺的
-    # 情況下覆蓋掉那份人工修正，正是九章「衝突偵測」要防的事，不能只
-    # 在函式入口做一次就視為全程有效。
-    try:
-        await asyncio.to_thread(git_ops.check_clean_working_tree, python_project_path)
-    except TranslatorCliError as exc:
-        return FillResult(success=False, error=str(exc), diff="")
-
-    try:
-        await asyncio.to_thread((root / target_file).write_text, new_source, encoding="utf-8")
-    except OSError as exc:
-        return FillResult(success=False, error=f"寫入 {target_file} 失敗：{exc}", diff="")
-
-    # 格式化（見 formatting.py）是硬性依賴：在擷取 diff／commit 之前跑，
-    # 讓 diff 與 commit 反映的都是格式化後的最終內容。格式化失敗（含
-    # 找不到 ruff 執行檔）不允許半格式化的內容流入 commit，還原這次
-    # 寫入——理由跟下方 commit 失敗時的復原邏輯一致。
-    try:
-        await asyncio.to_thread(formatting.format_paths, python_project_path, target_file)
-    except TranslatorCliError as exc:
-        restored = await asyncio.to_thread(git_ops.discard_file_changes, python_project_path, target_file)
-        detail = "已還原該檔案" if restored else "還原也失敗，working tree 可能仍不乾淨，需要人工介入核對"
-        return FillResult(success=False, error=f"格式化失敗（{detail}）：{exc}", diff="")
-
-    diff = await asyncio.to_thread(git_ops.diff_for_file, python_project_path, target_file)
-
-    if not diff:
-        # 冪等（見 07a 五章「允許對已有內容的函式重新填空」）：LLM 這次
-        # 生成的內容跟磁碟上已經 commit 的版本完全相同（例如 task 被
-        # 重複排程），write_text() 寫入後 working tree 其實沒有任何
-        # 變更——`git commit`（不帶 --allow-empty）遇到 staging area
-        # 是空的會直接失敗（exit code 1），若照下面正常流程呼叫
-        # commit_fill() 會把這個「實質上成功」的操作誤判成失敗、觸發不
-        # 必要的 rollback。這裡提前偵測 diff 為空就直接視為成功，不必
-        # 也不能 commit 一個空變更。
-        logger.info("task %s：%s 內容與現有版本相同，視為冪等成功，不建立新 commit", task_id, target_file)
-        return FillResult(success=True, error=None, diff="")
-
-    # commit 失敗時的復原：write_text() 已經落地，但沒能進版控會讓
-    # working tree 卡在「不乾淨」，之後每個 task 的 precondition 檢查
-    # 都會連帶失敗。這是這次呼叫自己造成、成因已知的變更，可以安全地
-    # 自動撤銷這一個檔案，只把這一個 task 標記失敗，不讓其餘 task 被
-    # 這次 commit 失敗拖累卡住。
-    try:
-        await asyncio.to_thread(
-            git_ops.commit_fill,
-            python_project_path,
+        backend_client = _BACKEND_CLIENTS[translator_backend]
+        model_call_kwargs = dict(
+            current_signature=current_signature,
+            java_source=java_source,
+            referenced_source=referenced_source,
+            context=context,
+            context_files=resolved_context_files,
+            function_name=function_name,
             task_id=task_id,
             target_file=target_file,
             class_name=class_name,
-            function_name=function_name,
+            run_id=resolved_run_id,
         )
-    except TranslatorCliError as exc:
-        restored = await asyncio.to_thread(git_ops.discard_file_changes, python_project_path, target_file)
-        detail = "已還原該檔案" if restored else "還原也失敗，working tree 可能仍不乾淨，需要人工介入核對"
-        return FillResult(success=False, error=f"commit 失敗（{detail}）：{exc}", diff="")
+        try:
+            body_source = await backend_client.get_function_body(**model_call_kwargs)
+        except (TranslatorCliModelOutputError, TranslatorCliNetworkError, TranslatorCliConfigError) as exc:
+            # TranslatorCliNetworkError（qwen 網路層重試耗盡／Claude API
+            # 呼叫失敗）／TranslatorCliConfigError（qwen 缺
+            # OLLAMA_BASE_URL／OLLAMA_API_KEY）都不會被 get_function_body()
+            # 的格式重試迴圈攔截、會直接往外傳到這裡。
+            #
+            # 對應 docs/refactor_bug_trace.md：qwen 這一路失敗時，不直接
+            # 判這個 task 失敗——改用 Claude API 對同一個 task 再試一次。
+            # 理由：這個 task 一旦真的失敗（進 task_failed），
+            # graph/scheduler.py 同 module 同後端的序列鏈上排在它後面的
+            # 其他 qwen task 會永遠等不到它進 task_done、卡在不上不下的
+            # 懸空狀態，連帶讓全域 Phase 關卡（見 09a 十二章）判斷不了
+            # 「全專案 tier 0 是否已到終態」，牽連整條 pipeline 停擺——
+            # 這個代價遠比多花一次 Claude API 呼叫嚴重，qwen 只是省錢用
+            # 的第一選擇，不是唯一能把這個函式寫出來的辦法。只在
+            # `translator_backend == "qwen"` 時才 fallback：claude 本身
+            # 失敗沒有下一個更保底的後端可以退，維持原樣直接回報失敗。
+            if translator_backend != "qwen":
+                return FillResult(
+                    success=False,
+                    error=str(exc),
+                    diff="",
+                    upstream_degraded=isinstance(exc, TranslatorCliUpstreamDegradedError),
+                )
+            logger.warning(
+                "task %s：qwen 呼叫失敗（%s），改用 Claude API 對同一個 task 重試", task_id, exc,
+            )
+            try:
+                body_source = await claude_client.get_function_body(**model_call_kwargs)
+            except (TranslatorCliModelOutputError, TranslatorCliNetworkError, TranslatorCliConfigError) as claude_exc:
+                # 兩條路徑都失敗才真的判定失敗；upstream_degraded 沿用
+                # qwen 那次的判斷（是不是連續多次傳輸層失敗），不是
+                # claude 這次的——implement_node.py 要知道的是「ollama
+                # 是不是本身有系統性問題」，不是「這次 fallback 呼叫本身
+                # 有沒有問題」。
+                return FillResult(
+                    success=False,
+                    error=f"qwen 失敗：{exc}；改用 Claude API 重試也失敗：{claude_exc}",
+                    diff="",
+                    upstream_degraded=isinstance(exc, TranslatorCliUpstreamDegradedError),
+                )
 
-    return FillResult(success=True, error=None, diff=diff)
+    # 寫入段：取得 WRITE_LOCK 之後才是權威的 working-tree 狀態與檔案內容
+    # （見上方 docstring）。鎖底下的任何失敗分支都直接 return，鎖隨
+    # `async with` 結束自動釋放。
+    async with git_ops.WRITE_LOCK:
+        try:
+            await asyncio.to_thread(git_ops.check_clean_working_tree, python_project_path)
+        except TranslatorCliError as exc:
+            return FillResult(success=False, error=str(exc), diff="")
+
+        try:
+            source = await asyncio.to_thread(_read_target_file, root, target_file)
+            tree = adapter.parse(source)
+            node = adapter.locate_function(tree, class_name, function_name)
+            if node is None:
+                label = f"{class_name}.{function_name}" if class_name else function_name
+                raise TranslatorCliScaffoldMismatchError(f"scaffold/task 不一致：{label} 在 {target_file} 找不到")
+        except TranslatorCliError as exc:
+            return FillResult(success=False, error=str(exc), diff="")
+
+        try:
+            adapter.splice_body(node, body_source)
+        except TranslatorCliModelOutputError as exc:
+            if fixed_body is not None:
+                # 見 docs/09b_bug_trace.md #52：這是 ⑦ Debug Agent 給的
+                # fixed_body 被 extract_body_statements() 的巢狀同名函式檢查
+                # 攔下來的情況（不是 ⑤ 模型的一般格式錯誤重試），值得在
+                # 即時 log 裡明講——這代表 ⑦ 這次的修正違反了 fixed_body 的
+                # 格式契約（可能混進了裝飾器／簽名行），task_id=%s 這筆
+                # pending_fixed_bodies 沒有被套用，需要人工或下一輪 ⑦ 重新
+                #處理，不會像一般 fill_failed 那樣有排程器自動重試機制。
+                logger.warning(
+                    "task %s：⑦ 給的 fixed_body 被 extract_body_statements() 拒絕（%s），"
+                    "這筆修正沒有寫入，見 docs/09b_bug_trace.md #52",
+                    task_id, exc,
+                )
+            return FillResult(success=False, error=str(exc), diff="")
+
+        # 填空模式的本體 import 解析（見 07a 五章）：node.body 現在是新本體
+        # （模型生成，或 fixed_body 給定），可能引用簽名以外的名稱（跨檔案
+        # 自訂類別、框架例外），骨架階段的 import 解析看不到這些，這裡針對
+        # 新本體重新掃一次補上。掃描專案磁碟找自訂型別索引是 I/O，包
+        # to_thread；純 AST 插入不是。
+        bound_names = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
+        if node.args.vararg:
+            bound_names.add(node.args.vararg.arg)
+        if node.args.kwarg:
+            bound_names.add(node.args.kwarg.arg)
+        # 對應 docs/refactor_bug_trace.md #45：把 target_file 反推出的
+        # own_module 傳給 resolve_body_imports()，讓它比照 #8 優先查
+        # 「這個函式自己所屬模組」的 schema 定義，不要被全域索引（掃描
+        # 順序決定同名 class 留誰）誤導到別的模組去，見該函式 docstring。
+        missing_imports = await asyncio.to_thread(
+            scaffold.resolve_body_imports,
+            python_project_path,
+            tree,
+            node.body,
+            bound_names,
+            scaffold._module_for_file_path(target_file),
+        )
+        scaffold.insert_import_lines(tree, missing_imports)
+
+        new_source = adapter.render(tree)
+        try:
+            adapter.validate_syntax(new_source)
+        except SyntaxError as exc:
+            return FillResult(success=False, error=f"寫入前最終語法驗證失敗（理論上不應發生）：{exc}", diff="")
+
+        try:
+            await asyncio.to_thread((root / target_file).write_text, new_source, encoding="utf-8")
+        except OSError as exc:
+            return FillResult(success=False, error=f"寫入 {target_file} 失敗：{exc}", diff="")
+
+        # 格式化（見 formatting.py）是硬性依賴：在擷取 diff／commit 之前跑，
+        # 讓 diff 與 commit 反映的都是格式化後的最終內容。格式化失敗（含
+        # 找不到 ruff 執行檔）不允許半格式化的內容流入 commit，還原這次
+        # 寫入——理由跟下方 commit 失敗時的復原邏輯一致。
+        try:
+            await asyncio.to_thread(formatting.format_paths, python_project_path, target_file)
+        except TranslatorCliError as exc:
+            restored = await asyncio.to_thread(git_ops.discard_file_changes, python_project_path, target_file)
+            detail = "已還原該檔案" if restored else "還原也失敗，working tree 可能仍不乾淨，需要人工介入核對"
+            return FillResult(success=False, error=f"格式化失敗（{detail}）：{exc}", diff="")
+
+        diff = await asyncio.to_thread(git_ops.diff_for_file, python_project_path, target_file)
+
+        if not diff:
+            # 冪等（見 07a 五章「允許對已有內容的函式重新填空」）：LLM 這次
+            # 生成的內容跟磁碟上已經 commit 的版本完全相同（例如 task 被
+            # 重複排程），write_text() 寫入後 working tree 其實沒有任何
+            # 變更——`git commit`（不帶 --allow-empty）遇到 staging area
+            # 是空的會直接失敗（exit code 1），若照下面正常流程呼叫
+            # commit_fill() 會把這個「實質上成功」的操作誤判成失敗、觸發不
+            # 必要的 rollback。這裡提前偵測 diff 為空就直接視為成功，不必
+            # 也不能 commit 一個空變更。
+            logger.info("task %s：%s 內容與現有版本相同，視為冪等成功，不建立新 commit", task_id, target_file)
+            return FillResult(success=True, error=None, diff="")
+
+        # commit 失敗時的復原：write_text() 已經落地，但沒能進版控會讓
+        # working tree 卡在「不乾淨」，之後每個 task 的 precondition 檢查
+        # 都會連帶失敗。這是這次呼叫自己造成、成因已知的變更，可以安全地
+        # 自動撤銷這一個檔案，只把這一個 task 標記失敗，不讓其餘 task 被
+        # 這次 commit 失敗拖累卡住。
+        try:
+            await asyncio.to_thread(
+                git_ops.commit_fill,
+                python_project_path,
+                task_id=task_id,
+                target_file=target_file,
+                class_name=class_name,
+                function_name=function_name,
+            )
+        except TranslatorCliError as exc:
+            restored = await asyncio.to_thread(git_ops.discard_file_changes, python_project_path, target_file)
+            detail = "已還原該檔案" if restored else "還原也失敗，working tree 可能仍不乾淨，需要人工介入核對"
+            return FillResult(success=False, error=f"commit 失敗（{detail}）：{exc}", diff="")
+
+        return FillResult(success=True, error=None, diff=diff)
 
 
 async def apply_file_fix(
@@ -499,68 +585,70 @@ async def apply_file_fix(
     寫入前後的既有關卡（clean tree 檢查、格式化、diff／commit、commit
     失敗時的復原）比照 `fill_function()` 既有邏輯——這裡不是新發明一套
     寫入流程，是同一套安全機制套用在「整個檔案」而不是「單一函式節點」
-    這個不同的定位方式上。跟 `fill_function()` 不同，這裡不需要在寫入前
-    再檢查一次 working tree：`fill_function()` 那個二次檢查是為了防
-    「本地模型單次生成可能耗時數十秒到數分鐘」這段等待期間人工插手修改
-    檔案，這裡從讀檔到寫檔中間沒有任何長時間等待（`old_snippet`／
-    `new_snippet` 是 ⑦ 已經算好的現成資料，不需要再呼叫任何模型）。
+    這個不同的定位方式上。跟 `fill_function()` 不同，這裡不需要在鎖底下
+    重讀一次：這裡從讀檔到寫檔中間沒有任何長時間等待（`old_snippet`／
+    `new_snippet` 是 ⑦ 已經算好的現成資料，不需要呼叫任何模型），
+    `WRITE_LOCK` 底下一次讀檔即可——套用 `git_ops.WRITE_LOCK` 是因為
+    跟 `fill_function()` 一樣是這個 git repo 的寫入路徑之一，需要同一把
+    鎖序列化，見 07a 八章。
     """
-    try:
-        await asyncio.to_thread(git_ops.check_clean_working_tree, python_project_path)
-    except TranslatorCliError as exc:
-        return FillResult(success=False, error=str(exc), diff="")
-
     root = Path(python_project_path)
-    try:
-        source = await asyncio.to_thread(_read_target_file, root, target_file)
-    except TranslatorCliError as exc:
-        return FillResult(success=False, error=str(exc), diff="")
+    async with git_ops.WRITE_LOCK:
+        try:
+            await asyncio.to_thread(git_ops.check_clean_working_tree, python_project_path)
+        except TranslatorCliError as exc:
+            return FillResult(success=False, error=str(exc), diff="")
 
-    occurrences = source.count(old_snippet)
-    if occurrences == 0:
-        return FillResult(
-            success=False,
-            error=f"old_snippet 在 {target_file} 目前內容裡找不到（可能已經被上一輪修正過，或跟目前程式碼不一致）",
-            diff="",
-        )
-    if occurrences > 1:
-        return FillResult(
-            success=False,
-            error=f"old_snippet 在 {target_file} 裡出現 {occurrences} 次，無法安全判斷要替換哪一處",
-            diff="",
-        )
+        try:
+            source = await asyncio.to_thread(_read_target_file, root, target_file)
+        except TranslatorCliError as exc:
+            return FillResult(success=False, error=str(exc), diff="")
 
-    new_source = source.replace(old_snippet, new_snippet)
+        occurrences = source.count(old_snippet)
+        if occurrences == 0:
+            return FillResult(
+                success=False,
+                error=f"old_snippet 在 {target_file} 目前內容裡找不到（可能已經被上一輪修正過，或跟目前程式碼不一致）",
+                diff="",
+            )
+        if occurrences > 1:
+            return FillResult(
+                success=False,
+                error=f"old_snippet 在 {target_file} 裡出現 {occurrences} 次，無法安全判斷要替換哪一處",
+                diff="",
+            )
 
-    try:
-        PythonAdapter().validate_syntax(new_source)
-    except SyntaxError as exc:
-        return FillResult(success=False, error=f"套用後語法驗證失敗：{exc}", diff="")
+        new_source = source.replace(old_snippet, new_snippet)
 
-    try:
-        await asyncio.to_thread((root / target_file).write_text, new_source, encoding="utf-8")
-    except OSError as exc:
-        return FillResult(success=False, error=f"寫入 {target_file} 失敗：{exc}", diff="")
+        try:
+            PythonAdapter().validate_syntax(new_source)
+        except SyntaxError as exc:
+            return FillResult(success=False, error=f"套用後語法驗證失敗：{exc}", diff="")
 
-    try:
-        await asyncio.to_thread(formatting.format_paths, python_project_path, target_file)
-    except TranslatorCliError as exc:
-        restored = await asyncio.to_thread(git_ops.discard_file_changes, python_project_path, target_file)
-        detail = "已還原該檔案" if restored else "還原也失敗，working tree 可能仍不乾淨，需要人工介入核對"
-        return FillResult(success=False, error=f"格式化失敗（{detail}）：{exc}", diff="")
+        try:
+            await asyncio.to_thread((root / target_file).write_text, new_source, encoding="utf-8")
+        except OSError as exc:
+            return FillResult(success=False, error=f"寫入 {target_file} 失敗：{exc}", diff="")
 
-    diff = await asyncio.to_thread(git_ops.diff_for_file, python_project_path, target_file)
-    if not diff:
-        # 冪等，理由同 fill_function()：new_snippet 跟磁碟上已經 commit
-        # 的版本相同時（例如同一筆 file_fix 被重複套用），視為成功，不
-        # 建立空 commit。
-        return FillResult(success=True, error=None, diff="")
+        try:
+            await asyncio.to_thread(formatting.format_paths, python_project_path, target_file)
+        except TranslatorCliError as exc:
+            restored = await asyncio.to_thread(git_ops.discard_file_changes, python_project_path, target_file)
+            detail = "已還原該檔案" if restored else "還原也失敗，working tree 可能仍不乾淨，需要人工介入核對"
+            return FillResult(success=False, error=f"格式化失敗（{detail}）：{exc}", diff="")
 
-    try:
-        await asyncio.to_thread(git_ops.commit_file_fix, python_project_path, task_id=task_id, target_file=target_file)
-    except TranslatorCliError as exc:
-        restored = await asyncio.to_thread(git_ops.discard_file_changes, python_project_path, target_file)
-        detail = "已還原該檔案" if restored else "還原也失敗，working tree 可能仍不乾淨，需要人工介入核對"
-        return FillResult(success=False, error=f"commit 失敗（{detail}）：{exc}", diff="")
+        diff = await asyncio.to_thread(git_ops.diff_for_file, python_project_path, target_file)
+        if not diff:
+            # 冪等，理由同 fill_function()：new_snippet 跟磁碟上已經 commit
+            # 的版本相同時（例如同一筆 file_fix 被重複套用），視為成功，不
+            # 建立空 commit。
+            return FillResult(success=True, error=None, diff="")
 
-    return FillResult(success=True, error=None, diff=diff)
+        try:
+            await asyncio.to_thread(git_ops.commit_file_fix, python_project_path, task_id=task_id, target_file=target_file)
+        except TranslatorCliError as exc:
+            restored = await asyncio.to_thread(git_ops.discard_file_changes, python_project_path, target_file)
+            detail = "已還原該檔案" if restored else "還原也失敗，working tree 可能仍不乾淨，需要人工介入核對"
+            return FillResult(success=False, error=f"commit 失敗（{detail}）：{exc}", diff="")
+
+        return FillResult(success=True, error=None, diff=diff)

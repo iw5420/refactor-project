@@ -1,6 +1,6 @@
 # Java → Python 重構計畫：Multi-Agent 協作架構
 
-> 以 LangGraph + Claude API + translator-cli + qwen2.5-coder:32b 為核心方向。
+> 以 LangGraph + Claude API + translator-cli + qwen2.5-coder:32b 為核心方向；⑤ 功能改寫 Agent 的 context 組裝已改為「呼叫鏈 + 完整 Java 原始碼」，qwen 僅用於 repository 層翻譯，其餘一律 Claude API（見六、三章，完整實測依據見 `refactor_plan.md`）。
 > 本文件為架構主幹，聚焦「整體流程、Agent 職責邊界、資料流」；各 Agent 的實作細節、演算法、程式碼請見對應細節文件（見十一、文件索引）。
 
 ---
@@ -25,14 +25,20 @@
              ↓
   ┌──┴──────────────────┐  ← 可平行執行
 [P] Plan Agent          ④ 骨架實作 Agent
- （產出 task list）       （建立目錄與骨架）
+ （產出 task list，       （建立目錄與骨架）
+  含分層與翻譯後端標記）
   └──────────┬──────────┘
              ↓
-⑤ 功能改寫 Agent     → 逐模組將 Java 業務邏輯改寫成 Python（排程可平行，本地模型執行序列化，見七/⑤）
+⑤ 功能改寫 Agent     → 直接餵「呼叫鏈 + 完整 Java 原始碼」翻譯，不經 LLM 語意摘要（見六章、`refactor_plan.md`），
+                        分兩階段執行：
+                        Phase 1（基礎零件：entity/dto 機械產生不需模型；repository 用 qwen；utils 用 Claude API）
+                          全部完成、通過語法驗證後才進 Phase 2
+                        Phase 2（controller/service，Claude API；呼叫鏈遇到 Phase 1 已完成層直接讀真實 Python
+                          原始碼、不再往下展開 Java 原始碼）
              ↓
 ⑥ 測試執行 Agent     → 【Harness 驗證端】對 Python 服務執行 Postman，比對 golden output
              ↓
-⑦ Debug Agent        → 讀取 Harness report，分析 diff，定位問題，直接寫出並套用修正後的程式碼（⑤ 的本地模型完全退出這個迴圈，見 10a）
+⑦ Debug Agent        → 讀取 Harness report，分析 diff，定位問題，直接寫出並套用修正後的程式碼（⑤ 完全退出這個迴圈，見 10a）
              ↓
             ✅ 完成
 ```
@@ -48,11 +54,11 @@
 | ① 解析 Agent | 解析 Java 專案，輸出模組清單、業務邏輯摘要、API 對應表；skip 呼叫鏈排除消費上一步的 skip 清單 | `04a_parse_agent_architecture.md` / `04b_parse_agent_code.md` |
 | ② 測試 Agent（Harness 錄製端） | 對 Java 服務執行 Postman，記錄 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
 | ③ 架構設計 Agent | 輸出 Python 專案結構、模組 interface、route_to_file_mapping | `05a_design_agent_architecture.md` / `05b_design_agent_code.md` |
-| [P] Plan Agent | 產出 Agent ⑤ 的 task list | `06a_plan_agent_architecture.md` / `06b_plan_agent_code.md` |
+| [P] Plan Agent | 產出 Agent ⑤ 的 task list，含分層（Phase 1/Phase 2）與翻譯後端標記 | `06a_plan_agent_architecture.md` / `06b_plan_agent_code.md`（**待依 `refactor_plan.md` 更新**，見六章備註） |
 | ④ 骨架實作 Agent | 建立目錄與骨架（呼叫 translator-cli「骨架生成模式」），並從 Java entity 原始碼組出 `db_models` | `08a_scaffold_agent_architecture.md` / `08b_scaffold_agent_code.md` |
-| ⑤ 功能改寫 Agent | 逐模組改寫業務邏輯（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md` |
+| ⑤ 功能改寫 Agent | 分 Phase 1（基礎零件）／Phase 2（controller/service）兩階段改寫業務邏輯，直接餵呼叫鏈＋完整 Java 原始碼（不經 LLM 摘要），依層級切換 qwen／Claude API（呼叫 translator-cli「填空模式」） | `09a_implement_agent_architecture.md` / `09b_implement_agent_code.md`（**待依 `refactor_plan.md` 更新**，見六章備註） |
 | ⑥ 測試執行 Agent（Harness 驗證端） | 對 Python 服務執行 Postman，比對 golden output | `02a_harness_architecture.md` / `02b_harness_code.md` |
-| ⑦ Debug Agent | 分析 diff、定位問題，直接寫出並套用修正後的程式碼（不回饋給 ⑤ 重新翻譯，⑤ 的本地模型完全退出這個迴圈） | `10a_debug_agent_architecture.md` / `10b_debug_agent_code.md` |
+| ⑦ Debug Agent | 分析 diff、定位問題，直接寫出並套用修正後的程式碼（不回饋給 ⑤ 重新翻譯，⑤ 不論 qwen 還是 Claude API 那條路徑都完全退出這個迴圈） | `10a_debug_agent_architecture.md` / `10b_debug_agent_code.md` |
 
 ### 預計開發順序
 
@@ -96,14 +102,21 @@ Orchestrator 是**純 Python 程式邏輯，不是 Agent**。
 
 ### LLM 分工
 
+**這節取代舊版「⑤ 一律用 qwen」的分工方式**——`refactor_plan.md` 用真實案例實測（repository 8/8、model/entity 4 次全出 fatal 錯誤、utils 5 個 class 混合但有隱蔽 bug）比較 qwen／Claude API 在不同層級的翻譯正確率後定案：只有 repository 層適合 qwen，其餘一律 Claude API。
+
 | 任務 | 模型 | 位置 | 理由 |
 |---|---|---|---|
 | 解析、規劃、設計、Debug | Claude API | 雲端 | 擅長理解需求、設計拆分、複雜推理 |
-| 程式碼填空實作（⑤，見七/⑤） | qwen2.5-coder:32b | 另一台 Mac（本地） | 省費用，程式碼任務重複性高。④ 的骨架生成純機械產生、不呼叫本地模型（見七/④、`07a_translator_cli_architecture.md` 四章），這一列只涵蓋⑤的「填空模式」 |
+| ⑤ Phase 1：entity／dto | — | — | 純機械產生（③④既有機制），不呼叫任何模型 |
+| ⑤ Phase 1：repository | qwen2.5-coder:32b | 另一台 Mac（本地） | 省費用；實測 8/8 案例零缺陷（含 JPQL／native SQL `@Query` 困難案例），見 `refactor_plan.md` 5.2 |
+| ⑤ Phase 1：utils | Claude API | 雲端 | 實測 5 個 class 裡有 3 個非 fatal 但隱蔽的邏輯 bug（只在特定邊界輸入才會現形，語法驗證抓不到），風險不對稱，不值得為了省成本冒險，見 `refactor_plan.md` 5.4 |
+| ⑤ Phase 2：controller／service | Claude API | 雲端 | 業務邏輯所在，且 model/entity 層（性質相近）實測 4/4 都出現 fatal 錯誤，一律不交給 qwen |
 
-> **硬體限制**：該機器跑單一 qwen2.5-coder:32b 已達飽和，無法水平擴展成多實例。因此 Agent ⑤ 對本地模型的**實際生成請求需序列化（併發數=1）**，LangGraph 排程層仍可讓多個 task 同時處於就緒佇列以保留彈性，但不代表平行會讓總耗時變短——詳見七/⑤。
+> **硬體限制**：該機器跑單一 qwen2.5-coder:32b 已達飽和，無法水平擴展成多實例。因此 Agent ⑤ 對 qwen 的**實際生成請求（僅限 repository 層）需序列化（併發數=1）**，LangGraph 排程層仍可讓多個 task 同時處於就緒佇列以保留彈性，但不代表平行會讓總耗時變短——詳見七/⑤。Claude API 呼叫（utils／model／service／controller）不受這個序列化限制，走一般的 Claude API 併發策略。
 >
 > **排程順序**：module 間的依賴關係直接沿用 Agent ① `module_list` 的「依賴的其他模組」欄位，排程時優先讓同一 module 的 task 連續完成並通過局部驗證後，才釋放依賴它的下游 module——避免上游局部驗證 fail 時，下游已完成的產物一併作廢，回滾成本過高。
+>
+> **Phase 1／Phase 2 的順序約束是新增的一層全域關卡（barrier），在既有的 module 依賴排程之上**：不是逐 module 各自判斷，是**全專案**所有 module 的 Phase 1（entity/dto/repository/utils）task 都完成、通過語法驗證，才釋放任何 module 的 Phase 2（controller/service）task——選全域而非逐 module，是因為規則簡單，不用處理「B module 的 Phase 1 還沒完成、A module 的 Service 卻呼叫到它」這種跨 module 邊界情況；代價是犧牲一些排程彈性，但 qwen 那條路徑（repository）本來就序列化，全域關卡不會讓損失顯著變大。完整設計與呼叫鏈邊界規則見 `refactor_plan.md` 一章。
 
 ### Python 目標技術棧（已定案）
 
@@ -233,6 +246,27 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 ## 六、Context 控制策略
 
+### ⑤ 的 context 來源：呼叫鏈 + 完整原始碼（取代舊版「LLM 語意摘要」設計）
+
+**這節取代本章舊版「`[P]` 產生 `description`／`context`，⑤ 靠這份 LLM 摘要翻譯」的設計**——多次真實 pipeline 端對端測試診斷出根本問題：`[P] plan_agent` 產出的 `description`／`context`／`referenced_interfaces` 是 LLM 生成的一層抽象語意摘要，這層轉譯本身不穩定、不可靠，即使⑤模型能力很強，也會因為「拿到的資訊本身不完整或不準確」而產生錯誤翻譯——真正正確的資訊（正確的錯誤碼數值、正確的 API 呼叫慣例、正確的欄位名稱）只存在於 Java 原始碼裡，任何摘要／轉譯步驟都可能遺漏或扭曲它。完整診斷過程見 `refactor_call_chain_implement_prompt.md`（原始交接文件），後續定案的分層分階段設計與大量真實案例實測數據見 `refactor_plan.md`。
+
+**新設計**：⑤ 不再吃 `[P]` 生成的語意摘要，改成直接餵「完整 Java 原始碼」，分兩階段執行，**Phase 1／Phase 2 是全專案層級的硬性關卡**（不是逐 module 各自判斷）：全部 module 的 Phase 1 都完成、通過語法驗證，才釋放任何 module 的 Phase 2。
+
+- **Phase 1（entity／dto／repository／utils，全專案）**：全部直接照 Java 原始碼翻譯，不經摘要層。entity／dto 沿用③④既有機制機械產生（不呼叫模型）；repository（Spring Data 衍生查詢介面用機械規則解析方法名稱，規則覆蓋不到的複雜條件才交給模型；有真實邏輯本體的 repository 類別照原始碼翻）交給 qwen；utils 交給 Claude API（見三章「LLM 分工」的實測依據）。Phase 1 內部若有互相呼叫（如某個 utils 依賴另一個 utils），直接展開 Java 原始碼，不套用下面的「讀已翻譯 Python」捷徑——這類呼叫鏈通常很淺，不值得為此另外處理排程保證。
+- **Phase 2（controller／service，全專案，一律 Claude API）**：同樣直接照 Java 原始碼翻譯；呼叫鏈遇到 Phase 1 的 callee（entity/dto/repository/utils）時，**不再遞迴展開 Java 原始碼**，改讀「已翻譯完成的真實 Python 原始碼」（function-level 抽取，只抽被呼叫到的那個函式，不是整份檔案，原則同下方「檔案內容不能整份帶入」）——因為 Phase 1 是全域先做完才開始 Phase 2，這份 Python 原始碼在讀取當下保證已經存在，不需要查任何排程完成狀態；遇到同層呼叫（Phase 2 內部，如 service 呼叫 service）則一律直接展開 Java 原始碼，同樣不依賴排程狀態，因此**不需要額外的同層排程順序保證機制**（`refactor_plan.md` 一章已收斂此問題）。
+
+呼叫鏈的一層查找由 ⑤（`09a_implement_agent_architecture.md`）新增職責負責，重用①既有機械化的呼叫圖分析（`parse_agent/call_graph.py::_build_call_graph()`），不需要新建、不改①的輸出契約；判斷 callee 屬於 Phase 1 或 Phase 2，查③新增的 `InterfaceSpec.phase` 欄位（見七章「③ 架構設計 Agent」）。「抽取 Java 方法完整原始碼文字」是另一項新增能力，同樣歸在 ⑤，因為只有 ⑤ 需要這個資訊，不屬於①③既有職責（見 `refactor_plan.md` 一章）。呼叫鏈本身不是 LLM 生成，不會有摘要失真的問題。
+
+**驗證閘門**：Phase 1 task 完成只做語法驗證（AST parse），功能驗證延續既有的 module 級 API 驗證機制（十三章局部驗證），不新建 Phase 1 專屬驗證——這是目前的決定，但實測發現「值層級」邏輯 bug（型別轉換沒判斷 `None`、正規表示式跳脫規則錯誤）語法驗證完全接不住，只有真的執行、帶邊界值輸入的測試才驗得出來，若之後真實 bug 率偏高需要重新評估，見 `refactor_plan.md` 四章。
+
+**Graph 層級的影響**：⑤ 這個 node 實際上要拆成兩個被全域硬性關卡隔開的階段（`graph/scheduler.py::ModuleScheduler` 需要在現有的跨 module 依賴排程、同 module 內層級排程之上，多一層「全專案 Phase 1 先於 Phase 2」的全域關卡，見 `01_langgraph_architecture.md`，**待更新**）。
+
+**目前狀態**：以上是 `refactor_plan.md` 記載的定案設計方向，`06a_plan_agent_architecture.md`／`09a_implement_agent_architecture.md`／`07a_translator_cli_architecture.md`／`01_langgraph_architecture.md` 的實作面細節（`TaskSpec` 新增 `phase`／`translator_backend` 欄位、`InterfaceSpec.phase` 欄位、utils 機械分類規則、`ModuleScheduler` 全域關卡等）**待更新**，尚未落地成這幾份文件的正式段落。
+
+### 舊版「單一函式粒度」原則（仍適用，抽取來源已擴充）
+
+原本的「單一函式粒度」「檔案內容不能整份帶入」原則依然適用於 Phase 1／Phase 2 的 context 組裝，只是抽取來源從「只有 Java 原始碼」擴充為「Java 原始碼或已翻譯完成的 Python 原始碼」（依上面 Phase 1/2 的呼叫鏈邊界規則而定）：
+
 [P] Plan Agent 產出 task list 時，必須將每個 task 切到**單一函式**的粒度（不保留「或類別」的模糊選項），讓 Agent ⑤ 每次呼叫 translator-cli 時只需傳入少量相關檔案，且輸出契約與 translator-cli 的「填空式」設計（模型只回傳單一函式本體）完全對齊。絕不能把整個專案目錄丟進去，否則 context 爆炸會導致實作品質下降。
 
 例如實作 `UserRepository.get_by_id()` 時，只需傳入 `user_repository.py` 和 `user.py` 兩個檔案，不需要傳入整個 `src/` 目錄。
@@ -241,7 +275,7 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 ### Claude API 端的大範圍語意判斷：map-reduce 模式
 
-上述「單一函式粒度」是針對本地模型（qwen）填空任務的 context 控制。但 Claude API 這側也有「輸入規模大、不能整包塞入」的任務——差別在於這類任務**需要跨邊界的全局視野**才能得出正確結論（例如判斷哪個 endpoint 的輸出是另一個 endpoint 的輸入，或是整個 Java 專案的模組拆分），不能像 translator-cli 那樣單純切到最小單位、互不相干地各自處理。
+上述「單一函式粒度」原本是針對本地模型（qwen）填空任務的 context 控制，現在 Phase 1／Phase 2（見上方）不論哪個後端都沿用同一套原則。但 Claude API 這側另外還有「輸入規模大、不能整包塞入」的任務——差別在於這類任務**需要跨邊界的全局視野**才能得出正確結論（例如判斷哪個 endpoint 的輸出是另一個 endpoint 的輸入，或是整個 Java 專案的模組拆分），不能像 translator-cli 那樣單純切到最小單位、互不相干地各自處理。
 
 對這類任務，設計方向是 **map-reduce**，而非單純「拆分後平行、各自獨立產出」：
 
@@ -361,25 +395,30 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 > **顆粒度要求**：interface 定義須精確到「檔案相對路徑＋函式簽名」層級，不能只到模組層級。這份輸出是 [P] 與 ④ 唯一的權威規格，兩者各自消費、不做二次詮釋，平行執行才不會各自猜出不一致的檔名或函式名。
 >
 > Agent ③ 完成後，[P] Plan Agent 和 ④ 骨架實作 Agent 可**平行執行**，兩者都只依賴 ③ 的輸出、互不依賴彼此。
+>
+> **新增 `InterfaceSpec.phase` 欄位**（承接六章「呼叫鏈 + 完整原始碼」設計）：標記這個 interface 屬於 Phase 1（entity/dto/repository/utils）還是 Phase 2（controller/service），供 `[P]` 排程與 ⑤ 判斷「呼叫鏈遇到這個 callee 該讀 Java 還是讀已翻譯的 Python」使用（見六章）。**計算規則已定案**：`@Repository` 或 package 路徑為 `xxx.utils` → Phase 1，entity/dto 已有既有機制，`@Service`／`@RestController` → Phase 2；極少數無 stereotype 又不在 utils package 的邊界情況沿用 05a 既有的 LLM fallback，見 `refactor_plan.md` 二章。
 
 → `route_to_file_mapping` 的 key 格式與比對演算法見 `02a_harness_architecture.md`。
 
 ---
 
-### [P] Plan Agent（Claude API）
+### [P] Plan Agent（機械邏輯為主，Claude API 視情況）
+
+**職責已隨六章「呼叫鏈 + 完整原始碼」設計改變**：不再產出 `description`／`context` 這種 LLM 語意摘要（那正是六章要拿掉的失真來源），改成標記每個 task 屬於 Phase 1 還是 Phase 2、該用哪個翻譯後端（`translator_backend`）。Phase 1 的 task 切分（entity/dto/repository/utils，依 method 對應的 Java class stereotype／衍生查詢介面判斷）是否還需要 LLM 判斷，或完全機械化（純程式邏輯即可決定，見 00 二章「能用程式判斷的，就不要交給 LLM」），仍待定案——見 `refactor_plan.md` 六章。
 
 - **輸入**：Agent ① 的模組清單 + Agent ③ 的架構設計
-- **職責**：切出 Agent ⑤ 在進入 Agent ⑥（測試執行）之前必須完成的完整範圍，並拆解成可獨立執行的 task list
+- **職責**：切出 Agent ⑤ 在進入 Agent ⑥（測試執行）之前必須完成的完整範圍，拆解成可獨立執行的 task list，並標記每個 task 的 Phase（1/2）與 `translator_backend`（qwen／claude，見三章「LLM 分工」）
 
 拆解時的關鍵原則：
 - **覆蓋率**：以 Agent ① 輸出的**完整方法清單**為準，不能只依 API 對應表拆 task——否則沒有直接對應 API 的內部 helper function 容易被漏掉，漏掉的函式不會被 Harness 的 API 級測試直接抓到，而是等到被其他函式呼叫時才爆出不直觀的錯誤
 - **粒度**：每個 task 鎖定**單一函式**，與 translator-cli 的輸出契約對齊（見第六節）
-- **依賴順序**：`depends_on` 決定同一 module 內的執行順序（例如 repository 先於 service 先於 router）；不同 module 間若無依賴關係，才可平行執行
+- **依賴順序**：`depends_on` 決定同一 module 內的執行順序（例如 repository 先於 service 先於 router）；不同 module 間若無依賴關係，才可平行執行。**另外疊加一層全專案層級的 Phase 1／Phase 2 全域關卡**（不是逐 module 判斷，見六章）：全部 module 的 Phase 1 都完成，才釋放任何 module 的 Phase 2
 - **模組歸屬**：每個 task 標記 `module`，供 Agent ⑤ 判斷該 module 的所有 task 是否已全數完成
+- **翻譯後端**：每個 task 標記 `translator_backend`，依「這個 task 屬於哪一層」機械決定（repository → qwen，其餘 → claude），不需要 LLM 判斷（見八章 `TaskSpec`）
 
 - **輸出**：task list（欄位格式見第八節）
 
-→ task 拆解演算法、涵蓋率驗證、依賴排序細節見 `06a_plan_agent_architecture.md`。
+→ task 拆解演算法、涵蓋率驗證、依賴排序細節見 `06a_plan_agent_architecture.md`（**待依 `refactor_plan.md` 更新**：現行文件仍描述舊版 LLM 摘要設計）。
 
 ---
 
@@ -393,17 +432,19 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 ---
 
-### ⑤ 功能改寫 Agent（translator-cli + qwen2.5-coder:32b）
+### ⑤ 功能改寫 Agent（translator-cli，依層級切換 qwen / Claude API）
 
-依 task list 逐一呼叫 translator-cli 實作業務邏輯，每次 task 鎖定單一函式。
+依 task list 逐一呼叫 translator-cli 實作業務邏輯，每次 task 鎖定單一函式；每個 task 帶 `translator_backend` 標記，決定這次呼叫打 qwen 還是 Claude API（見三章「LLM 分工」、六章「⑤ 的 context 來源」）。**分兩階段執行，Phase 1／Phase 2 是全專案層級的硬性關卡**（不是逐 module 判斷，見六章）：全部 module 的 Phase 1（entity/dto 機械產生、repository 用 qwen、utils 用 Claude API）都完成、通過語法驗證後，才釋放任何 module 的 Phase 2（controller/service，Claude API）task；context 一律是「呼叫鏈 + 完整原始碼」，不是 `[P]` 產生的語意摘要。
 
-**排程 vs. 執行併發**：多個 module 的 task 可以同時處於「就緒可排程」狀態（同一 module 內仍依 `depends_on` 序列執行），但對本地模型的**實際生成請求序列化，併發數固定為 1**（硬體限制見三/LLM 分工）。也就是說平行帶來的效益是「排程更有彈性、模組完成順序不死板卡住」，而不是「總耗時等比例縮短」；總耗時大致等於所有 task 的模型生成時間總和。排程順序須依 module 間依賴圖決定，優先完成同一 module 再釋放下游。
+**⑤ 新增兩項職責**（取代舊版 `[P]` 產生語意摘要）：組 Phase 2 task 的 prompt 時，(1) 抽取這個 Java 方法完整原始碼文字（新能力，用 javalang 定位 `MethodDeclaration` 節點取原始碼片段）；(2) 重用①既有的呼叫圖分析（`parse_agent/call_graph.py`）做一層呼叫查找，找出直接呼叫對象，查③新增的 `InterfaceSpec.phase` 判斷是 Phase 1 還是同層（Phase 2）——是 Phase 1 就讀真實 Python 原始碼（保證已存在，不需查排程狀態），是同層就直接展開 Java 原始碼（不依賴排程狀態，因此不需要額外的同層排程順序保證機制）。
+
+**排程 vs. 執行併發**：多個 module 的 task 可以同時處於「就緒可排程」狀態（同一 module 內仍依 `depends_on` 序列執行）。qwen 這條路徑（僅 repository 層）**實際生成請求序列化，併發數固定為 1**（硬體限制見三/LLM 分工）——平行帶來的效益是「排程更有彈性、模組完成順序不死板卡住」，不是「總耗時等比例縮短」；Claude API 這條路徑（entity/dto 除外的其餘各層）不受這個序列化限制，走一般 Claude API 併發策略。排程順序須依 module 間依賴圖決定，優先完成同一 module 再釋放下游；**另外疊加全專案 Phase 1／Phase 2 全域關卡**（見上方）。
 
 驗證分兩個層級，觸發時機不同：
 - **task 完成**：僅觸發 translator-cli 內建的語法驗證（AST parse），確認寫入沒有破壞語法，不觸發 API 級測試
 - **module 完成**（該 module 底下所有 task 都已完成）：才觸發該 module 的局部驗證，跑此 module 的 golden cases——因為 API 呼叫鏈往往橫跨 repository/service/router 多個函式，過早以單一 task 觸發 API 測試會產生大量「依賴鏈未接完」的假失敗
 
-→ translator-cli 的填空契約、AST 插入機制、request queue 序列化設計見 `07a_translator_cli_architecture.md`；局部驗證與全量驗證的兩層架構見 `02a_harness_architecture.md`。
+→ translator-cli 的填空契約、AST 插入機制、request queue 序列化設計見 `07a_translator_cli_architecture.md`；局部驗證與全量驗證的兩層架構見 `02a_harness_architecture.md`；Phase 1/2 分階段排程、雙後端切換、context 組裝的完整設計與實測依據見 `refactor_plan.md`（**待更新進 `09a_implement_agent_architecture.md`**，現行文件仍描述舊版單一 qwen 後端＋LLM 摘要設計）。
 
 ---
 
@@ -420,7 +461,7 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 ### ⑦ Debug Agent（Claude API）
 
 - **輸入**：fail 清單 + diff 報告 + 對應 Python 原始碼（`related_files`）
-- 分析根本原因，**直接寫出並套用修正後的程式碼**（`fixed_body`／`file_fixes`），不是輸出指令交給 Agent ⑤ 重新翻譯——⑤ 的本地模型完全退出這個除錯迴圈，即使是「⑤ 本地模型完全翻譯失敗」的函式，也由 ⑦ 直接從業務描述寫出完整實作，不會被排回本地模型重試（見 `10a_debug_agent_architecture.md` 四章「一旦失敗過一次，不再退回本地模型」）。這是真實環境重跑才發現、且曾在較早的討論裡確認過、卻沒有被準確寫進本文件的既有決策——2026-08-27 之前本文件一直沿用「回饋給 ⑤」這種措辭，容易誤導成「⑤ 根據 ⑦ 的建議重新翻譯」，跟 10a 的實際設計不一致
+- 分析根本原因，**直接寫出並套用修正後的程式碼**（`fixed_body`／`file_fixes`），不是輸出指令交給 Agent ⑤ 重新翻譯——⑤（不論 qwen 還是 Claude API 那條路徑）完全退出這個除錯迴圈，即使是「⑤ 翻譯完全失敗」的函式，也由 ⑦ 直接從業務描述寫出完整實作，不會被排回 ⑤ 重試（見 `10a_debug_agent_architecture.md` 四章「一旦失敗過一次，不再退回本地模型」）。這是真實環境重跑才發現、且曾在較早的討論裡確認過、卻沒有被準確寫進本文件的既有決策——2026-08-27 之前本文件一直沿用「回饋給 ⑤」這種措辭，容易誤導成「⑤ 根據 ⑦ 的建議重新翻譯」，跟 10a 的實際設計不一致
 
 ---
 
@@ -434,16 +475,22 @@ Agent 間使用結構化 JSON 傳遞，不使用自然語言，避免資訊失�
 
 ### [P] Plan Agent 的 task list
 
+**此表待依六章新設計更新**——`description`／`context` 兩欄原本是 `[P]` 產出的 LLM 語意摘要，正是六章要拿掉的失真來源，新設計下 ⑤ 直接讀 Java 原始碼（Phase 1／2 皆同），這兩欄的角色因此改變：`description` 可能改成純粹的機械化描述（如「翻譯 Java 方法 X」，不含業務語意摘要）或直接移除；`context` 的角色由呼叫鏈機械展開取代，不再是 LLM 生成的補充說明。以下是新增的兩個欄位，其餘欄位語意不變：
+
 | 欄位 | 說明 |
 |---|---|
 | `id` | task 唯一識別碼，如 `task_001` |
 | `module` | 所屬模組名稱，對應 `fixtures/golden/` 子目錄；供 Agent ⑤ 判斷該 module 是否所有 task 都已完成，以觸發局部驗證 |
-| `description` | 任務描述，供 translator-cli 組裝 prompt 用 |
+| `phase`（新增） | `1`／`2`，決定排程順序（見六章：全專案層級的全域關卡，所有 module 的 Phase 1 都完成才釋放任何 module 的 Phase 2，不是逐 module 判斷） |
+| `translator_backend`（新增） | `"qwen"` / `"claude"`，依 task 所屬層級機械決定（repository → qwen，其餘 → claude，見三章「LLM 分工」），不需要 LLM 判斷 |
+| `description` | 任務描述（角色待重新定義，見上方說明） |
 | `target_files` | 這次 task 需要讀寫的檔案清單（控制 translator-cli 呼叫模型時的 context） |
-| `context` | 補充說明，如依賴關係、邊界條件 |
+| `context` | 角色待重新定義，見上方說明；新設計下呼叫鏈展開出的 Java／已翻譯 Python 原始碼是主要 context 來源，不是這欄位 |
 | `depends_on` | 前置 task 的 id 清單，決定同一 module 內的執行順序 |
 
 > Plan Agent 必須確保：同一個 `module` 底下的 task，合起來涵蓋 Agent ① 輸出的**完整方法清單**（不只是 API 對應表列出的方法），否則局部驗證觸發時會因缺函式而失敗，且錯誤不易與「邏輯寫錯」區分。
+>
+> **這份表格與 `01_langgraph_architecture.md` 三章 `graph/state.py::TaskSpec` 的權威定義需要同步更新**——目前只有本文件先記錄新增欄位的意圖，`TaskSpec` 的 TypedDict 定義、`ReferencedFunctionRef`／`referenced_functions`（舊版函式層級抽取機制，見 `06a_plan_agent_architecture.md` 七章）是否保留或改造，待 `06a`／`09a`／`01` 一併更新時定案。
 
 ### Agent ③ 的 route_to_file_mapping
 
@@ -462,6 +509,13 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 ## 十、待決定事項
 
 - [ ] **06a 是否要為「[P]／④ 平行執行、彼此看不到對方輸出」這個結構性限制補一條「已知例外」文字說明**：資料面已經有 `RefactorState.skipped_interfaces`／`skipped_db_models`（`scaffold_node.py` 寫入，見 08a 十二章）供之後的 09a／⑦ Debug Agent 在遇到「AST 定位失敗：scaffold/task 不一致」時比對，判斷根因是④的骨架缺口、不是⑤的實作問題；這裡懸而未決的只是 06a 文件本身要不要額外補一段對應說明，不影響資料落地
+
+**以下項目承接六章「呼叫鏈 + 完整原始碼」新設計，完整討論過程與實測數據見 `refactor_plan.md`，尚未收斂、不影響本文件已定案的部分**：
+
+- [ ] `06a_plan_agent_architecture.md`／`07a_translator_cli_architecture.md`／`08a_scaffold_agent_architecture.md`／`09a_implement_agent_architecture.md`／`01_langgraph_architecture.md`（`graph/state.py::TaskSpec`、`graph/scheduler.py::ModuleScheduler` 全域 Phase 關卡）需要依六、七、八章的新設計同步更新，目前僅 00 本文件與 `refactor_plan.md` 反映新方向
+- [x] Utils 的機械分類規則、檔案結構、`InterfaceSpec.phase` 計算規則——已定案：Utils 依 Java 檔案 package 路徑是否為 `xxx.utils` 判斷（比行為推斷簡單可靠，純字串比對，不需要 LLM）；**檔案結構不套用 05a 三章 `{module}_{layer}.py` 規則**（utils 橫跨多個 module，套用會出現歸屬假問題），直接複製 Java package 結構，一個 Java class 對一個 Python 檔案；`phase` 依 stereotype／package 機械對應（`@Repository` 或 package 為 `xxx.utils` → Phase 1，entity/dto 已有既有機制，`@Service`／`@RestController` → Phase 2），極少數無 stereotype 又不在 utils package 的邊界情況沿用 05a 既有的 LLM fallback，見 `refactor_plan.md` 二章
+- [ ] （更新）Repository 衍生查詢介面原本設想的「規則化翻譯」是否還有必要——實測顯示 qwen 對衍生查詢（含 native SQL `@Query`）全部翻對，整個 repository 層已定案交給 qwen 且驗證可靠，還要不要另外做一套機械規則解析器，是新的取捨問題，見 `refactor_plan.md` 六章
+- [ ] 輕量驗證閘門（六章）若之後 bug 率偏高，是否要升級成 repository／utils 專屬的 unit-level 測試（重量閘門），見 `refactor_plan.md` 四章
 
 ---
 
@@ -491,6 +545,8 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 | `10b_debug_agent_code.md` | ⑦ Debug Agent 的實際程式碼實作 |
 | `11a_logging_architecture.md` | 全域 log 機制詳細設計：一般執行 log、Claude API／本地 Ollama 呼叫的 prompt/response 記錄、run_id／trace_id 等識別碼設計、`llm_traces.db` 查詢層（`llmlog` CLI 與 ⑦ Debug Agent 共用） |
 | `11b_logging_code.md` | 全域 log 機制的實際程式碼實作，含 `llmlog` CLI |
+| `refactor_call_chain_implement_prompt.md` | ⑤ 改用「呼叫鏈＋完整原始碼」取代 `[P]` LLM 摘要的原始交接文件：問題診斷、新方案構想、既有基礎設施盤點 |
+| `refactor_plan.md` | 承接上一份文件的定案設計：Phase 1／Phase 2 分階段翻譯、呼叫鏈邊界規則、Agent 職責分工、qwen／Claude API 雙後端分工（含真實案例實測數據）、驗證閘門取捨。**目前仍是討論階段的工作文件，`06a`／`07a`／`08a`／`09a`／`01` 尚未依此更新**，見十章待決定事項 |
 
 ---
 

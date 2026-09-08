@@ -782,7 +782,9 @@ def _mechanical_summary(class_info: ClassInfo) -> MapClassResult:
     )
 
 
-def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str, str]]:
+def run_map_reduce(
+    project: ParsedProject, force_include_class_names: set[str] = frozenset()
+) -> tuple[list[_ModuleDraft], dict[str, str]]:
     """對應 04a 四章全節：串接分組（grouping.py）、4a→4b 兩階段 Map（見
     「4a 在 4b 之前完成」）、Reduce、輸出組裝。回傳排除 skip 呼叫鏈之前
     的 `(module_drafts, class_to_module)`——skip 排除交給呼叫端（見
@@ -799,6 +801,22 @@ def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str
     Reduce 都看不到，`module_list.java_files` 又會漏掉它們，等於繞了
     一圈把四章一開始想解決的完整性問題重新引入。
 
+    `force_include_class_names`：`grouping.load_force_include_classes()`
+    的結果（對應 04a 四章「人工強制納入清單」），呼叫端在建構
+    `ParsedProject` 之後、呼叫本函式之前先算好傳入。**併入 `shared_class_
+    names` 與 `reachable_classes` 兩處，不是只加一處**：只加進
+    `shared_class_names` 的話，若這個類別剛好也被 `classify_trivial_
+    classes()` 判定為 trivial（如純 Lombok 資料類別），會被
+    `shared_units = build_shared_class_units(..., shared_class_names -
+    trivial_class_names)` 這行減掉、送不進 4a，而它又不在任何 Controller
+    的依賴閉包裡（強制納入的定義就是「沒有 Controller 閉包能到達」），
+    自然也不會出現在 `reachable_classes` 裡，`mechanical_results` 那段
+    `trivial_class_names & reachable_classes` 同樣不會納入它——兩條路徑
+    都漏接的話，這個類別會完全不呼叫 Map、也不產生機械摘要，直接從
+    Reduce 的輸入消失，等於強制納入清單完全沒有作用。因此兩個集合都要
+    聯集，讓「非 trivial → 走 4a Map」「trivial → 走機械摘要」兩條既有
+    路徑其中一條一定接得住它，不需要為強制納入的類別另開第三條路徑。
+
     **4c：全域生效類別（`@RestControllerAdvice`／`@ControllerAdvice`）
     獨立於上述 4a／4b／Reduce 之外處理**——`collect_global_advice_
     classes()` 找到的類別不在任何 Controller 的依賴閉包裡（見該函式
@@ -808,7 +826,7 @@ def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str
     直接機械組裝成一筆保留模組，附加進 Reduce 產出的 drafts。
     """
     controller_deps = controller_dependency_closure(project)
-    shared_class_names = find_shared_classes(controller_deps)
+    shared_class_names = find_shared_classes(controller_deps) | force_include_class_names
     trivial_class_names = classify_trivial_classes(project)
     global_advice_class_names = collect_global_advice_classes(project)
 
@@ -821,7 +839,7 @@ def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str
     )
     map_results_4b = run_map_phase_with_retry(controller_units)
 
-    reachable_classes = {c for deps in controller_deps.values() for c in deps}
+    reachable_classes = {c for deps in controller_deps.values() for c in deps} | force_include_class_names
     mechanical_results = [
         _mechanical_summary(project.classes[name])
         for name in sorted(trivial_class_names & reachable_classes)

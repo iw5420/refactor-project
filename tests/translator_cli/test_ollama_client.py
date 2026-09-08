@@ -48,7 +48,8 @@ def test_get_function_body_success_first_attempt(monkeypatch):
     body = asyncio.run(
         ollama_client.get_function_body(
             current_signature="def get_by_id(user_id: int) -> int:",
-            description="回傳 user_id",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             context="",
             context_files=[],
             function_name="get_by_id",
@@ -80,7 +81,8 @@ def test_get_function_body_records_start_before_calling_ollama_with_full_prompt(
     asyncio.run(
         ollama_client.get_function_body(
             current_signature="def f() -> int:",
-            description="說明文字",
+            java_source="說明文字",
+            referenced_source=[],
             context="",
             context_files=[],
             function_name="f",
@@ -113,7 +115,8 @@ def test_get_function_body_start_and_finish_share_same_trace_id(monkeypatch):
     asyncio.run(
         ollama_client.get_function_body(
             current_signature="def f() -> int:",
-            description="d",
+            java_source="d",
+            referenced_source=[],
             context="",
             context_files=[],
             function_name="f",
@@ -125,6 +128,10 @@ def test_get_function_body_start_and_finish_share_same_trace_id(monkeypatch):
 
 
 def test_get_function_body_retries_once_then_succeeds(monkeypatch):
+    # 預設 OLLAMA_FORMAT_RETRY_COUNT=0（見 docs/refactor_bug_trace.md：
+    # qwen 失敗一次就直接交給 Claude fallback，不在原地重試）——這裡調大
+    # 回 2，驗證重試迴圈本身的邏輯仍然正確（環境變數調大時可用）。
+    monkeypatch.setattr(ollama_client, "OLLAMA_FORMAT_RETRY_COUNT", 2)
     responses = [
         "沒有照格式回應",
         "<<<TRANSLATOR_CLI_BODY_START>>>\nreturn 1\n<<<TRANSLATOR_CLI_BODY_END>>>",
@@ -140,7 +147,8 @@ def test_get_function_body_retries_once_then_succeeds(monkeypatch):
     body = asyncio.run(
         ollama_client.get_function_body(
             current_signature="def f() -> int:",
-            description="d",
+            java_source="d",
+            referenced_source=[],
             context="",
             context_files=[],
             function_name="f",
@@ -153,6 +161,7 @@ def test_get_function_body_retries_once_then_succeeds(monkeypatch):
 
 
 def test_get_function_body_retries_on_empty_body_then_succeeds(monkeypatch):
+    monkeypatch.setattr(ollama_client, "OLLAMA_FORMAT_RETRY_COUNT", 2)
     responses = [
         "<<<TRANSLATOR_CLI_BODY_START>>>\n\n<<<TRANSLATOR_CLI_BODY_END>>>",  # 空 body，見六章步驟 6a
         "<<<TRANSLATOR_CLI_BODY_START>>>\nreturn 1\n<<<TRANSLATOR_CLI_BODY_END>>>",
@@ -166,7 +175,8 @@ def test_get_function_body_retries_on_empty_body_then_succeeds(monkeypatch):
     body = asyncio.run(
         ollama_client.get_function_body(
             current_signature="def f() -> int:",
-            description="d",
+            java_source="d",
+            referenced_source=[],
             context="",
             context_files=[],
             function_name="f",
@@ -177,8 +187,9 @@ def test_get_function_body_retries_on_empty_body_then_succeeds(monkeypatch):
 
 
 def test_get_function_body_retries_twice_then_succeeds(monkeypatch):
-    # _FORMAT_RETRY_COUNT=2：第一次、第二次都違反格式，第三次（第二次
-    # 重試）才成功——驗證真的用滿了兩次重試預算，不是只有一次。
+    # OLLAMA_FORMAT_RETRY_COUNT=2：第一次、第二次都違反格式，第三次（第
+    # 二次重試）才成功——驗證真的用滿了兩次重試預算，不是只有一次。
+    monkeypatch.setattr(ollama_client, "OLLAMA_FORMAT_RETRY_COUNT", 2)
     responses = [
         "第一次沒有照格式回應",
         "第二次還是沒有照格式回應",
@@ -195,7 +206,8 @@ def test_get_function_body_retries_twice_then_succeeds(monkeypatch):
     body = asyncio.run(
         ollama_client.get_function_body(
             current_signature="def f() -> int:",
-            description="d",
+            java_source="d",
+            referenced_source=[],
             context="",
             context_files=[],
             function_name="f",
@@ -207,6 +219,7 @@ def test_get_function_body_retries_twice_then_succeeds(monkeypatch):
 
 
 def test_get_function_body_gives_up_after_two_retries(monkeypatch):
+    monkeypatch.setattr(ollama_client, "OLLAMA_FORMAT_RETRY_COUNT", 2)
     call_count = {"n": 0}
 
     async def fake_call(system_prompt, user_prompt):
@@ -219,7 +232,8 @@ def test_get_function_body_gives_up_after_two_retries(monkeypatch):
         asyncio.run(
             ollama_client.get_function_body(
                 current_signature="def f() -> int:",
-                description="d",
+                java_source="d",
+                referenced_source=[],
                 context="",
                 context_files=[],
                 function_name="f",
@@ -227,6 +241,33 @@ def test_get_function_body_gives_up_after_two_retries(monkeypatch):
             )
         )
     assert call_count["n"] == 3  # 第一次 + 兩次重試
+
+
+def test_get_function_body_default_gives_up_after_first_format_error(monkeypatch):
+    # 對應 docs/refactor_bug_trace.md：OLLAMA_FORMAT_RETRY_COUNT 預設 0，
+    # 第一次格式錯誤就直接放棄、不重試，交由 client.py 轉 Claude fallback
+    # ——這是目前真實環境的實際預設行為，不是需要另外調環境變數才會發生。
+    call_count = {"n": 0}
+
+    async def fake_call(system_prompt, user_prompt):
+        call_count["n"] += 1
+        return "永遠沒有 delimiter"
+
+    monkeypatch.setattr(ollama_client, "_call_ollama_once", fake_call)
+
+    with pytest.raises(TranslatorCliModelOutputError, match="修正重試仍失敗"):
+        asyncio.run(
+            ollama_client.get_function_body(
+                current_signature="def f() -> int:",
+                java_source="d",
+                referenced_source=[],
+                context="",
+                context_files=[],
+                function_name="f",
+                run_id="test_run",
+            )
+        )
+    assert call_count["n"] == 1
 
 
 def _fake_async_client(post_impl):
@@ -247,6 +288,10 @@ def _fake_async_client(post_impl):
 
 
 def test_call_ollama_once_retries_network_error_then_succeeds(monkeypatch):
+    # 預設 TRANSLATOR_CLI_NETWORK_RETRIES=0（見 docs/refactor_bug_trace.md：
+    # 失敗一次就交給 Claude fallback，不在原地重試）——這裡調大回 2，
+    # 驗證重試迴圈本身的邏輯仍然正確（環境變數調大時可用）。
+    monkeypatch.setattr(ollama_client, "TRANSLATOR_CLI_NETWORK_RETRIES", 2)
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://fake-nginx/v1")
     monkeypatch.setenv("OLLAMA_API_KEY", "token")
     monkeypatch.setattr(ollama_client, "_NETWORK_RETRY_DELAY_SECONDS", 0)
@@ -462,3 +507,69 @@ def test_call_ollama_once_reuses_single_client_across_retries(monkeypatch):
     assert content == "ok"
     assert post_calls["n"] == 3  # 重試了兩次才成功
     assert client_instantiations["n"] == 1  # 但只建立了一個 client 實例
+
+
+def _fake_async_client_get(get_impl):
+    class _FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def get(self, url):
+            return await get_impl(url)
+
+    return _FakeAsyncClient
+
+
+def test_check_ollama_reachable_passes_on_any_http_response(monkeypatch):
+    # 對應 docs/refactor_bug_trace.md #7：只確認連線本身通不通，不比對
+    # 狀態碼——base_url 本身可能不接受 GET（如 404/405），只要收到任何
+    # HTTP 回應就代表連線是通的，視為預檢通過。
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://fake-nginx/v1")
+
+    class _FakeResponse:
+        status_code = 404
+
+    async def get_impl(url):
+        assert url == "http://fake-nginx/v1"
+        return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _fake_async_client_get(get_impl))
+
+    asyncio.run(ollama_client.check_ollama_reachable())  # 不拋例外即為通過
+
+
+def test_check_ollama_reachable_raises_upstream_degraded_on_transport_error(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://fake-nginx/v1")
+
+    async def get_impl(url):
+        raise httpx.TransportError("連不上")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _fake_async_client_get(get_impl))
+
+    with pytest.raises(TranslatorCliUpstreamDegradedError, match="連不到 ollama"):
+        asyncio.run(ollama_client.check_ollama_reachable())
+
+
+def test_check_ollama_reachable_raises_upstream_degraded_on_timeout(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://fake-nginx/v1")
+
+    async def get_impl(url):
+        raise httpx.TimeoutException("逾時")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _fake_async_client_get(get_impl))
+
+    with pytest.raises(TranslatorCliUpstreamDegradedError):
+        asyncio.run(ollama_client.check_ollama_reachable())
+
+
+def test_check_ollama_reachable_missing_env_var_raises_config_error(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+    with pytest.raises(TranslatorCliConfigError):
+        asyncio.run(ollama_client.check_ollama_reachable())

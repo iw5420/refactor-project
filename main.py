@@ -18,13 +18,12 @@ from graph.builder import build_graph
 from graph.nodes import implement_node
 from graph.stream_watchdog import STUCK_REPORT_SECONDS, dump_self_stack, pump_graph_stream
 from python_service.reload_probe import ensure_reload_probe_infra
+from translator_cli.git_ops import reset_python_project_dir, rollback_python_project_dir
 
 logger = logging.getLogger(__name__)
 
 
 async def main():
-    graph = build_graph()
-
     # 一般 log 與 llm_traces.db 共用同一個 run_id（見
     # 11a_logging_architecture.md 六章）：必須在 configure_logging() 之前
     # 產生，才能把它閉包進 _ContextFilter，讓這條 pipeline 執行期間每一行
@@ -33,6 +32,31 @@ async def main():
     configure_logging(run_id=run_id, file_handler=True)
 
     python_project_path = os.environ["PYTHON_PROJECT_PATH"]
+    # 對應 docs/refactor_bug_trace.md #28／#29：每輪開始前先把上一輪的
+    # 殘留內容整個改名備份、重新建立全新的空目錄＋git init，避免不同輪
+    # 之間 Reduce 模組切法不同造成的殘留檔案累積。必須在 ensure_reload_
+    # probe_infra() 之前執行——後者要在一個全新的 git repo 裡做初始
+    # commit（見該函式 docstring）。
+    backup_path = reset_python_project_dir(python_project_path, run_id)
+    try:
+        await _run_pipeline(python_project_path, run_id)
+    except BaseException:
+        # 對應 docs/refactor_bug_trace.md #31：走到這裡代表這一輪 pipeline
+        # 整個沒跑完（連 write_run_report() 都沒執行到，例如真實案例
+        # `20260906_060030_4019f4` 的 API 額度不足）——reset_python_
+        # project_dir() 這次建立的新目錄只是半成品，不該留著取代上一輪
+        # 的真實產物，也不該讓下一輪把這個半成品又搬進備份堆、真正有
+        # 意義的舊產物反而被越埋越深。刪掉這次的半成品，把剛剛搬走的
+        # 上一輪內容（如果有）還原回來，讓下一輪重新開始時看到的仍是
+        # 上一輪的真實產物。跑完整個流程、有寫出報告的情況（不論成功
+        # 或 give_up）不會走到這裡，維持現狀。
+        rollback_python_project_dir(python_project_path, backup_path)
+        raise
+
+
+async def _run_pipeline(python_project_path: str, run_id: str) -> None:
+    graph = build_graph()
+
     # 一次性前置準備：必須在 scaffold（④）第一次執行之前完成，見
     # python_service/reload_probe.py docstring、
     # 09b_implement_agent_code.md 二章。冪等，main.py 每次啟動都呼叫。
@@ -46,6 +70,7 @@ async def main():
         "python_base_url": os.environ.get("PYTHON_BASE_URL", "http://localhost:8000"),  # implement node 用
         "module_list": [],
         "api_to_python_target": [],
+        "skip_excluded_overloads": [],
         "openapi_spec": {},
         "collection_readonly_path": "",
         "collection_mutation_path": "",
@@ -63,11 +88,13 @@ async def main():
         "partial_reports": [],
         "blocked_modules": [],
         "failed_modules": [],
+        "verified_modules": [],
         "blocked_reasons": {},
         "test_results": {},
         "service_diagnostics": None,
         "debug_rounds": [],
         "pending_fixed_bodies": {},
+        "pending_retranslate_tasks": {},
         "pending_file_fixes": [],
         "give_up_early": False,
         "unanalyzed_root_cause_modules": [],

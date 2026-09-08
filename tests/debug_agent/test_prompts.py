@@ -13,37 +13,77 @@ def test_valid_response_passes():
         "root_cause_summary": "缺必填欄位",
         "fixable": True,
         "task_fixes": [
-            {"task_id": "t1", "diagnosis": "缺 score 欄位", "fixed_body": "補上 score", "file_fixes": []},
+            {
+                "task_id": "t1", "diagnosis": "缺 score 欄位", "retranslate": False,
+                "fixed_body": "補上 score", "file_fixes": [],
+            },
         ],
         "unfixable_reasons": [],
     }
     jsonschema.validate(instance, DEBUG_OUTPUT_SCHEMA)
 
 
-class TestKnownFillFailuresMandatoryRewrite:
-    """對應 docs/09b_bug_trace.md：⑤ 本地模型完全失敗（fill_failed）的
-    task 一旦進了除錯迴圈，⑦ 必須直接寫出完整函式本體，不能讓它繼續被
-    排程回本地模型重試——這條規則之前只存在於使用者先前的口頭要求，沒
-    有被準確寫進 10a/10b 或 prompt 本身，這裡鎖住 prompt 文字確實要求
-    了這件事，不再只是「有機會就做」的選擇性行為。"""
+def test_valid_response_with_retranslate_passes():
+    instance = {
+        "root_cause_summary": "從沒成功翻譯過",
+        "fixable": True,
+        "task_fixes": [
+            {
+                "task_id": "t1", "diagnosis": "known_fill_failure，需要重新翻譯", "retranslate": True,
+                "fixed_body": None, "file_fixes": [],
+            },
+        ],
+        "unfixable_reasons": [],
+    }
+    jsonschema.validate(instance, DEBUG_OUTPUT_SCHEMA)
 
-    def test_prompt_mandates_rewriting_every_known_fill_failure(self):
+
+class TestKnownFillFailuresMandatoryRetranslate:
+    """對應 docs/refactor_bug_trace.md #9：⑤ 本地模型完全失敗
+    （fill_failed）的 task 一旦進了除錯迴圈，⑦ 必須標記 retranslate=true
+    交還給⑤重新翻譯，**不能自己**根據 description（06a 已判定「對模型
+    沒有任何有效信號」的欄位）編一份 fixed_body——⑦ 沒有這些函式對應的
+    真實 Java 原始碼可以核對，自己猜寫的可靠度天生比不上⑤。"""
+
+    def test_prompt_mandates_retranslate_for_every_known_fill_failure(self):
         assert "known_fill_failures" in DEBUG_SYSTEM_PROMPT
         assert "一律要求" in DEBUG_SYSTEM_PROMPT
-        assert "不是選擇性的" in DEBUG_SYSTEM_PROMPT
+        assert "retranslate=true" in DEBUG_SYSTEM_PROMPT
 
-    def test_prompt_instructs_ignoring_existing_broken_content(self):
+    def test_prompt_instructs_not_fabricating_fixed_body_from_description(self):
         """跟一般 fixed_body（修正既有 bug）不同：fill_failed 的
         source_files 內容可能是殘缺骨架或半成品，prompt 必須明講「不要
-        在裡面找 bug，直接從 description 重寫」，避免 LLM 誤以為要
-        「修正」一份其實不可信的程式碼。"""
+        在裡面找 bug、也不要自己根據 description 編一份 fixed_body」，
+        改用 retranslate 交給有真實 Java 原始碼可核對的⑤處理。"""
         assert "抓 bug" in DEBUG_SYSTEM_PROMPT
-        assert "從零" in DEBUG_SYSTEM_PROMPT
+        assert "不要自己根據" in DEBUG_SYSTEM_PROMPT
+        assert "沒有任何" in DEBUG_SYSTEM_PROMPT
 
-    def test_prompt_still_allows_unfixable_when_description_insufficient(self):
-        """不是無腦要求一定要生出東西——description 本身不夠判斷時，仍
-        然允許誠實回報 unfixable，不要求用猜的邏輯硬湊一個編造的實作。"""
-        assert "連猜都猜不出合理實作" in DEBUG_SYSTEM_PROMPT
+    def test_prompt_still_allows_unfixable_when_truly_undecidable(self):
+        """不是無腦要求一定要生出 task_fix——這個 task_id 因為其他理由
+        （例如同時也在 known_scaffold_gaps 裡）判斷完全無法修時，仍然
+        允許誠實回報 unfixable。"""
+        assert "unfixable_reasons" in DEBUG_SYSTEM_PROMPT
+        assert "判斷完全無法修" in DEBUG_SYSTEM_PROMPT
+
+
+class TestRetranslatePreferredOverFixedBody:
+    """對應 docs/refactor_bug_trace.md #9：函式本體邏輯有問題時（不論是
+    從沒翻譯過，還是翻過但邏輯錯），prompt 必須明確引導模型優先選
+    retranslate，把 fixed_body 限縮成「不需要核對 Java 原始碼就能確定
+    對錯」的極少數情況——這是修正 ⑦ 自己缺乏 Java 原始碼、只能憑猜測
+    寫程式碼這個根本問題的核心措辭，不能只加欄位不改引導文字。"""
+
+    def test_prompt_frames_retranslate_as_default_for_body_logic_issues(self):
+        assert "預設做法" in DEBUG_SYSTEM_PROMPT
+        assert "這個函式對應的真實 Java 原始碼可以核對" in DEBUG_SYSTEM_PROMPT
+
+    def test_prompt_frames_fixed_body_as_last_resort(self):
+        assert "只在你能百分之百確定" in DEBUG_SYSTEM_PROMPT
+        assert "不要因為手上剛好看得到 source_files 就順手自己" in DEBUG_SYSTEM_PROMPT
+
+    def test_prompt_forbids_setting_both_retranslate_and_fixed_body(self):
+        assert "`true`、`fixed_body` 設 `null`" in DEBUG_SYSTEM_PROMPT
 
 
 class TestFileFixesFullReplacementForbidsRedundantFixedBody:

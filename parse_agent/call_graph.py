@@ -14,6 +14,11 @@ import javalang.ast
 import javalang.tree
 import yaml
 
+from common.jpa_base_repository import (
+    JPA_BASE_METHOD_NAME_MAP,
+    detect_jpa_base_entity,
+    synthetic_java_method_id,
+)
 from parse_agent.types import ClassInfo, FieldInfo, MethodEntry, MethodId, ParsedProject, RouteDecl, method_id
 
 logger = logging.getLogger(__name__)
@@ -77,6 +82,10 @@ def parse_java_project(java_project_path: str) -> ParsedProject:
         # _uses_dynamic_query_signal() docstring），跟 file_imports 一樣
         # 整份檔案共用，供 grouping.py 判斷是否需要送 Map 摘要用。
         file_uses_dynamic_query_signal = _uses_dynamic_query_signal(tree)
+        # 這個檔案的 package 是否落在 xxx.utils 底下（見 _is_utils_package()
+        # docstring、docs/refactor_bug_trace.md #15），跟 file_imports 一樣
+        # 整份檔案共用。
+        file_is_utils_class = _is_utils_package(tree.package.name if tree.package is not None else None)
         for class_info in [
             *_extract_classes(tree, rel_path),
             *_extract_interfaces(tree, rel_path),
@@ -84,6 +93,7 @@ def parse_java_project(java_project_path: str) -> ParsedProject:
         ]:
             class_info.imports = file_imports
             class_info.uses_dynamic_query_signal = file_uses_dynamic_query_signal
+            class_info.is_utils_class = file_is_utils_class
             if class_info.class_name in classes:
                 logger.warning(
                     "類別名稱在專案內重複，型別解析會退化成保守全連結（見 types.py "
@@ -169,6 +179,61 @@ def _uses_dynamic_query_signal(tree: javalang.tree.CompilationUnit) -> bool:
     return False
 
 
+def _is_utils_package(package: str | None) -> bool:
+    """對應 docs/refactor_bug_trace.md #15：`CollectionUtil`／`CodeUtil`
+    這類純靜態工具類，呼叫端一律用「類別名稱直接呼叫」（`ClassName.
+    staticMethod()`），不透過欄位注入——`_resolve_qualifier_string()`
+    既有的兩個特例（`uses_dynamic_query_signal`／`is_generic_response_
+    wrapper`）都是針對特定結構訊號設計，utils 工具類兩者都不符合，這類
+    呼叫因此完全不會被記進呼叫圖，[P] 的 `reference_targets` 自然也看
+    不到，⑤ 翻譯時只能照 Java 靜態呼叫語法瞎猜 Python 端的呼叫慣例。
+
+    判斷方式沿用 `design_agent/layout.py::is_utils_package()` 已經定案
+    的同一個訊號——package 名稱最後一段是不是 `utils`，比「無 stereotype
+    ＋全靜態方法」這種行為推斷簡單、可靠得多（見 05a 三章「Utils
+    特例」）。`parse_agent`／`design_agent` 是各自獨立套件，不互相
+    import（01 二章「設計原則」），這裡是同一個判斷邏輯的獨立副本，不是
+    忘記共用——這個邏輯只有一行、極不可能跟 design_agent 那份走向分岔，
+    重複維護的成本遠低於為了共用一行邏輯在兩個套件間建立耦合。
+    """
+    if not package:
+        return False
+    return package.rsplit(".", 1)[-1] == "utils"
+
+
+def _is_self_returning_static_factory(class_decl: javalang.tree.ClassDeclaration) -> bool:
+    """判斷這個 class 是不是「自我回傳靜態工廠」模式——回應包裝類別
+    （`ResponseResult<T>`／`Result<T>` 的 `ok()`／`error()`／`success()`／
+    `failure()`）跟 entity 轉換 DTO（`UserProfileRs.fromEntity()`）共有
+    的結構特徵：真實案例（見 `ExamController::search()` 呼叫
+    `ResponseResult.ok(...)`）證實這類呼叫跟 `ExamSpecification` 這類
+    Specification helper 一樣，是不透過欄位注入使用的靜態呼叫，
+    `_resolve_qualifier_string()` 靜態呼叫解析（見下方）需要一個訊號
+    辨識「這是可以直接靜態呼叫的工廠類別」，才知道要不要放行。
+
+    **判斷條件**：至少有一個 `static` 方法的宣告回傳型別就是這個 class
+    自己。**根因訂正（docs/refactor_bug_trace.md #38）**：原本額外要求
+    「class 本身宣告泛型型別參數」（`ClassName<T>`），理由是「一般 DTO
+    不是泛型類別，也不會有 static 工廠方法回傳自己」——真實案例
+    `UserProfileRs.fromEntity(ExamEntity entity): UserProfileRs` 推翻了
+    這個假設：它是非泛型 DTO，卻真的有 static 工廠方法回傳自己，導致
+    `CandidateController.getCandidate()` 呼叫 `UserProfileRs.fromEntity()`
+    這條邊在呼叫圖裡完全消失，⑤ 看不到 `UserProfileRs.java` 建構子的
+    真實欄位對應（`this.name = entity.getUserName();`），猜錯成
+    `entity.name`（`ExamEntity` 沒有這個欄位），真實觸發
+    `AttributeError`。已對整個 Java 專案掃過全部 `public static` 方法
+    確認：拿掉泛型限制後，只有 `UserProfileRs` 這一個類別會新命中，
+    不會誤判其他任何類別（`GetExamResultRq`／`GetExamResultRs` 這兩個
+    名稱帶 `Result` 字樣的一般 DTO 完全沒有 `static` 方法）。
+    """
+    return any(
+        "static" in method.modifiers
+        and isinstance(method.return_type, javalang.tree.ReferenceType)
+        and method.return_type.name == class_decl.name
+        for method in class_decl.methods
+    )
+
+
 def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list[ClassInfo]:
     """步驟 2：抽取單一檔案內每個具體 class 的 field／method／stereotype
     資訊。interface／enum／annotation 宣告不建立 ClassInfo（沒有欄位/方法
@@ -243,6 +308,7 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
                 request_mapping_base=raw_base_paths or [],
                 routes=routes,
                 annotations=[a.name for a in class_decl.annotations],
+                is_self_returning_static_factory=_is_self_returning_static_factory(class_decl),
             )
         )
     return result
@@ -309,6 +375,16 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
                 request_mapping_base=[],
                 routes=[],
                 annotations=[a.name for a in decl.annotations],
+                # 對應 docs/refactor_bug_trace.md #16：`extends` 鏈裡若有
+                # Spring Data 基底介面（JpaRepository/CrudRepository/
+                # PagingAndSortingRepository），記下它的 entity 型別，供
+                # `_yield_call()` 合成繼承來的方法呼叫關係。跟上面
+                # docstring「這裡不解析 extends 鏈」講的是不同層次的
+                # 解析——那句話說的是「不嘗試把 extends 目標當成專案內
+                # class 去查表」（JpaRepository 本來就查不到），這裡只是
+                # 讀出 extends 引用本身的名稱／泛型引數，不查表，兩者不
+                # 衝突。
+                jpa_base_entity=detect_jpa_base_entity(decl.extends),
             )
         )
     return result
@@ -672,10 +748,61 @@ def _resolve_qualifier_string(
     interface_implementors: dict[str, list[ClassInfo]],
 ) -> list[ClassInfo] | None:
     """把 qualifier 字串（可能是單一 field 名稱，也可能是 javalang 折疊
-    出的點號路徑，見本節前言）逐段解析：開頭的 `"this"` 視為
-    `current_class` 本身，其餘每一段都當作「目前候選類別清單裡任一個的
-    field 名稱」依序解析下去，任何一段解析不到就回傳 None。
+    出的點號路徑，見本節前言）解析成目標類別清單。
+
+    **三種已知靜態呼叫特例，優先判斷**：qualifier 整串直接是專案內某個
+    類別名稱、且該類別命中下面任一個結構訊號時，視為靜態呼叫，直接把
+    該類別當目標，不進入下面的欄位鏈解析——這幾類 helper class 都不是
+    透過欄位注入使用，走欄位解析永遠找不到，之前會直接回傳 `None`、
+    這個呼叫完全從呼叫圖裡消失：
+    1. `uses_dynamic_query_signal=True`（這個檔案 import 了
+       `org.springframework.data.jpa.domain.Specification`，見
+       `_uses_dynamic_query_signal()`、04a 三章「Import 依賴補充」既知
+       案例）——真實案例：`ExamController::search()` 呼叫
+       `ExamSpecification.withYear/withGrade/...`。
+    2. `is_self_returning_static_factory=True`（自我回傳靜態工廠，見
+       `_is_self_returning_static_factory()`）——真實案例：`ExamController`
+       等多個 controller 呼叫 `ResponseResult.ok(...)`／
+       `Result.success(...)`；`CandidateController.getCandidate()` 呼叫
+       `UserProfileRs.fromEntity(...)`（見 docs/refactor_bug_trace.md
+       #38，這個訊號原本要求泛型，訂正後才涵蓋這個非泛型 DTO 案例）。
+    3. `is_utils_class=True`（package 落在 `xxx.utils` 底下的純靜態工具
+       類，見 `_is_utils_package()`）——真實案例（`docs/refactor_bug_
+       trace.md` #15）：`ExamService::createRandom()` 呼叫
+       `CodeUtil.generateRandomCode()`，`exam_router.py::getAllExamKind()`
+       呼叫 `CollectionUtil.findDistinctField(...)`，兩者都因為兩個舊
+       特例都不命中，完全消失在呼叫圖裡，[P] 的 `reference_targets`
+       BFS 因此看不到這條呼叫，⑤ 只能照 Java 靜態呼叫語法瞎猜 Python
+       端的呼叫慣例（utils 已經被翻成模組層級函式，不是類別）。
+
+    **刻意不是「任何裸類別名稱靜態呼叫一律解析」這種通用規則**：呼叫圖
+    同時供 `skip_filter.py` 的可達性分析、`plan_agent/call_chain.py` 的
+    `reference_targets` BFS 使用，貿然放寬到所有靜態呼叫會擴大這個函式
+    的行為變動範圍到整個呼叫圖的語意，需要重新評估對這些下游消費者的
+    影響；只鎖定這幾個已經有明確結構訊號、已知問題模式的類別，範圍
+    精準、風險可控——`is_self_returning_static_factory` 刻意不用類別
+    名稱比對（`Result`／`Response` 這類字樣），因為這個專案裡就有名稱
+    剛好帶 `Result` 字樣、但其實是一般 Request／Response DTO 的反例
+    （`GetExamResultRq`／`GetExamResultRs`，兩者都沒有任何 `static`
+    方法），名稱比對會誤判；`is_utils_class` 同樣不用類別名稱比對
+    （`Util`／`Utils` 這類字樣），改用比對 package 名稱這個更可靠的
+    結構訊號（見 `_is_utils_package()` docstring），理由跟
+    `is_self_returning_static_factory` 一致。
+    `_resolve_type_name_to_classes()` 找不到、或找到但三個訊號都沒命中，
+    都落到下面既有的欄位鏈解析（`this.xxxService.foo()` 這類）。
+
+    其餘每一段都當作「目前候選類別清單裡任一個的 field 名稱」依序解析
+    下去，開頭的 `"this"` 視為 `current_class` 本身，任何一段解析不到
+    就回傳 None。
     """
+    static_targets = [
+        t
+        for t in _resolve_type_name_to_classes(qualifier, classes, interface_implementors)
+        if t.uses_dynamic_query_signal or t.is_self_returning_static_factory or t.is_utils_class
+    ]
+    if static_targets:
+        return static_targets
+
     segments = qualifier.split(".")
     context = [current_class]
     if segments[0] == "this":
@@ -722,9 +849,37 @@ def _method_return_context(
 
 
 def _yield_call(member_name: str, context: list[ClassInfo]):
+    """對應 docs/refactor_bug_trace.md #16：`member_name` 若不是任何候選
+    類別顯式宣告的方法，但候選類別繼承了 Spring Data 基底介面
+    （`jpa_base_entity` 非 `None`）、且 `member_name` 剛好是那幾個已知的
+    繼承來的固定方法名稱之一（`findAll`／`findById`／`save`……），一樣視為
+    一次合法呼叫，只是目標換成合成座標（指向 Python 端 `BaseRepository`
+    的對應方法，見 `common/jpa_base_repository.py`），不是這個 repository
+    自己的檔案／類別——這幾個方法在 Java 原始碼裡從未顯式宣告過（Spring
+    在執行期動態產生），沒有真實座標可以指，用固定的虛擬座標取代。
+
+    對應 docs/refactor_bug_trace.md #21：只 yield 合成座標，⑤只看得到
+    `BaseRepository` 這個抽象基底方法本身的內容，看不到「這次實際呼叫的
+    是哪一個具體 repository 子類別、它自己定義在哪個檔案」——真實案例
+    `ExamRepository`（有 `findByKind` 等其他顯式方法，但這次呼叫剛好是
+    純繼承的 `findAll()`）證實模型會因此瞎猜一個檔名慣例（`app.repositories.
+    exam_repository`），猜錯就整段 `ImportError`。若 `cls` 除了這個純繼承
+    呼叫之外還有其他顯式方法（`cls.methods` 非空），額外 yield 一個指向
+    `cls` 自己任一顯式方法的參考——這個參考本來就會被翻譯成真正的
+    `java_index` 項目（指向 `cls` 實際定義的檔案），順便讓 reference_targets
+    帶出「這個具體子類別定義在哪個檔案」這個資訊，不需要另外新增一種
+    「class 宣告」座標格式。`cls.methods` 全空（真正的孤兒類別，如
+    `QuestionRepository`）時沒有東西可以 piggyback，維持只 yield 合成
+    座標——那種情況本來就交給 `_synthesize_inherited_repository_reads()`
+    合成出「真正的」InterfaceSpec／`java_method_id`，不受這裡影響。
+    """
     for cls in context:
         if any(m.name == member_name for m in cls.methods):
             yield method_id(cls.file_path, cls.class_name, member_name)
+        elif cls.jpa_base_entity is not None and member_name in JPA_BASE_METHOD_NAME_MAP:
+            yield synthetic_java_method_id(member_name)
+            if cls.methods:
+                yield method_id(cls.file_path, cls.class_name, cls.methods[0].name)
 
 
 def _continue_chain(
@@ -740,26 +895,50 @@ def _continue_chain(
     `MemberReference`／`MethodInvocation` 若自己還帶 `qualifier`（javalang
     通常不會這樣產生，是選擇器層級的罕見情況），不強行模擬，直接視為
     無法解析（見 04b 十一章）。
+
+    **`selectors` 是攤平的清單，`context` 要依序在清單元素之間傳遞**：
+    真實案例證實，javalang 對 `this.a.b().c()` 這類鏈式呼叫，是把整條鏈
+    攤平成同一層 `selectors` 清單（`this.userRepository.findById(id)`
+    這種顯式 `this` 開頭的欄位鏈式呼叫，`This.selectors` 直接是
+    `[MemberReference(member="userRepository"), MethodInvocation(member=
+    "findById")]` 兩個同層元素），不是巢狀在前一個元素自己的
+    `.selectors` 屬性裡（每個元素自己的 `.selectors` 在這個情境下實測
+    永遠是 `None`）——修復前的版本把新算出的 `next_context` 只傳進對
+    `sel.selectors`（永遠是 `None`）的遞迴呼叫，等於每次都在原地丟棄
+    剛算出的 context，外層 `for` 迴圈前進到下一個清單元素時，用的還是
+    這個元素自己以外、從未更新過的舊 `context`。結果是 `this.欄位.
+    方法()` 這種寫法永遠解析失敗（`userRepository.findById(id)` 這種
+    沒有 `this.` 開頭的等價寫法反而正確，因為那條路走的是
+    `_resolve_qualifier_string()`，不經過這個函式）。改成 `context`
+    在同一個 `for` 迴圈裡逐一累積更新（一般程式語言鏈式呼叫的直覺寫
+    法），才會是真正的修法；`sel.selectors` 仍保留防禦性遞迴（真實資料
+    從未觀察到非空的情況，但不假設它一定是空的）。
     """
     for sel in selectors:
         if isinstance(sel, javalang.tree.MemberReference):
-            next_context = (
+            context = (
                 _resolve_member_context(sel.member, context, classes, interface_implementors)
                 if context and not sel.qualifier
                 else None
             )
-            yield from _continue_chain(sel.selectors or [], next_context, current_class, classes, interface_implementors)
         elif isinstance(sel, javalang.tree.MethodInvocation):
             if context and not sel.qualifier:
                 yield from _yield_call(sel.member, context)
-                next_context = _method_return_context(sel.member, context, classes, interface_implementors)
+                context = _method_return_context(sel.member, context, classes, interface_implementors)
             else:
-                next_context = None
+                context = None
             for arg in sel.arguments or []:
                 yield from _walk_and_resolve(arg, current_class, classes, interface_implementors)
-            yield from _continue_chain(sel.selectors or [], next_context, current_class, classes, interface_implementors)
         else:
             yield from _walk_and_resolve(sel, current_class, classes, interface_implementors)
+            continue
+
+        if sel.selectors:
+            # 真實資料從未觀察到（見上方 docstring），防禦性保留：這個
+            # 元素自己還帶巢狀鏈，視為在這裡分岔，遞迴走完巢狀部分，不
+            # 再繼續這層迴圈剩餘的元素（避免同一段鏈被處理兩次）。
+            yield from _continue_chain(sel.selectors, context, current_class, classes, interface_implementors)
+            return
 
 
 def _walk_and_resolve(

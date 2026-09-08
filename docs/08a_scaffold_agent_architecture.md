@@ -378,6 +378,10 @@ Spring Boot 專案高度依賴這組（或 Hibernate 的 `@CreationTimestamp`／
 - `@CreatedDate`／`@CreationTimestamp` → 額外帶 `server_default=func.now()`
 - `@LastModifiedDate`／`@UpdateTimestamp` → 額外帶 `server_default=func.now(), onupdate=func.now()`（初次寫入時給預設值，之後每次更新自動刷新）
 
+**`@CreatedDate`／`@LastModifiedDate` 只在專案有 `@EnableJpaAuditing` 時才視為生效，`@CreationTimestamp`／`@UpdateTimestamp` 不受這個條件限制**：前者是 Spring Data JPA 的稽核機制，需要 `@EnableJpaAuditing`（還需要 `AuditingEntityListener` 掛勾，但那個前提條件如果連 `@EnableJpaAuditing` 都沒有就一定不成立，只查這個當保守的必要條件已經足夠）才會真的由框架寫入值；後者是 Hibernate 原生機制，不需要任何額外設定就會生效。兩者語法上長得像、常被搞混，但生效條件完全不同——`lang-exam-api-refactor` 專案的 `BaseEntity` 用 `@CreatedDate`／`@LastModifiedDate`，但整個專案沒有任何 `@EnableJpaAuditing`（也沒有 `@EntityListeners(AuditingEntityListener.class)`），這兩個 annotation 純粹是裝飾，Java 端 `created`／`updated` 永遠是 `null`；若骨架不判斷這個條件、機械生成 `server_default=func.now()`／`onupdate=func.now()`，Python 版本會在每次寫入／更新後自動填值，跟 golden output 對不上（`docs/09b_bug_trace.md` #69）。
+
+判斷方式是對整個 `java_project_path` 做一次字面字串搜尋，檢查有沒有任何檔案出現 `@EnableJpaAuditing`——這是一次性的專案級二元判斷，不需要 javalang 解析成結構化資訊。掃描到 `@CreatedDate`／`@LastModifiedDate` 但這個條件不成立時，欄位仍然正確辨識出來，只是不產生 `server_default`／`onupdate`，保留一般 nullable 欄位的行為，貼近 Java 端 annotation 裝飾但實際上沒有生效的真實狀態。
+
 兩者都需要 `from sqlalchemy import func`。Java 端這兩個 annotation 實際上是**應用層**在 persist／update 前寫入值（Spring Data JPA 透過 `AuditingEntityListener`），不是 DB 端觸發——這裡改用 DB 端 `server_default`／`onupdate` 達成的是**同樣的最終可觀察行為**（欄位確實會被自動填入、自動更新的時間戳），機制不同但效果對齊，是骨架階段能機械做到的最接近選擇；若這兩個時間戳的實際來源需要跟應用層邏輯完全一致（例如同一個 request 內多次寫入要共用同一個時間戳），交由⑤視需要調整。
 
 **這幾個欄位的 Column 型別固定用 `DateTime(timezone=True)`，不是七章對應表原本的裸 `DateTime`**：PostgreSQL 的 `func.now()` 回傳帶時區的 `TIMESTAMPTZ`，若欄位型別宣告成不帶時區的 `DateTime`（對應 `TIMESTAMP WITHOUT TIME ZONE`），型別跟這裡機械塞進去的 `server_default` 不一致，某些驅動（如 asyncpg）在這種不一致下可能發出警告甚至影響讀回時的時區處理。**只有稽核時間戳這幾個欄位改用 `timezone=True`，不是把七章「Python 型別 → SQLAlchemy Column 型別」對應表裡 `datetime → DateTime` 這條規則整條改掉**：Java 的 `LocalDateTime` 語意上就是不帶時區的「地方時間」，一般的 `LocalDateTime` 欄位維持裸 `DateTime`（不帶時區）才是跟原始 Java 型別語意一致的對應；只有這裡因為改用 `func.now()` 這個帶時區的 DB 端函式，才需要讓 Column 型別跟著調整以匹配，是這個特定情境的例外，不是通用規則的修正。
@@ -688,10 +692,10 @@ class BuildDbModelsResult:
 - **annotation 元素值一律只認 `Literal`**：用常數代入 annotation 元素時視同該元素缺席，不嘗試解析常數實際的值——要解析常數值需要額外追蹤這個常數定義在哪個類別、值是多少，屬於完整的符號解析，超出這裡「輕量掃描」的範圍
 - **`@Table(schema = "...")` 目前沒有真實案例驗證**：`lang-exam-api-refactor` 這個真實專案目前只用單一 DB，沒有觀察到多 schema 情況
 - **`@Table(indexes = ...)` 不處理**：純索引（非唯一）不影響資料完整性，只影響查詢效能，跟七章已處理的 `uniqueConstraints`（資料完整性）性質不同，這次不追
-- **多層 `@MappedSuperclass` 疊加（`Order extends AuditableEntity extends BaseEntity`）只驗證過理論設計，沒有真實案例**：六章的合併演算法本身支援任意層數遞迴，但 `lang-exam-api-refactor` 是否真的用到超過一層的疊加，需要接上真實專案才能確認
+- **多層 `@MappedSuperclass` 疊加（`Order extends AuditableEntity extends BaseEntity`）只驗證過理論設計，沒有真實案例**：六章的合併演算法本身支援任意層數遞迴，但 `lang-exam-api-refactor` 目前只出現單層疊加（entity 直接 `extends BaseEntity`，已由 `docs/09b_bug_trace.md` #69／#98 的真實 pipeline 執行驗證），超過一層的疊加沒有真實案例
 - **`@Entity extends @Entity`（JPA `@Inheritance` 繼承策略：`SINGLE_TABLE`／`JOINED`／`TABLE_PER_CLASS`）不處理**：六章合併演算法只沿 `extends` 鏈合併 `@MappedSuperclass`，父類別若解析到的是另一個 `@Entity`，這一層停止合併並記 `logger.warning`（見六章），但父 entity 的欄位不會被合併進子 entity——子 entity 產生的 `app/models/{module}.py` 只含它自己直接宣告的欄位，`@Inheritance` 策略要求的欄位繼承（`SINGLE_TABLE` 需要父子欄位合併進同一張表、`JOINED` 需要子表額外關聯父表主鍵、`TABLE_PER_CLASS` 需要各自完整複製欄位）完全沒有實作——若子 entity 自己完全沒有宣告 `@Id` 欄位（主鍵定義在父 entity 上），會落入跟六章「`@MappedSuperclass` 欄位繼承合併」開頭描述的同一種「主鍵不明確」結構性錯誤
 - **稽核時間戳、`@Where`／`@SQLRestriction` 邏輯刪除的關鍵字判斷是機械字面比對**：`@CreatedDate`／`@LastModifiedDate`／`@CreationTimestamp`／`@UpdateTimestamp`／`@Where`／`@SQLRestriction` 這幾個 annotation 名稱本身是固定字面比對，不處理專案自訂的、語意相同但名稱不同的稽核／軟刪除機制（如公司內部框架自己包的 `@AutoTimestamp`）
-- **FQN 索引、`resolve_reference()`、Enum 完整解析、`use_alter`、`@MappedSuperclass` 欄位合併、`@ManyToMany`／`@JoinTable` 都還沒有真實案例驗證**：尤其「跨 package 同名類別」「Enum 欄位」「循環外鍵」「繼承主鍵」「多對多中介表」這幾種情況目前是否真的出現在 `lang-exam-api-refactor`，需要接上真實 `module_list`／`java_project_path` 才能確認
+- **`use_alter` 循環外鍵偵測、`@ManyToMany`／`@JoinTable`、跨 package 同名類別（FQN 索引撞名）目前還沒有真實案例驗證**：`lang-exam-api-refactor` 目前沒有出現這幾種情況，是否觸發、觸發後行為是否正確，需要接上更多真實專案才能確認。`resolve_reference()`（同 package 隱式參照路徑）、Enum 完整解析（含建構子引數還原）、`@MappedSuperclass` 單層欄位合併已由 `docs/09b_bug_trace.md` #44／#69／#98 的真實 pipeline 執行驗證，不在此列
 
 ---
 
@@ -808,9 +812,9 @@ result = await translator_cli.generate_scaffold(
 
 ## 十四、待決定事項
 
-- [ ] 十章列出的各項機制（`@Embeddable`、複合主鍵、`@Table(schema=...)`、Enum 欄位、循環外鍵、`@ManyToMany`／`@JoinTable` 等）在 `lang-exam-api-refactor` 真實專案的實際觸發比例，均待接上真實 `module_list`／`java_project_path` 才能確認——細節見十章各條目，不重複列
-- [ ] Entity／Enum 跨 package 撞名下游看不到（十章相應條目）：優先順序是先確認真實專案是否真的踩到，若沒有，這是目前不會觸發的理論風險，可先擱置
-- [ ] `scaffold_agent` 對 `lang-exam-api-refactor` 真實專案的端對端驗證：08b 已落地（見 `08b_scaffold_agent_code.md`），下一步是接上真實 `module_list`／`java_project_path` 實跑
+- [x] `scaffold_agent` 對 `lang-exam-api-refactor` 真實專案的端對端驗證——已跑過完整 `scaffold → implement → run_tests → debug` pipeline（4 輪 debug 迴圈，13/26 → 22/26），過程中發現並修好 Enum 掃描（`_extract_enums()`）、Enum 建構子引數還原、`@EnableJpaAuditing` 稽核時間戳誤判、`extends` 依賴邊缺失四個真實 bug，見 `docs/09b_bug_trace.md` #44／#69／#98
+- [ ] 十章列出、目前仍沒有真實案例觸發的機制（`@Embeddable`、複合主鍵、`@Table(schema=...)`、循環外鍵 `use_alter`、`@ManyToMany`／`@JoinTable`、跨 package 撞名、多層 `@MappedSuperclass` 疊加）在 `lang-exam-api-refactor` 之外其他真實專案的觸發比例，待接上更多專案才能確認——細節見十章各條目，不重複列
+- [ ] Entity／Enum 跨 package 撞名下游看不到（十章相應條目）：`lang-exam-api-refactor` 尚未踩到，是否優先處理待真的觀察到再評估
 
 ---
 

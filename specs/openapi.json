@@ -1469,9 +1469,6 @@
             "type": "integer",
             "format": "int64"
           },
-          "arate": {
-            "type": "string"
-          },
           "bcount": {
             "type": "integer",
             "format": "int64"
@@ -1482,6 +1479,9 @@
           "dcount": {
             "type": "integer",
             "format": "int64"
+          },
+          "arate": {
+            "type": "string"
           },
           "ccount": {
             "type": "integer",

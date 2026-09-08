@@ -365,6 +365,12 @@ class RefactorState(TypedDict):
     # Agent ①
     module_list: list[ModuleInfo]
     api_to_python_target: list[ApiMapping]
+    # 使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」（見
+    # 03a「Decision.SKIP 的語意」）。同名不同 HTTP method 的多載會共用
+    # 同一個 method_id，這裡另外存 HTTP method 精確的排除清單，供③在
+    # 重新掃描出每個多載各自的 http_method 後排除用（見 04a 五章、
+    # 05a 四章）。
+    skip_excluded_overloads: list[tuple[str, str, str]]
 
     # Agent A / B
     openapi_spec: dict
@@ -778,33 +784,116 @@ class ModuleScheduler:
         self.task_failed -= task_ids
 
     def _backfill_missing_task_deps(self):
-        """同 module 內沒有 depends_on、也未被引用的 task，依原始順序自動串成序列依賴。
-        本地模型併發數鎖死為 1，這些 task 本來就得排隊，強制序列化不拉長總耗時，
-        只是換取可預期性與可除錯性。
+        """同 module 內沒有 depends_on、也未被引用的 task，依原始順序自動
+        串成序列依賴——但**只對 `translator_backend == "qwen"` 的 task**
+        這樣做。原始理由（本地模型併發數鎖死為 1，這些 task 本來就得
+        排隊，強制序列化不拉長總耗時）只對 qwen 成立；Claude 沒有這個
+        併發限制（見 07a 七、八章），不該被拖進同一條序列鏈。
+
+        對應 docs/refactor_bug_trace.md：真實環境重現過這條鏈跨後端造成
+        的連坐——`exam` module 的某個 repository task（qwen）因為模型
+        輸出格式錯誤重試耗盡而失敗（`task_failed`，不是 `task_done`），
+        同一個 module 底下沒有明確 `depends_on` 的其餘 task（含用
+        Claude、彼此毫無關聯的 service／router task）舊寫法會被串在
+        它後面，`_task_deps_satisfied()` 只認 `task_done`，永遠不會
+        放行，讓一次孤立的 qwen 格式錯誤拖垮整個 module，甚至連帶讓
+        依賴它的其他 module／全域 Phase 關卡一起卡住。`translator_backend`
+        缺席（`NotRequired`，只有舊版測試 fixture 會缺）時不視為 qwen，
+        不會被自動串鏈——這是限制最少的預設值，跟 `_global_tier()` 對
+        缺席 `phase` 的既有處理原則一致。
         """
         for tasks in self.tasks_by_module.values():
             referenced = {dep for t in tasks for dep in t["depends_on"]}
-            unordered = [t for t in tasks if not t["depends_on"] and t["id"] not in referenced]
+            unordered = [
+                t for t in tasks
+                if not t["depends_on"] and t["id"] not in referenced
+                and t.get("translator_backend") == "qwen"
+            ]
             for prev, curr in zip(unordered, unordered[1:]):
                 curr["depends_on"] = curr["depends_on"] + [prev["id"]]
 
     def _module_deps_satisfied(self, module: str) -> bool:
+        """依賴的每個模組只要**開始有進展**（狀態不是初始的 `"pending"`）
+        就放行——不是只接受 `"verified"`。這裡要的是「upstream 的程式碼
+        結構已經存在，downstream 可以 import／呼叫」，不是「upstream 的
+        測試通過」——upstream 測試過不過，交給最終的全專案測試把關，不該
+        同時也決定 downstream 排不排得進去。
+
+        若只接受 `"verified"`，會產生一種循環死結（真實案例見
+        docs/refactor_bug_trace.md #12）：upstream 要變成 `"verified"`，
+        得先讓它自己的 router（tier 2）通過全域 Phase 關卡
+        （`_tier_barrier_satisfied()`）；但全域關卡要求全專案 tier < 2 的
+        task 都到終態——downstream 這個依賴 upstream 的 tier 1 task，本身
+        就是這個集合的一份子。upstream 等 downstream 到終態才能放行自己
+        的 router，downstream 卻要等 upstream 完整驗證通過才能開始——兩邊
+        互相等對方，永遠沒有一方先動，而且 upstream 可能根本到不了
+        `"verified"`／`"failed"` 任何一個終態（它自己卡在 `"in_progress"`，
+        因為它的驗證前提——自己的 router 跑完——永遠不會成立）,只接受
+        終態一樣解不開這個死結。
+
+        改成「不是 pending 就放行」之後：upstream 只要有任何一個 task 成功
+        （`mark_task_done()` 就會把它從 `"pending"` 改成 `"in_progress"`），
+        downstream 立刻可以開始，不需要等 upstream 走到 router、走到完整
+        驗證——這條循環邊在 upstream 都還沒排到自己的 router 之前就被打斷，
+        不會出現互等。
+        """
         deps = self.modules[module]["depends_on"]
-        return all(self.module_status.get(d) == "verified" for d in deps)
+        return all(self.module_status.get(d) != "pending" for d in deps)
 
     def _task_deps_satisfied(self, task: TaskSpec) -> bool:
         return all(dep in self.task_done for dep in task["depends_on"])
 
+    def _tier_barrier_satisfied(self, tier: int) -> bool:
+        """tier 0（Phase 1）永遠可以排——沒有更前面的關卡。tier 1／2 要求
+        「所有 tier 數字更小的 task」都已到達終態（成功或永久失敗，見
+        get_ready_tasks() 對 task_done／task_failed 的既有判斷）——用終態
+        而不是只看成功，理由跟 module_ready_for_verification() 一致：
+        scaffold 缺口這類永久失敗的 task 永遠不會進 task_done，若只等
+        成功，關卡會被一個注定失敗的 task 卡死，永遠放不出下一層。
+        """
+        if tier == 0:
+            return True
+        return all(
+            self._task_tier[task_id] >= tier or task_id in self.task_done or task_id in self.task_failed
+            for task_id in self._task_tier
+        )
+
     def get_ready_tasks(self) -> list[TaskSpec]:
-        """回傳目前可以送去 translator-cli 的 task（尚未考慮模型併發限制）。"""
+        """回傳目前可以送去 translator-cli 的 task（尚未考慮模型併發限制）。
+
+        對應 docs/refactor_bug_trace.md #8：module 依賴檢查
+        （`_module_deps_satisfied()`）只套用在 tier ≥ 1（service／router）
+        的 task 上，tier 0（repository／utils）不受它管——這不是效能
+        優化，是打破一個真實死結的必要條件。真實案例：`common` module
+        （如 `common_service.py` 的 ResponseResult／Result，全部是純
+        service 層，沒有任何 repository 內容）的 task 全部是 tier 1，
+        全域關卡（`_tier_barrier_satisfied()`）要求全專案 tier 0 先完成
+        才放行；但其他 module 的 repository task（tier 0）若同時在
+        module 層級依賴 `common`（`module_list.depends_on`，這在這個
+        專案是常見寫法——業務 module 依賴 common 取得 ResponseResult／
+        Result 這些共用型別），舊寫法（module 依賴檢查套用在這個 module
+        的所有 task 上，不分 tier）會讓這些 repository task 也一併卡住，
+        等 `common` 先被驗證通過——`common` 卻要等全專案 tier 0 完成才
+        能開始，兩邊互相等對方，永遠不會有任何一方先動。語意上這個豁免
+        是對的：Java 的 repository 層本來就幾乎不會跨 module 呼叫別的
+        module 的邏輯，module 依賴排程原本要保護的是「跨 module 的同層
+        業務呼叫」（refactor_plan.md 一章「呼叫鏈規則」，service 呼叫
+        service 那一列），不該延伸到 repository 這一層——task 級
+        `depends_on`（`_task_deps_satisfied()`）不受這個豁免影響，
+        跨 module 的明確依賴（若真的出現）依然照樣生效。
+        """
         ready = []
         for module, status in self.module_status.items():
             if status not in ("pending", "in_progress"):
                 continue
-            if not self._module_deps_satisfied(module):
-                continue
+            module_deps_ok = self._module_deps_satisfied(module)
             for task in self.tasks_by_module.get(module, []):
                 if task["id"] in self.task_done or task["id"] in self.task_failed:
+                    continue
+                tier = self._task_tier[task["id"]]
+                if tier != 0 and not module_deps_ok:
+                    continue
+                if not self._tier_barrier_satisfied(tier):
                     continue
                 if self._task_deps_satisfied(task):
                     ready.append(task)

@@ -43,11 +43,44 @@ class InterfaceSpec(TypedDict):
     # 的地方不需要跟著補這兩個欄位。
     http_method: NotRequired[str | None]
     route_path: NotRequired[str | None]
+    # Phase 1（entity/dto/repository/utils）／Phase 2（controller/service）
+    # 分階段翻譯設計新增，見 refactor_plan.md 一、二章、05a 三章「層級
+    # 判定」、九章「phase 欄位」。NotRequired：理由同 http_method／
+    # route_path，既有建構 InterfaceSpec 的地方（測試 fixture 等）不需要
+    # 跟著補這個欄位；design_agent 產出的每一筆 InterfaceSpec 都會設定。
+    phase: NotRequired[Literal[1, 2]]
+    # 這個 interface 對應的 Java 方法識別碼，格式逐字沿用①既有的
+    # parse_agent/types.py::method_id()（"{java_file_path}::{class_name}::
+    # {method_name}"，不含參數型別，跟①的呼叫圖同一種 key 格式，可以
+    # 直接查表）。供 [P] 六章「呼叫鏈範圍查找」用，見 06a_plan_agent_
+    # architecture.md 六章、05a_design_agent_architecture.md 對應章節。
+    # NotRequired 理由同 phase。
+    java_method_id: NotRequired[str]
+    # 這個 InterfaceSpec 所屬的 class 若繼承了 Spring Data 基底介面
+    # （JpaRepository/CrudRepository），這裡存它的 entity 型別簡單名稱，
+    # 供 translator_cli/scaffold.py 決定要不要把這個 class 的宣告改成
+    # 繼承 BaseRepository[Entity]。見 common/jpa_base_repository.py、
+    # docs/refactor_bug_trace.md #10／#16。NotRequired 理由同 phase。
+    jpa_base_entity: NotRequired[str | None]
+
+
+class JavaIndexEntry(TypedDict):
+    file_path: str
+    class_name: str | None
+    function_name: str
+    phase: Literal[1, 2]
 
 
 class PythonStructure(TypedDict):
     directory_tree: str             # 目錄結構的文字表示，供 ④ 建立骨架時參照
     interfaces: list[InterfaceSpec] # [P] target_files 與 ④ 骨架簽名的唯一權威來源
+    # java_method_id → Python 對應資訊，[P] 六章「呼叫鏈範圍查找」查表用
+    # ——把③內部本來就算過、跑完即丟的 Java↔Python 對應關係正式落地保留，
+    # 不需要 [P]／⑤ 各自重新實作一次③的 camelCase／多載消歧邏輯。見
+    # 05a_design_agent_architecture.md 對應章節。NotRequired 理由同
+    # config_field_mappings：既有建構 PythonStructure 字面值的地方（測試）
+    # 不需要跟著補，design_agent 產出的每一筆都會設定。
+    java_index: NotRequired[dict[str, JavaIndexEntry]]
     # ③ design_agent.global_infra.render_config_py() 機械組出，對應
     # docs/09b_bug_trace.md #45（Java @Value("${key}") 屬性注入欄位 →
     # app/core/config.py 環境變數常數）。key 是 Java 檔案的 file_path，
@@ -104,7 +137,19 @@ class FileFix(TypedDict):
 class TaskFix(TypedDict):
     task_id: str
     diagnosis: str
-    # None：這個 task 的函式本體不需要改（只有 file_fixes 需要套用）。
+    # 對應 docs/refactor_bug_trace.md #9：⑦ 沒有這個 task 對應的真實
+    # Java 原始碼可以核對（見 debug_agent/analysis.py 的 source_files
+    # 只讀 python_project_path），自己憑症狀猜寫 fixed_body 的可靠度
+    # 天生比不上⑤（真的看得到 java_source／referenced_source）——這個
+    # task 的函式本體邏輯有問題（不論是從沒成功翻譯過，還是翻過但邏輯
+    # 錯）時，優先設 True、交還給⑤用真實 Java 原始碼重新翻譯，diagnosis
+    # 會被當成這次重新翻譯的提示一併附上（見 graph/nodes/implement_node.py
+    # 的 pending_retranslate_tasks）。NotRequired：既有建構 TaskFix 的
+    # 測試 fixture 不用跟著補，預設視為 False（沿用既有 fixed_body 行為）。
+    retranslate: NotRequired[bool]
+    # None：這個 task 的函式本體不需要改（只有 file_fixes 需要套用，或
+    # 已由 retranslate=True 處理）。只在 retranslate 是 False（或缺省）
+    # 時才可能非 None——兩者互斥，見 debug_agent/prompts.py 說明。
     fixed_body: str | None
     file_fixes: list[FileFix]
 
@@ -119,12 +164,56 @@ class DebugRound(TypedDict):
     unfixable_reasons: list[str]
 
 
+# 06a 六章「呼叫鏈範圍查找」：[P] 用①的呼叫圖 + java_index 機械算出的
+# 參照座標，只有座標與語言標記，不含原始碼文字——把座標實際讀成文字是
+# ⑤ 的工作（見 refactor_plan.md 一章「新增能力與歸屬」）。
+class ReferenceTarget(TypedDict):
+    # 三個欄位的命名空間都跟著 language 走，不是固定的 Python 或 Java 側
+    # ——language="java" 時三者是①呼叫圖 method_id 拆出來的 Java 原始座標
+    # （原始檔案路徑／Java class 名稱／Java 方法名稱，camelCase，可能跟
+    # Python 側的檔名／snake_case 名稱不同）；language="python" 時三者是
+    # java_index 投影過的 Python 側事實（已翻譯 .py 檔案路徑／Python class
+    # 名稱／Python function_name）。見 plan_agent/call_chain.py::
+    # build_reference_targets() 依 language 分別組裝的邏輯。
+    file_path: str
+    class_name: str | None
+    function_name: str
+    language: Literal["java", "python"]
+
+
 # ── [P] Plan Agent 輸出：task list ────────────────────
 class TaskSpec(TypedDict):
     id: str
     module: str
+    # Phase 1（entity/dto/repository/utils）／Phase 2（controller/service）
+    # 分階段翻譯設計新增，見 refactor_plan.md 一、二章、06a_plan_agent_
+    # architecture.md 五章。[P] 直接複製對應 InterfaceSpec.phase 的值，
+    # 不重新判斷。NotRequired 理由同 InterfaceSpec.phase：既有建構
+    # TaskSpec 字面值的地方（測試 fixture、01 文件 stub 範例）不需要
+    # 跟著補這個欄位；plan_agent 產出的每一筆都會設定。
+    phase: NotRequired[Literal[1, 2]]
+    # 雙後端分工設計新增，見 refactor_plan.md 三章、06a 五章：依這個
+    # task 所屬層級機械決定（repository → qwen，其餘 → claude），不需要
+    # LLM 判斷。NotRequired 理由同上。
+    translator_backend: NotRequired[Literal["qwen", "claude"]]
+    # 這個 task 自己對應的 Java 方法識別碼（格式沿用①的 method_id()，逐字
+    # 等於 InterfaceSpec.java_method_id）——⑤抽取「這個函式自己」的 Java
+    # 原始碼文字時的座標，跟 reference_targets（呼叫到的其他函式的座標）
+    # 是同一種資訊、但描述的對象不同，兩者合起來才是⑤這次呼叫的完整輸入
+    # （見 07a_translator_cli_architecture.md、refactor_plan.md 一章「新增
+    # 能力與歸屬」）。NotRequired 理由同 phase／translator_backend。
+    java_method_id: NotRequired[str]
     description: str
     target_files: list[str]        # 必須是 python_structure.interfaces 中已存在的 file_path
+    # 06a 六章「呼叫鏈範圍查找」新增，見上方 ReferenceTarget。NotRequired
+    # 理由同 phase／translator_backend。
+    reference_targets: NotRequired[list[ReferenceTarget]]
+    # 六章「上限被觸發時：截斷可見化」——只在 reference_targets 因為觸及
+    # PLAN_AGENT_MAX_REFERENCE_TARGETS 上限而被截斷時才設為 True，未截斷
+    # 的 task 不設這個 key（缺席即代表「沒有這回事」，不需要額外的 False
+    # 分支）。供人工事後檢視／未來 09a／⑦ Debug Agent 查「這個函式翻譯
+    # 品質可疑是不是因為呼叫鏈被砍過」，不用大海撈針翻 log。
+    reference_targets_truncated: NotRequired[bool]
     context: str
     depends_on: list[str]
     # 對回 target_files[0] 這個 InterfaceSpec 的 (class_name, function_name)，
@@ -135,14 +224,32 @@ class TaskSpec(TypedDict):
     # 欄位，比照 InterfaceSpec.http_method／route_path 的既有慣例。
     class_name: NotRequired[str | None]
     function_name: NotRequired[str]
-    # target_files 裡，因 referenced_interfaces 而被拉進來的檔案，各自
-    # 精確引用到哪些 (class_name, function_name)——translator-cli 讀取
-    # 這些檔案時只抽取這裡列出的函式，不整份帶入，避免把同檔案裡無關的
-    # 姊妹函式一併送給本地模型（見 06a 七章「已知設計缺陷」修正、
-    # docs/09b_bug_trace.md #37）。不含 target_files[0]（自己的檔案，
-    # 本來就整份帶入）與 schemas／models 檔案（資料形狀定義，沒有函式
-    # 可抽取）。NotRequired，理由同上。
+    # 舊版：target_files 裡，因 referenced_interfaces 而被拉進來的檔案，
+    # 各自精確引用到哪些 (class_name, function_name)，translator-cli
+    # 讀取這些檔案時只抽取這裡列出的函式，不整份帶入（見
+    # docs/09b_bug_trace.md #37）。**Phase 1/2 分階段翻譯設計後，[P] 不
+    # 再產生 referenced_interfaces，因此也不再填這個欄位**——同樣的功能
+    # 現在由⑤自己的呼叫圖查找取代（一開始就只抽取被呼叫到的那個函式，
+    # 見 refactor_plan.md 一章、06a_plan_agent_architecture.md 七章）。
+    # 欄位定義暫時保留（不是移除）：`translator_cli/client.py`／
+    # `graph/nodes/implement_node.py` 仍會讀取這個欄位（`task.get(
+    # "referenced_functions", [])`，缺席時安全退化成空清單）——[P] 已經
+    # 不再產生這份資料，這個欄位現在永遠是空清單，但貿然刪除型別定義
+    # 會影響這兩個既有模組目前仍在讀取它的程式碼，見 06a 八章說明。
     referenced_functions: NotRequired[list[ReferencedFunctionRef]]
+    # 對應 docs/refactor_bug_trace.md #46：逐字複製 InterfaceSpec.
+    # return_type（見 05a 五章「ResponseEntity<T> 覆寫」、
+    # design_agent/type_mapping.py::resolve_api_boundary_signature()）——
+    # ③在這個函式原始 Java 簽名是 ResponseEntity<...>（依情境動態回傳不同
+    # status／body，如 file_router.py 的 voice／image GET）時，機械地把
+    # 這裡覆寫成字面字串 "Response"，不經過 LLM。⑤填空階段需要這個信號
+    # 才能精準判斷「這個函式的錯誤分支也該用 JSONResponse 包成專案統一的
+    # code／msg／data 格式，不能只回傳裸文字」（見
+    # graph/nodes/implement_node.py::_RAW_RESPONSE_ERROR_JSON_NOTICE），
+    # 不能只看檔案路徑這種跟原因無關的替代訊號。NotRequired 理由同
+    # phase／java_method_id：既有建構 TaskSpec 的地方（測試 fixture 等）
+    # 不需要跟著補這個欄位；plan_agent 產出的每一筆都會設定。
+    return_type: NotRequired[str]
 
 
 # ── 整體 State ─────────────────────────────────────────
@@ -172,6 +279,16 @@ class RefactorState(TypedDict):
     # Agent ①
     module_list: list[ModuleInfo]
     api_to_python_target: list[ApiMapping]
+    # 使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」，不只是
+    # 跳過自動化測試（見 docs/03a_spec_collection_agent_architecture.md
+    # 「Decision.SKIP 的語意」）。同名不同 HTTP method 的多載（如
+    # FileController 的 voice/image）在 method_id 層級會共用同一個 id，
+    # 排除不了單一個多載，這裡改用 HTTP method 精確的
+    # (class_name, method_name, http_method) 三元組清單，供
+    # design_agent/design.py 在重新掃描出每個多載各自的 http_method 之後
+    # 把該排除的多載從資料裡濾掉（見 parse_agent/skip_filter.py::
+    # compute_skip_excluded_overloads()）。
+    skip_excluded_overloads: list[tuple[str, str, str]]
 
     # Agent A / B
     openapi_spec: dict
@@ -219,6 +336,13 @@ class RefactorState(TypedDict):
     # Agent ⑤：每次呼叫重新計算的「當下完整快照」，不是累加事件，故不掛 reducer
     blocked_modules: list[str]    # 因上游 module 未驗證通過而從未進入就緒佇列的 module
     failed_modules: list[str]     # 確實執行過、驗證過、但沒通過的 module（含 regression 造成的失敗）
+    # 對應 docs/refactor_bug_trace.md #13：blocked_modules／failed_modules
+    # 只涵蓋 "pending"／"failed" 兩種狀態，一個 module 卡在 "in_progress"
+    # 永遠到不了終態時兩者都不會列到它，會被 common/run_report.py 誤判成
+    #「沒出現在壞掉清單裡＝修好了」。這裡明確列出真正 "verified" 的
+    # module，讓「確認修好」的判斷可以用正面訊號（真的驗證通過），不必
+    # 從兩份不完整的負面清單去推論。
+    verified_modules: list[str]
     # 純附加診斷資訊，不是排程判斷依據：blocked_modules 裡每個 module
     # 對回它 depends_on 裡狀態還不是 "verified" 的直接上游 module 名稱
     # 清單，供人工／未來 ⑦ Debug Agent 不需要反查 module_list.depends_on
@@ -250,6 +374,18 @@ class RefactorState(TypedDict):
     # fixed_body 參數，完全跳過 ⑤ 本地模型（見 10a 八章「⑦ 直接產生
     # 修正後程式碼」）。
     pending_fixed_bodies: dict[str, str]
+
+    # Agent ⑦（對應 docs/refactor_bug_trace.md #9）：這一輪判定「函式
+    # 本體邏輯需要重新翻譯」的 task，key 是 task_id、value 是 ⑦ 的
+    # diagnosis（作為重新翻譯的提示）。不掛 reducer，整包覆寫，跟
+    # pending_fixed_bodies 同一種「這一輪的修正」語意。implement_node.py
+    # 讀取這份資料時**不**把它當成 fixed_body 使用——這個 task 走跟⑤
+    # 首輪翻譯完全相同的路徑（解析真實 java_source／referenced_source、
+    # 呼叫 fill_function() 的真實模型呼叫），只是把 diagnosis 疊加進
+    # context，讓模型知道上一輪錯在哪。跟 pending_fixed_bodies 互斥：
+    # 同一個 task_id 不會同時出現在兩份清單裡（見 debug_agent/analysis.py
+    # 的建構邏輯）。
+    pending_retranslate_tasks: dict[str, str]
 
     # Agent ⑦：這一輪產出的檔案層級修正（見 10a 八章「phase 2」）——
     # fixed_body／fill_function() 的 AST 函式定位機制只能碰函式本體，

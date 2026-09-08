@@ -2,13 +2,13 @@
 
 > 本文件承接 `00_refactor_architecture.md`（七、⑦ Debug Agent 一節：「輸入：fail 清單 + diff 報告 + 對應 Python 原始碼；分析根本原因，輸出具體修正指令回饋給 Agent ⑤」）、`02a_harness_architecture.md`（九章 Report 格式、十一章 Route Mapping、十三章 Module 級局部驗證、十五章資料流）、`09a_implement_agent_architecture.md`/`09b_implement_agent_code.md`（`task_failures` 欄位、`already_failed` 修正、09a 七章明確留給本文件的 `scaffold_skipped` 提早止損評估）、`01_langgraph_architecture.md`（State、retry 迴圈）。是這個 Agent 的**設計面**文件：決策、契約、資料結構、流程。實際程式碼實作見 `10b_debug_agent_code.md`。
 
-> 本文件與 `10b_debug_agent_code.md` 描述的程式碼已套用進 repo，通過完整單元測試，並已完成多輪真實環境端對端驗證（含真實 Claude API、真實 Docker、真實 Postgres、多輪 `debug ↔ implement ↔ run_tests` 迴圈）。設計已收斂的關鍵結論：⑦ 直接產生可套用的程式碼（`fixed_body`／`file_fixes`），⑤ 的本地模型完全退出除錯迴圈（見八章）；`fixed_body` 只能替換函式本體，簽名／模組層級敘述改動需要 `file_fixes`（見八章 phase 2）；`retry_count` 上限檢查前移到 `should_debug_or_done()`、對所有分支統一套用（見七章）。已知的結構性限制見十二章。
+> 本文件與 `10b_debug_agent_code.md` 描述的程式碼已套用進 repo，通過完整單元測試，並已完成多輪真實環境端對端驗證（含真實 Claude API、真實 Docker、真實 Postgres、多輪 `debug ↔ implement ↔ run_tests` 迴圈）。設計已收斂的關鍵結論：⑦ 對檔案層級問題（`file_fixes`）與極少數可以百分之百確定的機械性修正（`fixed_body`）直接產生可套用的程式碼；但函式本體本身的業務邏輯有問題時（不論是從沒成功翻譯過，還是翻過但邏輯錯），⑦ 沒有真實 Java 原始碼可以核對，改標記 `retranslate=true` 交還給⑤（帶著 ⑦ 的診斷提示）重新翻譯，不是自己編寫（`docs/refactor_bug_trace.md` #9，見八章「`pending_retranslate_tasks`」，取代先前「⑤ 完全退出除錯迴圈」這個已被修正的結論）；`fixed_body`／`retranslate` 都只能替換函式本體，簽名／模組層級敘述改動需要 `file_fixes`（見八章 phase 2）；`retry_count` 上限檢查前移到 `should_debug_or_done()`、對所有分支統一套用（見七章）。已知的結構性限制見十二章。
 
 ---
 
 ## 一、本文件範圍與定位
 
-**⑦ 的核心任務：把專案改到能通過驗證，不是分析完就結束、把結論丟給人工或 ⑤ 決定要不要採用。** ⑦ 讀原始碼、定位根因之後，直接產生可以套用的最終程式碼（`fixed_body`／`file_fixes`，見六、八章），套用、重新驗證、沒過就再分析一次，直到通過或重試預算用盡——不是「⑦ 給建議、⑤ 執行」的兩階段分工，是 ⑦ 自己把程式碼改到能重新驗證通過，⑤ 的本地模型完全不參與這個迴圈。這個設計是真實環境測試逼出來的結論：曾經讓 ⑦ 只給自然語言指令、由 ⑤ 的本地模型根據指令重新生成程式碼，實測發現本地模型執行指令會不完整（見八章）——讓做出診斷的模型直接寫出程式碼，比讓另一個能力較弱的模型基於別人的結論重做一次更可靠。
+**⑦ 的核心任務：把專案改到能通過驗證，不是分析完就結束、把結論丟給人工決定要不要採用。** ⑦ 讀原始碼、定位根因之後，直接產生可以套用的最終修正（`fixed_body`／`file_fixes`／`retranslate`，見六、八章），套用、重新驗證、沒過就再分析一次，直到通過或重試預算用盡。檔案層級問題（`file_fixes`）與極少數機械性修正（`fixed_body`）由 ⑦ 自己產生程式碼；但函式本體邏輯有問題時，⑦ 標記 `retranslate=true`、把 task 交還給⑤重新翻譯（帶著 ⑦ 的診斷當提示）——這不是「⑦ 給建議、⑤ 自己決定」的兩階段分工，是⑤走跟首輪翻譯完全相同的真實模型呼叫，只是多了 ⑦ 的診斷提示（`docs/refactor_bug_trace.md` #9，見八章）。這個「⑦ 自己寫 vs. 交還給⑤」的分界，是兩輪真實環境測試分別逼出來的結論：曾經讓 ⑦ 只給自然語言指令、由 ⑤ 的本地模型根據指令**修改既有程式碼**，實測發現本地模型執行指令會不完整（見八章）——但後續發現讓 ⑦ 自己**編寫函式本體**同樣有問題：⑦ 沒有真實 Java 原始碼可以核對，寫出來的內容一樣可能偏離真正的業務邏輯。兩次教訓收斂出目前的分界：函式本體要不要重寫，該問「誰看得到 Java 原始碼」，答案是⑤，不是⑦。
 
 ⑦ Debug Agent 的輸入橫跨兩個既有 Agent 的輸出，不是單一 Agent 自己的延伸——這也是 00 文件把 010a 列成獨立文件、不塞進 09a/09b 的原因：
 
@@ -276,7 +276,7 @@ def _latest_reasons_by_module(partial_reports: list[dict], current_round: int) -
 |---|---|
 | `module_list[module].summary` | 業務語境 |
 | `harness_failures` | 這個 module 的失敗清單（`case_id`／`failure_type`／`expected_status`／`actual_status`／`body_diff`／`related_files`／`debug_hint`），**逐字轉發**，不做摘要或篩選——DeepDiff 的精確路徑對 LLM 定位問題至關重要 |
-| `task_failures`（`reason=="fill_failed"` 的子集） | 已知確定翻譯失敗的 task，附 `error` 訊息——**這些 task 一律要求 ⑦ 直接輸出完整 `fixed_body`，不是選擇性的參考資訊**，見下方「`known_fill_failures`：一旦失敗過一次，不再退回本地模型」 |
+| `task_failures`（`reason=="fill_failed"` 的子集） | 已知確定翻譯失敗的 task，附 `error` 訊息——**這些 task 一律要求 ⑦ 標記 `retranslate=true`，不是選擇性的參考資訊**，見下方「`known_fill_failures`：一旦失敗過一次，改由⑤帶著⑦的診斷重新翻譯」（`docs/refactor_bug_trace.md` #9 修正） |
 | `scaffold_gap_task_ids`（若非空） | 明確告知這些 task 骨架缺失、不要嘗試建議修正它們（見四章 prompt 片段） |
 | 這個 module 全部 task 的清單（`id`／`function_name`／`class_name`／`target_files`／`description`） | 不是只給失敗的 task——LLM 需要**完整**清單才能從 `related_files`／程式碼內容反推「是哪個 task 造成這個 case 失敗」，見五章 |
 | 相關原始碼的目前實際內容 | `harness_failures` 裡所有 `related_files`，**與**「這個 module 全部 task 的 `target_files` 裡、父目錄是 `schemas/` 或 `models/` 的檔案」取**聯集**（不是整份 `target_files` 無差別聯集——見下方「為什麼要限縮成只取 `schemas`／`models`」）。**只給 `related_files` 不夠**：見下方「為什麼要疊加 `target_files`，不能只給 `related_files`」。**`harness_failures` 為空時（`service_unreachable`）例外放寬成整份 `target_files` 不過濾**：見下方「例外」 |
@@ -284,15 +284,19 @@ def _latest_reasons_by_module(partial_reports: list[dict], current_round: int) -
 | `batch_sibling_modules`（若非空） | 3.5：只給 module 名稱清單（不附程式碼——附程式碼會讓 context 大小失去 module 邊界的收斂效果，違反上一行的設計精神），prompt 明確指示「若在自己的 related_files 裡找不到明顯錯誤，很可能是這些 sibling module 造成的，寫進 unfixable_reasons 建議一併檢查，不要在自己的程式碼裡勉強找一個不存在的 bug」 |
 | `state.get("service_diagnostics")`（若非空） | 見下方「`service_diagnostics` 要傳給所有 `root_cause` module」——這一輪 ⑥ 判定 `service_unreachable` 時讀到的容器崩潰 log 全文，`None`（正常情境）以外的所有 `origin=="root_cause"` module 呼叫都統一傳入 |
 
-### `known_fill_failures`：一旦失敗過一次，不再退回本地模型
+### `known_fill_failures`：一旦失敗過一次，改由⑤帶著⑦的診斷重新翻譯
 
-**這是本文件的正式決策，補記一條先前只在口頭討論中確認、卻沒有被準確寫進 10a/10b 的規則**：一個 task 只要在 `task_failures` 裡出現過一筆 `reason=="fill_failed"`（⑤ 本地模型完全沒能產生可用的函式本體），從下一輪 debug 開始，這個 task 就**永久**由 ⑦ 直接負責寫出完整 `fixed_body`，`implement_node.py` 的排程器**不再把它排回 ⑤ 本地模型重新翻譯**——本地模型已經證明處理不了這個函式，繼續讓排程器把它當成一般 task 重新丟給本地模型，只是重複燒 `TRANSLATOR_CLI_TIMEOUT_SECONDS`／格式修正重試預算，不會有不同結果。
+**這是本文件的正式決策，補記一條先前只在口頭討論中確認、卻沒有被準確寫進 10a/10b 的規則**：一個 task 只要在 `task_failures` 裡出現過一筆 `reason=="fill_failed"`（⑤ 本地模型完全沒能產生可用的函式本體），從下一輪 debug 開始，這個 task 就交由 ⑦ 判定「需要重新翻譯」（`retranslate=true`），`implement_node.py` 的排程器**不再把它當成一般 task 排回去、也不會再回落到「永久排除」的狀態**——但也**不是讓 ⑦ 自己頂替寫出完整函式本體**（見下方「2026-09-05 修正」）。
 
 **真實環境重跑才發現這個落差**（2026-08-27，run_id `20260827_015722_639ebd`）：`app/services/exam_service.py` 底下 6 個 task 連續 3 輪、每輪最多 3 次 attempt，9/9 全部失敗，成功率 0%（其中一次真實回應完全答非所問，生出一整段無關的 SQLAlchemy model 定義，耗時近 10 分鐘）——查證發現 `implement_node.py::_run_one_task()` 的既有機制（`pending_fixed_bodies.get(task["id"])`，見八章）只在 ⑦ 這一輪**明確**針對這個 task_id 開出修正時才跳過本地模型；`known_fill_failures` 雖然已經被傳給 ⑦ 當背景資訊（見上表），但 `DEBUG_SYSTEM_PROMPT`（見 `debug_agent/prompts.py`）原本只把它當成「已知確定翻譯失敗的task，附error訊息，是最直接的線索」這種參考性質的背景資料，沒有明確要求 ⑦ 一定要對它輸出 `task_fixes`——這正是 09a 五章 `task_failures` 定案時「`"fill_failed"`（可能重試修好）」這句措辭留下的缺口：沒說清楚「重試」的執行者該是 ⑤ 還是 ⑦，兩者被含糊地當成同一件事。
 
-**修法**：`DEBUG_SYSTEM_PROMPT` 新增明確的任務指示（見四章 prompt 片段第 0 點）：對 `known_fill_failures` 裡的每一個 task，⑦ 一律要求輸出 `task_fixes`（除非 `description` 本身真的不足以判斷該寫什麼，才誠實回報 `unfixable_reasons`）——且明講這是「從零生成」，不是「修正既有程式碼裡的 bug」，`source_files` 對應內容可能是殘缺骨架或半成品，不該被當成可信的起點，只根據 `tasks` 清單裡的 `description`／`class_name`／`target_files` 重新寫。**底層驗證機制原本就撐得住這個決策，不需要新的資料管道或驗證邏輯**——`_validate_task_fixes()` 的 `valid_task_ids` 本來就是整個 module 扣掉 `scaffold_gap_task_ids` 的全部 task（`analysis.py`），`fill_failed` 的 task_id 從來就在合法集合內，只是 prompt 沒把「一定要對這些 task 出手」講成硬性要求。
+**最初的修法（已被下方「2026-09-05 修正」取代）**：`DEBUG_SYSTEM_PROMPT` 新增明確的任務指示：對 `known_fill_failures` 裡的每一個 task，⑦ 一律要求輸出 `task_fixes`，且明講這是「從零生成」，只根據 `tasks` 清單裡的 `description`／`class_name`／`target_files` 重新寫一份完整 `fixed_body`。這個做法讓這批 task 確實有機會被排入 `task_fixes`，但埋了一個新問題，見下方。
 
-**這個修正不需要 triage.py／state.py 有任何結構性異動**——`ModuleFailureContext.task_failures` 本來就已經逐 module 帶著完整的 `fill_failed` 子集，`_build_user_prompt()`（`analysis.py`）本來就已經把 `known_fill_failures` 跟 `tasks`（含 `description`）一併送進同一次呼叫，缺的純粹是 prompt 文字裡「這是強制動作」這句話。單元測試見 `tests/debug_agent/test_prompts.py::TestKnownFillFailuresMandatoryRewrite`。**尚未真實環境端對端重跑確認**這個修正能不能真的讓這批 task 收斂——只驗證了 prompt 文字本身包含正確的強制性指示。
+**2026-09-05 修正（對應 `docs/refactor_bug_trace.md` #9）：⑦ 不該自己憑 `description` 編寫 `fixed_body`**——真實環境重跑逐一查證發現：⑦ 手上從來沒有這些函式對應的真實 Java 原始碼（`_analyze_root_cause_module()` 的 `source_files` 只讀 `python_project_path`，不碰 `java_project_path`），唯一能依賴的 `description` 欄位，`06a_plan_agent_architecture.md` 自己早就判定「對模型沒有任何有效信號」、明確規定不送進 ⑤ 的翻譯 prompt——⑦ 卻被要求靠這個欄位「從零生成」函式本體，可靠度天生比不上⑤（真的看得到 `java_source`／`referenced_source`）。這不只是 `known_fill_failures`（從沒翻譯過）的問題：⑦ 診斷「已翻譯但邏輯寫錯」的一般案例時（4.1 表格「相關原始碼」那一列）同樣沒有 Java 原始碼可以核對，只能憑 `harness_failures` 症狀反推，一樣有這個風險。
+
+修法：`task_fixes` 新增 `retranslate: bool` 欄位（見六章 `TaskFix`）。函式本體邏輯有問題時（不論是從沒成功翻譯過，還是翻過但邏輯錯），⑦ 優先設 `retranslate=true`、`fixed_body=null`，`diagnosis` 這時候的角色是「告訴⑤上一輪錯在哪」；`pending_retranslate_tasks[task_id]`（新的 State 欄位，value 是 `diagnosis`）取代原本會進 `pending_fixed_bodies` 的內容。`implement_node.py::_run_one_task()` 讀到這個 task_id 時**不**像 `pending_fixed_bodies` 命中那樣跳過模型呼叫——正相反，走跟⑤首輪翻譯完全相同的路徑（解析真實 `java_source`／`referenced_source`、真的呼叫 `fill_function()`），只是把 `diagnosis` 疊加進 `context`，讓模型知道上一輪錯在哪。`fixed_body` 機制保留（`retranslate=false` 時的既有行為不變），但 prompt 明確引導只在「完全不需要核對 Java 原始碼就能確定對錯」的機械性修正才使用（見四章 prompt 片段）——這**不是**重新啟用「⑦ 給指令、本地模型執行」這個已經被否決的舊設計（見一章、八章：一句完全正確的指令「參數 `list` 改名為 `items`」交給本地模型執行，結果只套用了一半，把 `TypeError` 換成新的 `NameError`）——那個舊設計是「⑦ 分析完既有程式碼、生出一句修改指令，再讓本地模型照著指令修改**現有程式碼**」；這裡的 `retranslate` 是把 task 交還給⑤走**正常翻譯**（從真實 Java 原始碼重新生成整個函式本體，跟這個 task 第一次被排到 ⑤ 時做的事完全一樣），`diagnosis` 只是附加在 context 裡的提示文字，不是要模型「執行一個修改指令」，兩者的失敗模式因此不同：舊設計的風險是「指令沒有被完整執行」，這裡沒有指令需要執行，⑤ 只是（帶著多一點提示）重新做一次它本來就會做的翻譯工作。
+
+**底層驗證機制原本就撐得住這個決策，不需要新的資料管道或驗證邏輯**——`_validate_task_fixes()` 的 `valid_task_ids` 本來就是整個 module 扣掉 `scaffold_gap_task_ids` 的全部 task（`analysis.py`），`fill_failed` 的 task_id 從來就在合法集合內；`force_reschedule()`（見八章）的呼叫端只需要多納入 `pending_retranslate_tasks` 的 key，跟 `pending_fixed_bodies` 一視同仁。單元測試見 `tests/debug_agent/test_prompts.py::TestKnownFillFailuresMandatoryRetranslate`／`TestRetranslatePreferredOverFixedBody`、`tests/debug_agent/test_analysis.py` 的 retranslate 相關測試、`tests/graph/test_implement_node.py::TestRunOneTaskRetranslate`。**尚未真實環境端對端重跑確認**這個修正能不能真的讓這批 task 的重新翻譯品質提升——只驗證了機制本身正確接線。
 
 **`service_diagnostics` 要傳給所有 `root_cause` module，不能只在 `special_reason=="batch_reload_timeout"` 時才傳**：`service_unreachable` 且 `failed_modules` 非空（`batch_reload_timeout` 情境，⑤ 已經把受牽連的 module 標記進 `failed_modules`）時，這些 module 會被 3.2 的 `service_unreachable` 分支納入 `modules_with_failures`（`harness_failures` 是空清單），分類成 `root_cause`、送進**正常**的 `_analyze_root_cause_module()` 呼叫——但這條路徑原本完全不讀 `service_diagnostics`，只給 `special_reason="batch_reload_timeout"` 這句人類可讀文字，讓 LLM 在完全沒看到 traceback 的情況下對著（放寬過濾後的）整份 module 原始碼做靜態分析、憑空猜測是哪一行造成崩潰。Python 服務因模組層級 `ImportError`／`SyntaxError` 崩潰時，容器 log 幾乎必然含有精確的 traceback 與行號（`python_service/process.py::PythonServiceContainer.diagnostics`，09b 四章既有屬性，`docker logs --tail 200`）——⑥ 判定不可達的當下已經把這份 log 讀出來寫進 `state["service_diagnostics"]`（見二章），這份訊號原本卻只停在 State 裡沒被接到任何 LLM 呼叫，是本末倒置。
 
@@ -383,6 +387,7 @@ DEBUG_OUTPUT_SCHEMA = {
                 "properties": {
                     "task_id": {"type": "string"},
                     "diagnosis": {"type": "string"},
+                    "retranslate": {"type": "boolean"},
                     "fixed_body": {"type": ["string", "null"]},
                     "file_fixes": {
                         "type": "array",
@@ -398,7 +403,7 @@ DEBUG_OUTPUT_SCHEMA = {
                         },
                     },
                 },
-                "required": ["task_id", "diagnosis", "fixed_body", "file_fixes"],
+                "required": ["task_id", "diagnosis", "retranslate", "fixed_body", "file_fixes"],
                 "additionalProperties": False,
             },
         },
@@ -439,7 +444,7 @@ valid_task_ids = {t["id"] for t in task_list if t["module"] == module} - scaffol
 
 `task_id` 不在 `valid_task_ids` 內的整筆**捨棄並記警告**（不是中止整個 module 的分析——其餘合法的 task_fix 仍然有效）。這比照 09a 六章「三元組比對」與 06a 五章「`referenced_interfaces` 只能引用...不要虛構」同一種防禦性原則：LLM 的自由文字輸出可能幻覺出看起來合理但不存在的 task_id（尤其當它把兩個相似函式名搞混時）,結構化 schema 只保證格式,不保證內容真實,這一步是內容層級的驗證。
 
-同一步也捨棄 `fixed_body`／`file_fixes` 兩者皆空的 task_fix（並記警告）——schema 只保證兩個欄位都存在，不保證至少一個非空，這種輸出沒有任何實際修正內容，留著只會在 `pending_fixed_bodies`／`pending_file_fixes` 裡製造一筆什麼都不做的空紀錄。
+同一步也捨棄 `retranslate`／`fixed_body`／`file_fixes` 三者都沒有真正生效的 task_fix（並記警告）——schema 只保證欄位都存在，不保證至少一個真正生效，這種輸出沒有任何實際修正內容，留著只會在 `pending_fixed_bodies`／`pending_retranslate_tasks`／`pending_file_fixes` 裡製造一筆什麼都不做的空紀錄。`retranslate=true` 時強制把 `fixed_body` 視為 `None`（即使 LLM 違反 prompt 指示、兩者都給了值），見 `docs/refactor_bug_trace.md` #9、`debug_agent/analysis.py::_validate_task_fixes()`。
 
 ### 4.4 單一 module 呼叫失敗時
 
@@ -474,7 +479,8 @@ class FileFix(TypedDict):
 class TaskFix(TypedDict):
     task_id: str
     diagnosis: str
-    fixed_body: str | None  # None：這個 task 的函式本體不需要改
+    retranslate: NotRequired[bool]  # 對應 docs/refactor_bug_trace.md #9：函式本體邏輯有問題時優先設 True，交還給⑤重新翻譯
+    fixed_body: str | None  # None：這個 task 的函式本體不需要改（或已由 retranslate=True 處理）
     file_fixes: list[FileFix]
 
 
@@ -505,6 +511,15 @@ class RefactorState(TypedDict):
     # 這個 task 下一輪直接照 task.description 原樣走一般填空流程（見
     # 八章），不該沿用上上輪可能已經過時、甚至已經套用過但沒用的舊程式碼。
     pending_fixed_bodies: dict[str, str]
+
+    # Agent ⑦（對應 docs/refactor_bug_trace.md #9）：這一輪判定「函式
+    # 本體邏輯需要重新翻譯」的 task，key 是 task_id、value 是 ⑦ 的
+    # diagnosis（作為重新翻譯的提示）。跟 pending_fixed_bodies 同一種
+    # 「這一輪的修正」語意，也一樣不掛 reducer；但 implement_node.py 讀
+    # 到這裡的 task_id 時**不**跳過模型呼叫——正常解析 java_source／
+    # referenced_source、真的呼叫 fill_function()，只是把 diagnosis
+    # 疊加進 context。跟 pending_fixed_bodies 互斥。
+    pending_retranslate_tasks: dict[str, str]
 
     # Agent ⑦：這一輪產出的檔案層級修正（phase 2，見八章「⑤ 端的對應
     # 改動：phase 2」）——fixed_body／fill_function() 的 AST 函式定位
@@ -643,7 +658,7 @@ builder.add_conditional_edges(
 
 **為什麼要統一套用，不再區分 `failed_modules` 是否為空**：這條分支原本存在的理由（02a 十二章）是「`blocked_modules` 只是排程還沒排到，不算真正失敗，不該消耗重試預算」——但六章已經證明，這個理由在目前 graph 的實際拓樸下不成立：能讓 `debug` 被觸發，代表 `test_results.status == "fail"` 已經是既成事實，`failed_modules` 是否剛好非空只反映 ⑤ 局部驗證（readonly-only）看不看得到問題，不是「有沒有真的壞」的可靠依據。既然這個區分本身站不住腳，用它決定「要不要檢查 `retry_count`」自然也沒有意義——`retry_count` 該不該繼續消耗，只該看「已經試了幾次」，跟 ⑤ 局部驗證那次剛好有沒有看到問題無關。移除這個分支不會丟失任何原本想保護的情境，因為那個情境本來就不曾獨立存在過。
 
-**這個做法為什麼比補在下游更好**：`should_debug_or_done()` 的檢查發生在**進入 `debug` 之前**，用的是這一輪 `debug` 執行前的 `retry_count`（尚未遞增）——這跟原本「`failed_modules` 非空」那條分支的既有邏輯（`state["retry_count"] >= MAX_RETRY: return "give_up"`）完全是同一套語意、同一個比較符號 `>=`，本來就正確（逐輪推演：第 3 次進入 `debug` 前 `retry_count=2`，`2>=3` 不成立，正確放行；`debug` 遞增到 3 之後回到 `implement`；下一輪 `retry_count=3`，`3>=3` 成立，正確 give up——恰好 3 次重試，不多不少，不需要另外處理 off-by-one）。統一套用後，「`failed_modules` 永遠空」那個防禦性場景也套用同一條、已經證明正確的邏輯，不再需要下游那道容許多一輪的補丁，也不會再白白多花一次 LLM 呼叫——從源頭修掉，不需要在下游用近似的防線妥協。
+**這個做法為什麼比補在下游更好**：`should_debug_or_done()` 的檢查發生在**進入 `debug` 之前**，用的是這一輪 `debug` 執行前的 `retry_count`（尚未遞增）——這跟原本「`failed_modules` 非空」那條分支的既有邏輯（`state["retry_count"] >= MAX_RETRY: return "give_up"`）完全是同一套語意、同一個比較符號 `>=`，本來就正確（逐輪推演，套用目前 `MAX_RETRY = 1`：第 1 次進入 `debug` 前 `retry_count=0`，`0>=1` 不成立，正確放行；`debug` 遞增到 1 之後回到 `implement`；下一輪 `retry_count=1`，`1>=1` 成立，正確 give up——恰好 1 次重試，不需要另外處理 off-by-one；這套推演對任何 `MAX_RETRY` 值都成立，不是只對特定數字碰巧正確）。統一套用後，「`failed_modules` 永遠空」那個防禦性場景也套用同一條、已經證明正確的邏輯，不再需要下游那道容許多一輪的補丁，也不會再白白多花一次 LLM 呼叫——從源頭修掉，不需要在下游用近似的防線妥協。
 
 不影響 `implement`／`run_tests` 既有的 fan-in／conditional edge 結構（`debug` 只有單一前驅 `run_tests`，改它自己往下的出邊不影響其他任何節點的既有語意，比照 09a 對 `implement→run_tests` 那次修改的判斷方式）；也不影響 `should_debug_or_done()` 的簽名或呼叫端（`graph/builder.py` 既有的 `add_conditional_edges("run_tests", should_debug_or_done, {...})` 完全不用改，只有函式內部邏輯變了）。
 
@@ -668,6 +683,26 @@ builder.add_conditional_edges(
 **這個機制不限於 services／repositories 層**——`pending_fixed_bodies` 可能指向 `routers` 層的 task（例如 `#12`／`#11` 那種例外處理相關的失敗，位於 `routers` 或 `app/core/`），任何層級的 task 只要在這份字典裡出現就直接套用，不受 09a 五章 relationship／enum 提示「限定服務／repositories 層」那條規則約束——兩者本來就是各自獨立的機制。
 
 **目前的範圍：函式本體層級的修正**——`fixed_body` 取代的是 `fill_function()` 既有機制能碰到的範圍，即單一函式的本體，不含模組層級的敘述（如 import）。若 ⑦ 判斷的修正需要動到函式本體以外的地方，`file_fixes`（見上方 phase 2）已經能覆蓋這個範圍。
+
+### `pending_retranslate_tasks`：交還給⑤重新翻譯，不是套用 ⑦ 寫的程式碼（對應 `docs/refactor_bug_trace.md` #9）
+
+**⑦ 沒有這個 task 對應的真實 Java 原始碼**——`_analyze_root_cause_module()` 的 `source_files` 只讀 `python_project_path`，這件事讓上面「⑦ 直接產生修正後程式碼」這句話對函式本體層級的修正並不完全成立：⑦ 能讀完整份**現有 Python 程式碼**、能精準定位到「哪裡不對」，但沒辦法核對「Java 原本到底怎麼寫」，這跟真實案例裡本地模型「執行指令不完整」是不同性質的風險（模型能力問題 vs. 資訊本身就不足），但同樣會讓寫出來的程式碼偏離真正的業務邏輯。
+
+**修正**：`task_fixes[].retranslate`（四章 4.2、六章 `TaskFix`）為 `true` 時，`fixed_body` 必須是 `null`，對應 task_id 進 `pending_retranslate_tasks[task_id] = diagnosis`（不進 `pending_fixed_bodies`）：
+
+```
+若 state["pending_retranslate_tasks"] 裡有這個 task 的 id：
+  _run_one_task() 正常解析 java_source／referenced_source（不跳過！）
+  把 diagnosis 疊加進 context（"⑦ Debug Agent 診斷...請務必依照下方
+  java_source 的真實邏輯正確實作，避免重蹈同樣的問題：{diagnosis}"）
+  照常呼叫 fill_function(..., fixed_body=None)——這個 task 真的被
+  重新翻譯一次（qwen／claude，視 task 本身的 translator_backend），
+  不是套用 ⑦ 自己寫的程式碼
+```
+
+**跟 `pending_fixed_bodies` 共用 `force_reschedule()` 呼叫點，但套用行為完全相反**：`implement_node.py` 打回 pending、把 task_id 從 `task_done`／`task_failed` 移除這一段對兩份清單一視同仁（`{*pending_fixed_bodies, *pending_retranslate_tasks}` 一起算 `tasks_to_reopen_by_module`）；但 `_run_one_task()` 讀到 `pending_fixed_bodies` 命中時跳過模型呼叫，讀到 `pending_retranslate_tasks` 命中時**不**跳過——這是兩個機制唯一的行為分歧點，其餘（打回 pending、寫入段走 `WRITE_LOCK`）完全共用既有邏輯，不是兩套平行的排程機制。
+
+**`fixed_body` 沒有被淘汰，範圍限縮**：prompt 明確引導只在「完全不需要核對 Java 原始碼就能確定對錯」的機械性修正才使用 `fixed_body`（見四章 prompt 片段第 2 點）——多數函式本體層級的問題都該走 `retranslate`。`file_fixes`（phase 2，檔案層級修正，如 import／enum 缺口）完全不受影響，⑦ 對這類問題仍然直接產生精確的字串替換，不需要 Java 原始碼即可判斷對錯。
 
 ### 診斷資料改走 State，不是 `debug_agent/` 直接 import `implement_node`
 
@@ -864,7 +899,7 @@ def should_retry_or_give_up(state: RefactorState) -> str:
 
 **`give_up_node.py` 依抵達路徑分三種訊息**：01 五章既有的「④ 骨架生成失敗」／「超過重試次數」兩種之外，`debug → give_up` 這條新邊（`give_up_early=True`）需要第三種——這條路徑不經過 `should_debug_or_done()`，`state["retry_count"]` 是正常遞增的真實次數，不是被強制設成上限，沿用「超過重試次數」的訊息會讓人工誤以為已經試滿所有次數，實際上是 ⑦ 主動判斷這一輪已無可修才提早放棄。判斷順序：`scaffold_done is False` → `give_up_early` → 其餘（retry_count 用盡）。
 
-**`retry_count` 用盡那個分支本身，還要再分辨「Claude API 打不通」跟「⑦ 判斷邏輯本身有問題」**：這兩種情況目前印出的訊息完全一樣——連續三輪都沒能真的解決問題，可能是因為每一輪 Claude API 呼叫都失敗（`analyzed_results` 全是 `None`，見四章 4.4），也可能是 API 正常、但 ⑦ 給的 `fixed_body` 一直沒用（見八章「⑦ 直接產生修正後程式碼」——`fixed_body` 本身仍要通過語法驗證等既有關卡才會真的寫入，語法合法但邏輯依然不對的情況一樣可能發生）。人工光看 `retry_count` 用盡的訊息分辨不出來，得自己去翻 `debug_rounds` 或用 `llmlog` 查對應 trace。`run_debug_analysis()` 已經算出 `analyzed_results`（哪些 `root_cause` module 這一輪完全沒能成功呼叫到 Claude），這裡只是把這個既有資料原樣往外傳，不是新的判斷邏輯：新增 `RefactorState.unanalyzed_root_cause_modules: list[str]`（這一輪快照，不掛 reducer），`give_up_node.py` 在 `retry_count` 用盡的分支若看到這個欄位非空，額外印一行提示「這幾個 module 這一輪 Claude API 呼叫（含重試）仍然失敗，建議先用 `llmlog` 查對應 trace，不要急著懷疑 ⑦ 的判斷邏輯」。
+**`retry_count` 用盡那個分支本身，還要再分辨「Claude API 打不通」跟「⑦ 判斷邏輯本身有問題」**：這兩種情況目前印出的訊息完全一樣——連續 `MAX_RETRY` 輪（目前 `MAX_RETRY = 1`）都沒能真的解決問題，可能是因為每一輪 Claude API 呼叫都失敗（`analyzed_results` 全是 `None`，見四章 4.4），也可能是 API 正常、但 ⑦ 給的 `fixed_body` 一直沒用（見八章「⑦ 直接產生修正後程式碼」——`fixed_body` 本身仍要通過語法驗證等既有關卡才會真的寫入，語法合法但邏輯依然不對的情況一樣可能發生）。人工光看 `retry_count` 用盡的訊息分辨不出來，得自己去翻 `debug_rounds` 或用 `llmlog` 查對應 trace。`run_debug_analysis()` 已經算出 `analyzed_results`（哪些 `root_cause` module 這一輪完全沒能成功呼叫到 Claude），這裡只是把這個既有資料原樣往外傳，不是新的判斷邏輯：新增 `RefactorState.unanalyzed_root_cause_modules: list[str]`（這一輪快照，不掛 reducer），`give_up_node.py` 在 `retry_count` 用盡的分支若看到這個欄位非空，額外印一行提示「這幾個 module 這一輪 Claude API 呼叫（含重試）仍然失敗，建議先用 `llmlog` 查對應 trace，不要急著懷疑 ⑦ 的判斷邏輯」。
 
 **整條 graph run 結束後的制式報告**：`give_up_node.py`／`END` 只是 graph 執行流程的收尾，`debug_rounds`／`task_failures` 這些逐輪累積的完整歷史沒有 checkpointer 就留不住，process 一結束就消失。`main.py` 因此在 `graph.astream()` 跑完後呼叫 `common/run_report.py::write_run_report()`（制式 JSON）／`write_human_readable_report()`（人類可讀 Markdown），依日期分資料夾寫進 `logs/reports/{YYYY-MM-DD}/{run_id}.{json,md}`，回答「這一趟翻譯了多少函式、⑦ 修了多少、還剩什麼沒解決」。完整設計與程式碼見 10b 八章。
 

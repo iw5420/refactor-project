@@ -105,10 +105,18 @@ def _analyze_root_cause_module(
     zero_endpoint_modules: frozenset[str],
     file_to_module: dict[str, str],
     global_module_source_files: dict[str, str],
+    run_id: str,
 ) -> dict:
     """單一 module 的 Claude API 呼叫，回傳 output schema 的原始解析結果。
     呼叫失敗時往上拋 LlmJsonError，由呼叫端的重試佇列機制接手（見
     run_debug_analysis()）。
+
+    `run_id`：對應真實 pipeline 這一輪的 run_id，必填、往下傳給
+    `call_claude_for_json()`——原本沒有傳這個參數，`call_claude_for_json()`
+    省略時會各自呼叫 `adhoc_run_id()`，導致每一次⑦的分析呼叫都散落在
+    自己獨立的 `adhoc_*` run_id 底下，用 `llmlog recent --run <真正的
+    run_id>` 完全查不到任何⑦的呼叫紀錄，只能改用時間窗＋caller 名稱
+    去撈，違背 11a「查某個 run 到底做了什麼」的查詢設計初衷。
 
     service_diagnostics：10a 四章「service_diagnostics 要傳給所有
     root_cause module」——這一輪所有 root_cause module 統一傳入，不限於
@@ -216,6 +224,7 @@ def _analyze_root_cause_module(
         schema=DEBUG_OUTPUT_SCHEMA,
         model=DEFAULT_MODEL,
         max_tokens=DEBUG_AGENT_MAX_TOKENS,
+        run_id=run_id,
     )
 
 
@@ -262,9 +271,16 @@ def _build_user_prompt(
 def _validate_task_fixes(raw_task_fixes: list[dict], valid_task_ids: set[str]) -> list[TaskFix]:
     """10a 4.3：task_id 反查驗證，捨棄不在合法集合內的 task_fix 並記警告，
     不中止整個 module 的分析。10a 八章「phase 2」：也捨棄
-    fixed_body／file_fixes 兩者都空的 task_fix——這種輸出沒有任何實際
-    修正內容，留著只會在 pending_fixed_bodies／pending_file_fixes 裡
-    製造一筆什麼都不做的空紀錄。
+    retranslate／fixed_body／file_fixes 三者都沒有真正生效的 task_fix
+    ——這種輸出沒有任何實際修正內容，留著只會在 pending_fixed_bodies／
+    pending_retranslate_tasks／pending_file_fixes 裡製造一筆什麼都不做
+    的空紀錄。
+
+    對應 `docs/refactor_bug_trace.md` #9：`retranslate=True` 時強制把
+    `fixed_body` 視為 `None`（即使 LLM 違反 prompt 指示、兩者都給了值）
+    ——`retranslate` 優先，理由見 `debug_agent/prompts.py`：⑦ 沒有真實
+    Java 原始碼可以核對，這種情況下自己寫的 `fixed_body` 可靠度低於
+    交給⑤重新翻譯，不能讓一次沒遵守指示的回應繞過這個保護。
     """
     validated: list[TaskFix] = []
     for tf in raw_task_fixes:
@@ -273,9 +289,19 @@ def _validate_task_fixes(raw_task_fixes: list[dict], valid_task_ids: set[str]) -
                 "Debug Agent 回應引用了不存在或不合法的 task_id=%s，捨棄該筆 task_fix", tf["task_id"]
             )
             continue
-        if not tf["fixed_body"] and not tf["file_fixes"]:
+        retranslate = bool(tf.get("retranslate", False))
+        fixed_body = tf["fixed_body"]
+        if retranslate and fixed_body is not None:
             logger.warning(
-                "Debug Agent 對 task_id=%s 的回應 fixed_body／file_fixes 兩者皆空，捨棄該筆 task_fix",
+                "task_id=%s：Debug Agent 同時給了 retranslate=true 與非 null 的 fixed_body（違反 "
+                "prompt 指示），優先採用 retranslate、捨棄這次的 fixed_body 內容",
+                tf["task_id"],
+            )
+            fixed_body = None
+        if not retranslate and not fixed_body and not tf["file_fixes"]:
+            logger.warning(
+                "Debug Agent 對 task_id=%s 的回應 retranslate／fixed_body／file_fixes 三者皆空，"
+                "捨棄該筆 task_fix",
                 tf["task_id"],
             )
             continue
@@ -287,8 +313,8 @@ def _validate_task_fixes(raw_task_fixes: list[dict], valid_task_ids: set[str]) -
             for ff in tf["file_fixes"]
         ]
         validated.append(TaskFix(
-            task_id=tf["task_id"], diagnosis=tf["diagnosis"],
-            fixed_body=tf["fixed_body"], file_fixes=file_fixes,
+            task_id=tf["task_id"], diagnosis=tf["diagnosis"], retranslate=retranslate,
+            fixed_body=fixed_body, file_fixes=file_fixes,
         ))
     return validated
 
@@ -302,6 +328,7 @@ def _run_batch(
     zero_endpoint_modules: frozenset[str],
     file_to_module: dict[str, str],
     global_module_source_files: dict[str, str],
+    run_id: str,
 ) -> tuple[dict[str, dict], list[ModuleFailureContext]]:
     """平行分析一批 root_cause module，回傳
     (module -> 原始回應, 失敗待重試的 ModuleFailureContext 清單)。每個
@@ -321,6 +348,7 @@ def _run_batch(
                 zero_endpoint_modules,
                 file_to_module,
                 global_module_source_files,
+                run_id,
             ): ctx
             for ctx in contexts
         }
@@ -343,6 +371,7 @@ def _run_root_cause_analysis(
     zero_endpoint_modules: frozenset[str],
     file_to_module: dict[str, str],
     global_module_source_files: dict[str, str],
+    run_id: str,
 ) -> dict[str, dict | None]:
     """對 root_cause_ctxs 逐一呼叫 Claude，失敗的批次重試一次；比照
     design_agent/plan_agent 既有的批次重試慣例，但重試仍失敗時**不中止
@@ -355,7 +384,7 @@ def _run_root_cause_analysis(
 
     results, failed = _run_batch(
         root_cause_ctxs, module_summaries, task_list, python_project_path, service_diagnostics,
-        zero_endpoint_modules, file_to_module, global_module_source_files,
+        zero_endpoint_modules, file_to_module, global_module_source_files, run_id,
     )
     if not failed:
         return results
@@ -368,7 +397,7 @@ def _run_root_cause_analysis(
 
     retry_results, still_failed = _run_batch(
         failed, module_summaries, task_list, python_project_path, service_diagnostics,
-        zero_endpoint_modules, file_to_module, global_module_source_files,
+        zero_endpoint_modules, file_to_module, global_module_source_files, run_id,
     )
     results.update(retry_results)
     for ctx in still_failed:
@@ -444,7 +473,7 @@ def run_debug_analysis(state: RefactorState) -> dict:
 
     analyzed_results = _run_root_cause_analysis(
         root_cause_ctxs, module_summaries, task_list, python_project_path, service_diagnostics,
-        zero_endpoint_modules, file_to_module, global_module_source_files,
+        zero_endpoint_modules, file_to_module, global_module_source_files, state["run_id"],
     )
 
     # ⚠️ this_round_rounds 只裝這一次呼叫產生的 DebugRound，絕對不能跟
@@ -455,6 +484,7 @@ def run_debug_analysis(state: RefactorState) -> dict:
     # give_up_early 被過期資料卡死、永遠回傳 False。
     this_round_rounds: list[DebugRound] = []
     pending_fixed_bodies: dict[str, str] = {}
+    pending_retranslate_tasks: dict[str, str] = {}
     pending_file_fixes: list[FileFix] = []
 
     for ctx in contexts:
@@ -517,7 +547,9 @@ def run_debug_analysis(state: RefactorState) -> dict:
             task_fixes=task_fixes, unfixable_reasons=unfixable_reasons,
         ))
         for tf in task_fixes:
-            if tf["fixed_body"] is not None:
+            if tf.get("retranslate"):
+                pending_retranslate_tasks[tf["task_id"]] = tf["diagnosis"]
+            elif tf["fixed_body"] is not None:
                 pending_fixed_bodies[tf["task_id"]] = tf["fixed_body"]
             pending_file_fixes.extend(tf["file_fixes"])
 
@@ -553,6 +585,7 @@ def run_debug_analysis(state: RefactorState) -> dict:
         "retry_count": new_retry_count,
         "debug_rounds": this_round_rounds,  # reducer（operator.add）在這裡才把這一輪併進歷史
         "pending_fixed_bodies": pending_fixed_bodies,
+        "pending_retranslate_tasks": pending_retranslate_tasks,
         "pending_file_fixes": pending_file_fixes,
         "give_up_early": give_up_early,
         "unanalyzed_root_cause_modules": unanalyzed_root_cause_modules,

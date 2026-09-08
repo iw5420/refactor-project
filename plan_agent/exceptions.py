@@ -10,29 +10,19 @@ from __future__ import annotations
 class PlanAgentModuleLookupError(Exception):
     """`InterfaceSpec.file_path` 反查不出 module（06a 四章
     `module_index.classify()`）時拋出——代表③輸出違反自己承諾的
-    `{module}_{layer}.py` 檔名格式。直接中止整條 plan run，交由人工
-    核對③的輸出，不是可以重試化解的暫時性錯誤（見 06a 十一章）。
-    """
-
-
-class PlanAgentModuleError(Exception):
-    """單一 module 的五章 Claude API 呼叫，在 `planning.py` 的重試佇列
-    機制（待重試清單、5 分鐘後統一重試一次，比照 05a 六章）跑完仍失敗
-    時拋出，中止整條 plan run（見 06a 五章：`task_list` 是⑤唯一輸入，
-    任一 module 的 task 缺失會讓涵蓋率保證失效，風險遠高於重新執行
-    一次）。
+    `{module}_{layer}.py` 檔名格式（且不落在 `app/utils/`／
+    `app/core/exception_handlers.py` 這兩個已知特例）。直接中止整條
+    plan run，交由人工核對③的輸出，不是可以重試化解的暫時性錯誤（見
+    06a 十一章）。
     """
 
 
 class PlanAgentCoverageError(Exception):
     """八章涵蓋率驗證失敗時拋出——`python_structure.interfaces` 沒有被
-    恰好一個 task 認領（缺漏或重複）。這是 `planning.py` 自己組裝邏輯
-    該保證但沒保證到的不變量，不是需要人工判斷的模糊情況，也不進五章
-    的 LLM 重試佇列（見 06a 八章、十一章）。
-
-    正常執行路徑下理論上不會觸發：五章對每個 module 的 LLM 回應已經
-    做過「回應的三元組集合必須與輸入完全一致」的核對（缺漏視同呼叫
-    失敗、多餘的直接略過，見 `planning._plan_module()`），八章這裡是
-    最後一道 defense-in-depth，不是用來擋一個已知會發生的情況（比照
-    06a 十二章對 05a 多載消歧的同一種定位）。
+    恰好一個 task 認領（缺漏或重複）。[P] 不再呼叫 Claude API（見 06a
+    五章），涵蓋率單純由「對每個 `InterfaceSpec` 產生恰好一個 task」的
+    迴圈結構保證，理論上不會觸發；這裡是最後一道 defense-in-depth，
+    專門攔截 `python_structure.interfaces` 本身就存在重複三元組（③輸出
+    的正確性缺陷）這種上游輸入問題，不是需要人工判斷的模糊情況（見
+    06a 八章、十一章）。
     """

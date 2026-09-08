@@ -107,6 +107,12 @@ def build_route_mappings(
     """
     files_by_module: dict[str, set[str]] = {}
     for iface in interfaces:
+        # utils 不分 module（見 layout.file_path_for_utils()、05a 三章
+        # 「Utils 特例」），_module_of() 的 {module}_{layer}.py 逆運算對
+        # 它不適用，也沒有任何 api_to_python_target.module 會拿 utils
+        # 的檔名去查——排除，不讓它污染 files_by_module。
+        if iface["file_path"].startswith("app/utils/"):
+            continue
         module = _module_of(iface["file_path"])
         files_by_module.setdefault(module, set()).add(iface["file_path"])
 

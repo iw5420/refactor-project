@@ -145,6 +145,21 @@ def map_java_type(java_type: str, known_classes: frozenset[str] = frozenset()) -
             type_args = _split_top_level_commas(inner)
             if len(type_args) == arity:
                 return render([map_java_type(t, known_classes) for t in type_args])
+        if outer == "Specification":
+            # Spring Data JPA 動態查詢 pattern（見 docs/refactor_bug_trace.md
+            # #14 真實案例：`Specification<ExamEntity>` 原樣沿用未知泛型
+            # fallback 的符號轉換，變成 `Specification[ExamEntity]`——這個
+            # 型別在 Python 端從未被定義、也從未被 import，7 個
+            # sibling 方法因為沒有統一慣例可循，各自被翻成 7 種互不相容
+            # 的形狀，其中一個真的把 `Specification` 當成一個存在的類別
+            # 呼叫，觸發 `NameError`）。跟 `ResponseEntity` 一樣是需要
+            # 特殊處理、不能落入未知泛型 fallback 的框架型別：Java 端
+            # `Specification<T>` 的語意是「產生一個 Predicate（查詢
+            # 條件）」，不是容器，T 只是「這個條件是對哪個 entity 產生
+            # 的」，呼叫端已經知道要查哪個 entity，不需要在型別裡保留
+            # T。對應到 SQLAlchemy 慣例：回傳一個篩選條件（`ColumnElement`）
+            # 或 `None`（代表不套用這個條件），丟棄內層型別參數。
+            return "ColumnElement | None"
         if outer == "ResponseEntity":
             # ResponseEntity<T> 代表這個方法可能依情境動態控制 HTTP
             # status／header（見 09b_bug_trace.md #30），不是單純的資料

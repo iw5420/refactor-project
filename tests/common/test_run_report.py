@@ -2,7 +2,24 @@
 import json
 import os
 
+import pytest
+
+from common import llm_trace
+from common.llm_trace import record_llm_call
 from common.run_report import write_human_readable_report, write_run_report
+
+
+@pytest.fixture(autouse=True)
+def _isolated_llm_trace_db(tmp_path, monkeypatch):
+    # 對應 docs/refactor_bug_trace.md #33：_compute_summary() 現在會查
+    # common/llm_trace.py 的 llm_traces.db，跟 tests/common/test_llm_trace.py
+    # 用同一套隔離手法（模組層級 _connection 是 singleton，每個測試前後
+    # 重置成 None，逼下一次呼叫重新走 lazy init，不共用其他測試留下的連線）。
+    monkeypatch.setenv("LLM_TRACE_DB_PATH", str(tmp_path / "llm_traces.db"))
+    monkeypatch.setenv("LLM_TRACE_PAYLOAD_DIR", str(tmp_path / "payloads"))
+    monkeypatch.setattr(llm_trace, "_connection", None)
+    yield
+    monkeypatch.setattr(llm_trace, "_connection", None)
 
 
 def _base_state(**overrides) -> dict:
@@ -15,6 +32,7 @@ def _base_state(**overrides) -> dict:
         "failed_tasks": [],
         "failed_modules": [],
         "blocked_modules": [],
+        "verified_modules": [],
         "task_failures": [],
         "debug_rounds": [],
         "give_up_early": False,
@@ -153,6 +171,7 @@ class TestWriteHumanReadableReport:
         assert set(report.keys()) == {
             "run_id", "outcome", "retry_count", "test_summary", "completed_tasks_count",
             "failed_tasks_count", "task_failures", "debug_rounds", "unanalyzed_root_cause_modules",
+            "local_model_call_failures",
         }
         assert md_path != json_path
 
@@ -176,10 +195,52 @@ class TestWriteHumanReadableReport:
         assert "曾經翻譯失敗（含後來補救成功的）：2" in content
         assert "永久無法生成（骨架缺口，需人工介入）：1 個 → t5" in content
 
+    def test_local_model_call_failures_surfaced_from_llm_trace_db(self, monkeypatch, tmp_path):
+        """對應 docs/refactor_bug_trace.md #33：本地模型（qwen）呼叫失敗、
+        退回 Claude 才成功的情況不會進 task_failures（task 整體是成功
+        的），這個訊號只活在 llm_traces.db 裡——真實案例 `e867f4` 這輪
+        13 個函式，事後只能靠手動 `llmlog` 排查才發現。_compute_summary()
+        改成直接查 llm_traces.db，讓這個訊號在報告裡看得到。"""
+        monkeypatch.chdir(tmp_path)
+        state = _base_state(run_id="20260906_060838_e867f4")
+        record_llm_call(
+            trace_id="tr1", run_id="20260906_060838_e867f4", vendor="ollama", model="qwen2.5-coder:32b",
+            caller="ollama_client.get_function_body", task_id="task_036", prompt="p", response="不對題的回應",
+            latency_ms=1000, status="error", error_msg="delimiter 契約違反",
+        )
+        record_llm_call(
+            trace_id="tr2", run_id="20260906_060838_e867f4", vendor="claude", model="claude-sonnet-4-6",
+            caller="client.fill_function", task_id="task_036", prompt="p", response="ok",
+            latency_ms=500, status="ok",
+        )
+        # 不相干的資料：不同 run_id、vendor 是 claude、task_id 是 None，
+        # 都不該被算進去。
+        record_llm_call(
+            trace_id="tr3", run_id="other_run", vendor="ollama", model="qwen2.5-coder:32b",
+            caller="c", task_id="task_999", prompt="p", response="r", latency_ms=1, status="error",
+        )
+        record_llm_call(
+            trace_id="tr4", run_id="20260906_060838_e867f4", vendor="claude", model="claude-sonnet-4-6",
+            caller="c", task_id="task_037", prompt="p", response="r", latency_ms=1, status="error",
+        )
+
+        content = open(write_human_readable_report(state), encoding="utf-8").read()
+
+        assert "本地模型（qwen）呼叫失敗、退回 Claude 才成功：1 個 → task_036" in content
+
+    def test_local_model_call_failures_zero_when_none(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        state = _base_state()
+
+        content = open(write_human_readable_report(state), encoding="utf-8").read()
+
+        assert "本地模型（qwen）呼叫失敗、退回 Claude 才成功：0" in content
+
     def test_module_fixed_vs_still_broken_derivation(self, monkeypatch, tmp_path):
-        """曾被 ⑦ 標記為 root_cause 的 module，最後不在
-        failed_modules／blocked_modules 裡 → 判定修好；還在裡面 → 判定
-        仍未解決。"""
+        """曾被 ⑦ 標記為 root_cause 的 module，最後真的落在
+        verified_modules 裡 → 判定修好；沒有 → 判定仍未解決（用正面訊號
+        判斷，不是「不在 failed_modules／blocked_modules 裡」這種負面
+        推論，見 docs/refactor_bug_trace.md #13）。"""
         monkeypatch.chdir(tmp_path)
         state = _base_state(
             debug_rounds=[
@@ -190,12 +251,35 @@ class TestWriteHumanReadableReport:
                  "root_cause_summary": "x", "task_fixes": [], "unfixable_reasons": ["沒救"]},
             ],
             failed_modules=["grading"],
+            verified_modules=["exam"],
         )
 
         content = open(write_human_readable_report(state), encoding="utf-8").read()
 
         assert "最終確認修好：1 → exam" in content
         assert "仍未解決：1 → grading" in content
+
+    def test_module_stuck_in_progress_is_not_misreported_as_fixed(self, monkeypatch, tmp_path):
+        """對應 docs/refactor_bug_trace.md #13 真實案例：module 卡在
+        "in_progress"（既不在 failed_modules，也不在 blocked_modules，
+        也不在 verified_modules）時，不該被誤判成「修好了」——它就是
+        「還沒能證實修好」，該出現在仍未解決清單裡。"""
+        monkeypatch.chdir(tmp_path)
+        state = _base_state(
+            debug_rounds=[
+                {"round": 0, "module": "exam", "origin": "root_cause", "fixable": True,
+                 "root_cause_summary": "x", "task_fixes": [{"task_id": "t1", "diagnosis": "d", "fixed_body": "f"}],
+                 "unfixable_reasons": []},
+            ],
+            failed_modules=[],
+            blocked_modules=[],
+            verified_modules=[],  # exam 卡在 in_progress，三個集合都沒有它
+        )
+
+        content = open(write_human_readable_report(state), encoding="utf-8").read()
+
+        assert "最終確認修好：0" in content
+        assert "仍未解決：1 → exam" in content
 
     def test_no_issues_at_all_shows_zero_everywhere(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)

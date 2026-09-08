@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "recorded_at": "2026-08-29T11:34:59.161573Z",
+    "recorded_at": "2026-09-07T03:14:53.824567Z",
     "source": "java"
   },
   "request": {
@@ -15,8 +15,8 @@
   "response": {
     "status_code": 200,
     "body": {
-      "code": 1002,
-      "msg": "randomId 與 kind 不可為空",
+      "code": 202,
+      "msg": "查無考生答案資料",
       "data": null
     }
   }

@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "recorded_at": "2026-09-04T05:19:29.797701Z",
+    "source": "java"
+  },
+  "request": {
+    "method": "GET",
+    "path": [
+      "api",
+      "registration",
+      "exam",
+      "grades"
+    ]
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "code": 200,
+      "msg": "操作成功",
+      "data": {
+        "grade": [
+          "1"
+        ]
+      }
+    }
+  }
+}

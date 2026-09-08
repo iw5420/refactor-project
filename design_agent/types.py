@@ -106,6 +106,19 @@ class JavaClassSignature:
     constructors: list[JavaMethodSignature] = field(default_factory=list)
     annotations: list[str] = field(default_factory=list)
     fields: list[JavaField] = field(default_factory=list)
+    # Java package 宣告（如 "com.teachLanguage.utils"），`None` 代表 default
+    # package（沒有 package 宣告，罕見）。供 layout.is_utils_package()／
+    # layer_for_class() 判斷這個 class 是不是落在 utils package 下——比
+    # stereotype／行為推斷更簡單可靠，見 05a 三章「Utils 特例」、
+    # refactor_plan.md 二章。
+    package: str | None = None
+    # 這個 interface 若繼承了 Spring Data 基底介面（JpaRepository/
+    # CrudRepository/PagingAndSortingRepository），這裡存它的 entity 型別
+    # 簡單名稱；沒有繼承則為 None。見 common/jpa_base_repository.py::
+    # detect_jpa_base_entity()。對應 docs/refactor_bug_trace.md #10／#16：
+    # ③掃到這個訊號時，把對應的 Python 類別宣告改成繼承 BaseRepository[Entity]，
+    # 不再需要逐一合成內建方法。
+    jpa_base_entity: str | None = None
 
 
 @dataclass(frozen=True)

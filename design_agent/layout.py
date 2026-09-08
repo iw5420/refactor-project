@@ -4,6 +4,9 @@ directory_tree 組裝、全域基礎設施檔案，對應 05a 三章全節。
 """
 from __future__ import annotations
 
+import re
+
+from common.java_type_mapping import camel_to_snake
 from design_agent.exceptions import DesignAgentCycleError, DesignAgentUnknownDependencyError
 from graph.state import InterfaceSpec, ModuleInfo
 
@@ -19,22 +22,78 @@ _STEREOTYPE_LAYER = {
 }
 _LAYER_SINGULAR = {"routers": "router", "services": "service", "repositories": "repository"}
 
+# Phase 1（entity/dto/repository/utils）／Phase 2（controller/service）
+# 分階段翻譯設計（見 refactor_plan.md 一、二章）：repositories／utils
+# 歸 Phase 1，routers／services 歸 Phase 2。entity／dto 不經過這張表——
+# 它們從不產生一般 InterfaceSpec（entity 直接跳過，DTO 走 openapi 展開
+# 進 directory_tree 文字，見九章、五章），phase 欄位的計算天然用不到。
+_PHASE_1_LAYERS = {"repositories", "utils"}
+
 
 def layer_for_stereotype(stereotype: str | None) -> str | None:
     """回傳 `stereotype` 機械對應到的層級目錄名稱；`None`（含未知
     stereotype）代表機械規則判斷不了，交給六章 LLM（見 05a 三章「無
     stereotype 的類別」，多半併入 services，但實際歸屬可能因業務語意
     而異）。
+
+    **不含 utils 判斷**：這裡只看 stereotype，不看 package，維持
+    `global_infra.py::scan_value_injected_fields()` 既有呼叫端的行為
+    不變（`@Value` 欄位注入在 `@UtilityClass` 靜態方法類別上不是真實
+    會出現的 Spring 模式，這條路徑不需要跟著改）。六章 `design.py` 的
+    層級判定改呼叫 `layer_for_class()`（見下方），會先檢查 utils
+    package 再退回這裡的 stereotype 對應。
     """
     return _STEREOTYPE_LAYER.get(stereotype) if stereotype else None
+
+
+def is_utils_package(package: str | None) -> bool:
+    """判斷 Java class 的 package 是否落在 `xxx.utils` 下（05a 三章
+    「Utils 特例」，`refactor_plan.md` 二章已定案：幾乎所有 Java 專案
+    都遵守這個慣例，比「無 stereotype + 全靜態方法」這種行為推斷簡單、
+    可靠得多）。`package` 為 `None`（default package，Java 專案裡極
+    罕見）一律回傳 `False`。
+    """
+    if not package:
+        return False
+    last_segment = package.rsplit(".", 1)[-1]
+    return last_segment == "utils"
+
+
+def layer_for_class(stereotype: str | None, package: str | None) -> str | None:
+    """六章 `design.py` 逐 method 層級判定的唯一入口：優先判斷 package
+    是不是 `xxx.utils`，是的話直接歸 `"utils"`，不看 stereotype；否則
+    退回 `layer_for_stereotype()` 既有的 stereotype 對應。`None`（含
+    無 stereotype 又不在 utils package）代表機械規則判斷不了，交給
+    六章 LLM（見 05a 三章）。
+    """
+    if is_utils_package(package):
+        return "utils"
+    return layer_for_stereotype(stereotype)
+
+
+def phase_for_layer(layer: str) -> int:
+    """`layer`（`layer_for_class()` 或 LLM `class_layers` 回傳的層級
+    名稱）對應到 Phase 1 或 Phase 2（見 `refactor_plan.md` 二章）：
+    `repositories`／`utils` → 1，其餘（`routers`／`services`） → 2。
+    """
+    return 1 if layer in _PHASE_1_LAYERS else 2
 
 
 def file_path_for_layer(module: str, layer: str) -> str:
     """對應 05a 三章「檔名規則：{module}_{layer_singular}.py」，`module`
     沿用 `ModuleInfo.module`，已是 snake_case 慣例字串，不需要③額外
-    轉換大小寫。
+    轉換大小寫。**不適用於 utils 層**——見 `file_path_for_utils()`。
     """
     return f"app/{layer}/{module}_{_LAYER_SINGULAR[layer]}.py"
+
+
+def file_path_for_utils(java_class_name: str) -> str:
+    """對應 05a 三章「Utils 特例」：不套用 `{module}_{layer}.py` 規則
+    （utils 橫跨多個 module，套用會出現歸屬假問題），直接複製 Java
+    package 結構，一個 Java class 對一個 Python 檔案，不分 module——
+    `ValidationUtil` → `app/utils/validation_util.py`。
+    """
+    return f"app/utils/{camel_to_snake(java_class_name)}.py"
 
 
 def schema_file_path(module: str) -> str:
@@ -237,6 +296,14 @@ def render_schema_section(file_path: str, class_fields: list[tuple[str, list[tup
     原本乾淨的 `from pydantic import BaseModel`，不無條件多 import 一個
     用不到的名稱。
 
+    **`typing.Any` import 同理視內容需要才加**（對應
+    docs/refactor_bug_trace.md #41）：`extract_schema_fields()` 對裸
+    `object` schema 且無其他線索的欄位（如 Java `Void` 泛型抹除，真實
+    案例 `ResponseResultVoid.data`）會退回 `Any` 型別——只要任一欄位型別
+    字串含這個字（用 `\bAny\b` 邊界比對，避免誤判其他剛好含
+    "Any" 子字串的識別字），就在 import 段加上
+    `from typing import Any`，不需要時不多加。
+
     **一律加 `from __future__ import annotations`**：Java entity／DTO
     常見雙向關聯（如 `User` 含 `List[Order]`、`Order` 又含 `User`），轉成
     Pydantic model 若兩個類別分屬不同 `schemas/{module}.py`，逐字面型別
@@ -250,8 +317,15 @@ def render_schema_section(file_path: str, class_fields: list[tuple[str, list[tup
     `08a_scaffold_agent_architecture.md`（兩者皆待建立）處理。
     """
     needs_field_import = any("Field(" in python_type for _, fields in class_fields for _, python_type in fields)
+    needs_any_import = any(
+        re.search(r"\bAny\b", python_type) for _, fields in class_fields for _, python_type in fields
+    )
     import_line = "from pydantic import BaseModel, Field" if needs_field_import else "from pydantic import BaseModel"
-    lines = [f"### {file_path}", "```python", "from __future__ import annotations", "", import_line, ""]
+    lines = [f"### {file_path}", "```python", "from __future__ import annotations", ""]
+    if needs_any_import:
+        lines.append("from typing import Any")
+        lines.append("")
+    lines += [import_line, ""]
     for class_name, fields in class_fields:
         lines.append(f"class {class_name}(BaseModel):")
         if not fields:

@@ -1,26 +1,27 @@
 # ⑤ 功能改寫 Agent 詳細設計
 
-> 本文件承接 `00_refactor_architecture.md`（七、⑤ 功能改寫 Agent 一節；八、task list 欄位定義）、`01_langgraph_architecture.md`（六、Module 排程器實作）、`02a_harness_architecture.md`（十三、Module 級別的局部驗證）、`07a_translator_cli_architecture.md`（五、填空模式契約）、`08a_scaffold_agent_architecture.md`（八、九、十二章）。是這個 Agent 的**設計面**文件：決策、契約、資料結構、流程。實際程式碼實作見 `09b_implement_agent_code.md`（待建立）；本文件不出現完整可執行的實作邏輯，僅在需要精確釘死修正內容時附關鍵片段。
+> 本文件承接 `00_refactor_architecture.md`（七、⑤ 功能改寫 Agent 一節；八、task list 欄位定義）、`01_langgraph_architecture.md`（六、Module 排程器實作）、`02a_harness_architecture.md`（十三、Module 級別的局部驗證）、`07a_translator_cli_architecture.md`（五、填空模式契約）、`08a_scaffold_agent_architecture.md`（八、九、十二章）、`refactor_plan.md`（一～三章：分層分階段翻譯、雙後端分工，見十二章）。是這個 Agent 的**設計面**文件：決策、契約、資料結構、流程。實際程式碼實作見 `09b_implement_agent_code.md`；本文件不出現完整可執行的實作邏輯，僅在需要精確釘死修正內容時附關鍵片段。
 
 ---
 
 ## 一、本文件範圍與定位
 
-`ModuleScheduler`（`graph/scheduler.py`）與 `implement_node.py` 的骨架早在 `01_langgraph_architecture.md` 六章就已經設計並落地，`translator_cli.fill_function()` 的呼叫契約已在 `07a_translator_cli_architecture.md` 定案、`07b_translator_cli_code.md` 完成真實環境端對端驗證（70 個 task 中 69 個成功，見 07b 十一章）。**本文件不是從零設計 ⑤，而是把既有文件明確留給 09a 的收尾缺口定案**：
+`ModuleScheduler`（`graph/scheduler.py`）與 `implement_node.py` 的骨架早在 `01_langgraph_architecture.md` 六章就已經設計並落地，`translator_cli.fill_function()` 的呼叫契約已在 `07a_translator_cli_architecture.md` 定案、`07b_translator_cli_code.md` 完成真實環境端對端驗證（70 個 task 中 69 個成功，見 07b 十一章）。本文件三～九章定案的收尾缺口（Harness 局部驗證串接、`context`／`context_files` 補強、task 失敗根因追蹤、`already_failed` 修正）**已經全部落地並通過真實環境驗證**，見二章現況表。十二章另外定案 `refactor_plan.md` 分層分階段設計交給⑤與 `graph/scheduler.py` 的新職責（`java_source`／`referenced_source`／`translator_backend` 分派、全域 Phase 關卡）——這部分同樣已落地，十二章補記設計內容，是本文件目前唯一晚於真實程式碼才回頭補上的部分。
 
 **本文件涵蓋**：
-- Harness 局部驗證的真正串接，含熱重載期間的競態防護：`implement_node.py` 目前 `_partial_verify()` 仍是固定回傳 `pass` 的 stub（`db`／`verifier` 為 `None`），本文件定案如何接上真正的 `DbEnvironment`／`GoldenVerifier`，以及為什麼每次局部驗證前都需要等待 Python 服務重啟完成（三章）
+- Harness 局部驗證的真正串接，含熱重載期間的競態防護：如何接上真正的 `DbEnvironment`／`GoldenVerifier`，以及為什麼每次局部驗證前都需要等待 Python 服務重啟完成（三章）
 - task／module 兩層驗證觸發時機的最終確認，對齊 `02a_harness_architecture.md` 十三章（四章）
-- `context`／`context_files` 補強：ORM `relationship()` 缺失的提示、共用 Enum 定義檔 `_enums.py` 的引入，這是 `08a_scaffold_agent_architecture.md` 八章明確交棒給 09a、但過去沒有被任何文件實際接手的兩個 prompt 內容缺口（五章）
+- `context`／`context_files` 補強：ORM `relationship()` 缺失的提示、共用 Enum 定義檔 `_enums.py` 的引入，這是 `08a_scaffold_agent_architecture.md` 八章明確交棒給 09a 的兩個 prompt 內容缺口（五章）
 - task 失敗根因追蹤與提前排除：`RefactorState` 新增 `task_failures`，讓「④ 骨架缺口」與「翻譯品質問題」兩種不同根因在資料層面就能分辨，且 scaffold 缺口一經確認就從排程中永久排除，不再浪費本地模型呼叫（六章）
 - Debug 迴圈重試語意的一處既有缺陷修正：`already_failed` 若直接取用 `state["failed_tasks"]`（跨整條 graph run 累積的歷史清單），會讓「可能修得好」的翻譯品質失敗被誤判成永久排除；反過來若完全不排除，scaffold 缺口這種永久修不好的失敗又會被無謂地重新嘗試——七章定案兩者該用什麼資料來源區分
 - 與 `RefactorState`／既有程式碼的介面異動（九章）
+- `refactor_plan.md` 分層分階段設計：`java_source`／`referenced_source`／`translator_backend` 如何在 `_run_one_task()` 組裝、`graph/scheduler.py` 的全域三層 Phase 關卡設計與正確性理由（十二章）
 
 **本文件不涵蓋**：
-- `ModuleScheduler` 排程演算法本身（拓樸排序、regression 偵測、防環、`module_owned_files`）——已在 `01_langgraph_architecture.md` 六章定案並落地為 `graph/scheduler.py`，本文件不重新設計，只在七章指出並修正呼叫端（`implement_node.py`）對它的一處誤用
+- `ModuleScheduler` 排程演算法本身既有的部分（拓樸排序、regression 偵測、防環、`module_owned_files`）——已在 `01_langgraph_architecture.md` 六章定案並落地，本文件不重新設計；全域三層 Phase 關卡是本文件新增的部分，見十二章
 - 兩層驗證「比對什麼、report 格式、Masker／DiffEngine 邏輯」——見 `02a_harness_architecture.md` 三～九章，本文件只確認觸發時機與呼叫參數
-- translator-cli 的填空契約、AST 插入、delimiter 重試、git snapshot——見 `07a_translator_cli_architecture.md`／`07b_translator_cli_code.md`，已完成真實驗證，本文件視為黑盒直接呼叫
-- ⑦ Debug Agent 如何讀取 `task_failures`／`test_results` 分析根因、產生修正指令，以及是否要讓 `scaffold_skipped` 造成整條 pipeline 提早結束——見 `10a_debug_agent_architecture.md`（待建立），本文件只保證資料有進 `RefactorState`、且不再浪費本地模型呼叫，更激進的「提早止損」路由留給 10a 評估（見十一章）
+- translator-cli 的填空契約、AST 插入、delimiter 重試、git snapshot、`java_source`／`referenced_source` 兩個座標怎麼被實際讀成原始碼文字——見 `07a_translator_cli_architecture.md`／`07b_translator_cli_code.md`、`graph/java_source_extraction.py`，已完成真實驗證，本文件視為黑盒直接呼叫，十二章只定案「組裝哪些引數傳給誰」
+- ⑦ Debug Agent 如何讀取 `task_failures`／`test_results` 分析根因、產生修正指令，以及是否要讓 `scaffold_skipped` 造成整條 pipeline 提早結束——見 `10a_debug_agent_architecture.md`，本文件只保證資料有進 `RefactorState`、且不再浪費本地模型呼叫，更激進的「提早止損」路由留給 10a 評估（見十一章）
 
 ---
 
@@ -28,14 +29,14 @@
 
 | 項目 | 狀態 | 說明 |
 |---|---|---|
-| `ModuleScheduler`（`graph/scheduler.py`） | ✅ 已完成 | 拓樸排程、regression 偵測、防環，見 01 六章 |
-| `implement_node._run_one_task()` | ✅ 已完成 | 已接上真實 `translator_cli.fill_function()`，含 `python_project_path`／`task_id`／`class_name`／`function_name`／`context` 全部引數，見 07b 九章第 4 項 |
+| `ModuleScheduler`（`graph/scheduler.py`） | ✅ 已完成 | 拓樸排程、regression 偵測、防環（01 六章）＋全域三層 Phase 關卡（十二章新增） |
+| `implement_node._run_one_task()` | ✅ 已完成 | 已接上真實 `translator_cli.fill_function()`，含 `python_project_path`／`task_id`／`class_name`／`function_name`／`context`／`context_files`／`translator_backend`／`java_source`／`referenced_source` 全部引數，見十二章 |
 | `should_run_tests_or_give_up()`、`scaffold_done=False` 短路 | ✅ 已完成 | 見 01 五章「scaffold 失敗時的收尾路徑」 |
 | `graph/builder.py` 的 conditional edges | ✅ 已完成 | 見 01 五章 |
-| `_partial_verify()` 的 `db`／`verifier`、熱重載等待 | ❌ stub | `db = None`／`verifier = None`，固定回傳 `{"status": "pass", "details": {}}`，且完全沒有處理 Python 服務重啟期間的競態，見三章 |
-| `context`／`context_files` 補強（relationship 提示、`_enums.py`） | ❌ 未實作 | 見五章 |
-| task 失敗根因（`skipped_interfaces` 比對、`FillResult.error` 留存） | ❌ 未實作 | `failed_tasks` 只有 task id，錯誤訊息與根因分類完全遺失，見六章 |
-| Debug 迴圈重試 | ⚠️ 有缺陷 | `already_failed=set(state.get("failed_tasks", []))` 把歷史累積清單當成排除清單，見七章 |
+| `_partial_verify()` 的 `db`／`verifier`、熱重載等待 | ✅ 已完成 | 真正的 `DbEnvironment`／`GoldenVerifier`，`_wait_for_service_reload()` token 同步屏障，見三章 |
+| `context`／`context_files` 補強（relationship 提示、`_enums.py`） | ✅ 已完成 | `_augment_task_io()`，見五章 |
+| task 失敗根因（`skipped_interfaces` 比對、`FillResult.error` 留存） | ✅ 已完成 | `RefactorState.task_failures`，見六章 |
+| Debug 迴圈重試 | ✅ 已完成 | `already_failed=scaffold_gap_task_ids \| fill_failed_task_ids`，見七章 |
 
 ---
 
@@ -263,7 +264,7 @@ class TaskFailure(TypedDict):
 class RefactorState(TypedDict):
     ...
     # Agent ⑤（逐 task 累積寫入，需要 reducer）：task 失敗時的錯誤訊息與
-    # 根因分類，供 ⑦ Debug Agent（10a，待建立）不需要重新比對 skipped_
+    # 根因分類，供 ⑦ Debug Agent（10a）不需要重新比對 skipped_
     # interfaces 就能分辨「④骨架缺口」與「翻譯品質問題」。歷史累積，不因
     # 後續重試成功而移除——一筆 task 若第一次失敗、重試後成功，這筆記錄
     # 仍保留（同時 task_id 也會出現在 completed_tasks），供除錯追溯。
@@ -280,7 +281,7 @@ class RefactorState(TypedDict):
 
 `_run_one_task()` 之後、收集這一輪結果時，`result.success is False` 才用同一套目標三元組組出 `TaskFailure`（`reason="fill_failed"`、`error` 帶 `result.error`）——理論上不該在這裡再次命中「這是 scaffold 缺口」的判斷（已經在排程階段被提前排除、根本不會被送進 `_run_one_task()`），但仍然沿用同一個組裝邏輯，只是為了保留一條防線：若 `skipped_interfaces` 與 `task_list` 因為某種上游 bug 出現不一致（如 scaffold 記錄的三元組跟實際 task 對不上），這裡仍然會如實記下 `fill_function()` 自己回報的 `error`，只是 `reason` 會被誤標成 `fill_failed`——這種不一致本身已經是比「分類錯誤」更嚴重的資料問題，不是 ⑤ 這一層該吸收的。
 
-**同一個 task 的 `fill_failed` 紀錄可能在不同輪次各留一筆，這是刻意保留的歷史，不是需要去重的雜訊**：`scaffold_skipped` 有 `already_recorded` 去重，是因為 `skipped_interfaces` 整條 run 不會變，同一個 task 每輪重算出的結果、`error` 文字必然逐字相同——留下第二筆只是在浪費空間複製同一件事。`fill_failed` 不是這種情況：七章已經修正成翻譯品質失敗會在下一輪 `debug → implement` 重新排程，同一個 task 若連續幾輪都失敗，qwen 每次實際生成的內容、`FillResult.error` 的具體訊息完全可能不同（例如第一輪是 delimiter 格式問題、第二輪換成別的語法錯誤）——保留每一輪各自的記錄，才能讓 10a（⑦ Debug Agent）之後回溯「這個 task 到底試過幾次、每次卡在哪裡」，先驗地去重反而會丟掉這個資訊。這裡的資料量本身也有 `retry_count` 的既有上限自然收斂（02b `MAX_RETRY = 3`，見 02b `test_nodes.py`）：同一個 task 在單一 graph run 裡最多只會經歷 `MAX_RETRY` 次 `debug → implement` 重入，`fill_failed` 紀錄不會無限增長，10a 讀取時依 `task_id` 分組看待即可，不需要假設每個 task 只會出現一次。
+**同一個 task 的 `fill_failed` 紀錄可能在不同輪次各留一筆，這是刻意保留的歷史，不是需要去重的雜訊**：`scaffold_skipped` 有 `already_recorded` 去重，是因為 `skipped_interfaces` 整條 run 不會變，同一個 task 每輪重算出的結果、`error` 文字必然逐字相同——留下第二筆只是在浪費空間複製同一件事。`fill_failed` 不是這種情況：七章已經修正成翻譯品質失敗會在下一輪 `debug → implement` 重新排程，同一個 task 若連續幾輪都失敗，qwen 每次實際生成的內容、`FillResult.error` 的具體訊息完全可能不同（例如第一輪是 delimiter 格式問題、第二輪換成別的語法錯誤）——保留每一輪各自的記錄，才能讓 10a（⑦ Debug Agent）之後回溯「這個 task 到底試過幾次、每次卡在哪裡」，先驗地去重反而會丟掉這個資訊。這裡的資料量本身也有 `retry_count` 的既有上限自然收斂（02b `MAX_RETRY = 1`，見 02b `test_nodes.py`；原為 3，使用者決定「能修就該第一輪修出來」後調降，見 `docs/refactor_bug_trace.md` #11）：同一個 task 在單一 graph run 裡最多只會經歷 `MAX_RETRY` 次 `debug → implement` 重入，`fill_failed` 紀錄不會無限增長，10a 讀取時依 `task_id` 分組看待即可，不需要假設每個 task 只會出現一次。
 
 「提前排除」如何接進排程器，見七章。
 
@@ -408,10 +409,53 @@ already_failed=set(state.get("failed_tasks", [])),   # ← 問題所在
 - [x] **`_reload_probe_wrapper.py`（九章）需要有測試涵蓋**：已解決，見 `tests/python_service/test_reload_probe_integration.py`（真實 Docker 容器，非 mock），涵蓋探測端點連線、token round-trip、修改程式碼後正確等到新 worker 三種情境
 - [ ] **`_wait_for_service_reload()` 的實際時間預算調校**：目前輪詢 token 用的是 `SERVICE_READY_TIMEOUT_SECONDS`（三章），實際跑起來這個預算夠不夠用（尤其模型生成耗時本來就長，見 07a 七章，且每輪至少兩次完整重啟的成本也要算進去，見三章「已知限制」），需要接上真實環境才能校準，屬於數字微調，不影響本文件已定案的機制設計
 - [x] **Python 服務的啟動機制目前沒有任何文件正式列為 pipeline 步驟**：09b 落地時發現這個機制若不解決就無法真正驗證，一併定案並實作：`uvicorn --reload` 在 Windows 上經常無法真正完成重啟（Windows `CTRL_C_EVENT` 送達機制不可靠，已用真實環境重現，見 `09b_implement_agent_code.md` 五章），改在 Docker 容器內執行目標 Python 服務（`python_service/process.py` 的 `PythonServiceContainer`，六章），由 `implement_node.run()` 在真正第一次進入時啟動、`main.py` 收尾時關閉。**新衍生的待決定事項**：容器內只安裝已知的最小基線套件集合（FastAPI／SQLAlchemy 等），目標專案完整依賴清單如何產生、如何餵給容器仍未解決；Docker 這項新環境前提也還沒寫進 00 五章「環境建立」——皆見 `09b_implement_agent_code.md` 九章
-- [ ] **`scaffold_skipped` 是否該讓整條 pipeline 提早 `give_up`，不必走完 `retry_count`**：七章「沒有採用的方案」已完整記錄評估過程與擱置理由（風險是誤判成「已無可修的東西」、連帶放棄其他仍可修的 module）。九章的修正已經確保這類失敗至少不會重複浪費本地模型呼叫，只是還沒有做到「提早結束整條 pipeline」這一步。留給 `10a_debug_agent_architecture.md`（待建立）評估，需要更完整的「這次局部驗證失敗是否命中 scaffold 缺口對應的函式」資料才能安全判斷
+- [x] **`scaffold_skipped` 是否該讓整條 pipeline 提早 `give_up`，不必走完 `retry_count`**：已解決。七章「沒有採用的方案」當初評估風險太高（可能誤判成「已無可修的東西」、連帶放棄其他仍可修的 module），留給更完整的資料重新評估——`10a_debug_agent_architecture.md` 七章 `give_up_early` 用 module 級的 `ModuleFailureContext`／`DebugRound` 做出比 09a 當初評估更精確的判斷，已落地
 - [ ] **`main.py`（01 九章）收尾列印是否要一併印出 `task_failures`**：見六章「既有的 `RefactorState.failed_tasks` 不廢棄」——目前收尾只印粗粒度的 `failed_tasks`（task id 清單），`task_failures` 能提供根因分類與 `error` 內容，對人工事後查看更有幫助，但屬於資訊呈現層面的錦上添花，不影響任何功能，優先度低於其餘項目
 - [ ] **`07a_translator_cli_architecture.md` 十四章記錄的 `MultipartFile` 型別缺口**：若因這類型別對應缺口導致的失敗被歸類成 `"fill_failed"`（不是 `skipped_interfaces` 命中），⑦ Debug Agent 判讀時仍需要自行讀懂 `error` 文字內容才能定位根因；是否需要在 `task_failures` 再新增更細緻的錯誤分類，待 10a 建立、累積更多真實失敗案例後再評估
 - [ ] **五章的 `_RELATIONSHIP_GAP_NOTICE`／`_enums.py` 補強目前是固定套用在所有 services／repositories 層 task，沒有依實際是否用到關聯／Enum 欄位做精算**：比照 06a 十二章「`routers` 層一律納入 `schemas/{module}.py` 是否過度保守」同一種取捨——這是保守、多連不排除的既有精神，若真實專案 `_enums.py` 體積偏大或 relationship 提示造成 context 雜訊過多，可再評估是否需要精算，待接上真實專案規模驗證
+- [ ] **十二章全域 Phase 關卡目前只有合成 fixture 的單元測試覆蓋，還沒有接上真實 78-task pipeline 觀察它實際改變的排程順序**：邏輯正確性（tier 0/1/2 的放行條件、跨 module 全域範圍、永久失敗不死鎖）已用 `tests/graph/test_scheduler.py::TestGlobalPhaseTierBarrier` 驗證，但目前的真實環境端對端跑法（04→08 驗證、完整 pipeline 跑到 give_up）都是在這個關卡加入之前執行的，還沒有一次真正在關卡生效下跑完全程的紀錄，待下次真實環境重跑時觀察
+
+---
+
+## 十二、`refactor_plan.md` 分層分階段設計：⑤ 與 `graph/scheduler.py` 的新職責
+
+`refactor_plan.md` 二章把「呼叫鏈＋完整 Java 原始碼」的核心邏輯全部交給⑤，把 `graph/scheduler.py` 從單純的 module 依賴排程，擴充成同時執行全域三層 Phase 關卡。這一章補記這兩塊已經落地的設計，理由與正確性論證，銜接一～十一章原本記錄的（也已落地的）收尾缺口。
+
+### `_run_one_task()`：`translator_backend`／`java_source`／`referenced_source` 怎麼組裝
+
+`_run_one_task()` 呼叫 `translator_cli.fill_function()` 前，多做兩件 06a／07a 已經定案、⑤負責串接的事：
+
+1. **`translator_backend=task["translator_backend"]`**：`[P]` 已經依「這個 task 屬於哪一層」機械算好（repository → `"qwen"`，其餘 → `"claude"`，見 refactor_plan.md 三章），⑤ 原樣傳遞，不重新判斷。
+2. **`java_source`／`referenced_source` 兩個真實原始碼字串**：
+   - `java_source = resolve_java_source(java_project_path, task["java_method_id"])`——讀 `task.java_method_id` 指到的整個 Java 檔案內容（`graph/java_source_extraction.py`，見 07a 五章：整檔讀取，不是只抽這一個方法）。解析失敗（理論上不該發生：`java_method_id` 由③在③自己掃描 `java_project_path` 的當下算出，兩者必然指向同一份輸入）直接讓這個 task 判定失敗（`FillResult(success=False, error=...)`），不呼叫 `fill_function()`——沒有 `java_source`，模型沒有翻譯依據，送進去也必然失敗，不如提前省下一次呼叫
+   - `referenced_source = resolve_referenced_source(java_project_path, python_project_path, task.get("reference_targets", []))`——`task.reference_targets` 每一筆已經帶 `language`（`"python"` 或 `"java"`，見下方「呼叫鏈規則已經在 `[P]` 算完」），單一項目解析失敗只記警告、跳過，不中止整個呼叫（07a 五章「單一項目解析失敗記警告並跳過」）
+3. **`fixed_body is not None` 時完全跳過上面兩步**：⑦ Debug Agent 已經給出修正後的完整程式碼時，直接用 `fixed_body` 取代整個模型呼叫（見六章、10a 八章），不需要（也不應該）重新組一次 `java_source`／`referenced_source`——那兩者只有「呼叫模型翻譯」這條路徑才需要。
+
+**呼叫鏈規則已經在 `[P]` 算完，⑤ 不重新判斷「這個 callee 該讀 Java 還是讀 Python」**：`refactor_plan.md` 一章「呼叫鏈規則」那張表（更基礎層→讀 Python、同 module 同層→讀 Java 遞迴、跨 module 同層依已驗證→讀 Python、跨 module 同層無依賴→讀 Java）是 `plan_agent/call_chain.py::build_reference_targets()` 的職責（06a 六章），BFS 走訪呼叫圖時就把每個 `ReferenceTarget.language` 定案好，⑤ 收到的 `reference_targets` 已經是「界定好範圍」的結果，只需要「實際讀取」——這正是 refactor_plan.md 一章「新增能力與歸屬」明訂的分工：「界定範圍」歸 `[P]`、「實際讀取原始碼」歸⑤，`resolve_referenced_source()` 對 `language=="python"` 的項目呼叫 `extract_python_function_source()`、對 `language=="java"` 的項目讀 Java 原始碼，兩條路徑機械分派，不需要⑤重新判斷任何呼叫鏈規則。
+
+### `graph/scheduler.py`：全域三層 Phase 關卡
+
+**為什麼放在 `ModuleScheduler` 裡，不是 `implement_node.py` 自己判斷**：`get_ready_tasks()` 已經是唯一決定「這一輪送哪些 task 給 translator-cli」的地方，Phase 關卡本質上是「這個 task 現在能不能排」這個問題的另一個條件，跟既有的 module 依賴、task 依賴是同一種性質的判斷，理所當然疊加在同一個函式裡，不需要在 `implement_node.py` 另外維護一份平行的過濾邏輯、也不需要讓呼叫端在拿到 `get_ready_tasks()` 的結果後還要自己再篩一次。
+
+**三層怎麼算：`_global_tier(task)`**：
+
+```
+tier 0（Phase 1）：task.get("phase", 1) != 2
+tier 1（service）：phase == 2 且 target_files[0] 落在 app/services/ 前綴下
+tier 2（controller/router）：phase == 2 且其餘情況（app/routers/、_global 的 exception_handlers.py 等）
+```
+
+`phase` 缺席（`NotRequired`，只有測試 fixture／01 文件 stub 會缺）時預設視同 Phase 1（tier 0，限制最少的預設值）——真實 `[P]` 產出的每一筆 `TaskSpec` 都會設定這個欄位（06a 五章）。層級判斷不 import `plan_agent`，改用跟 `translator_cli/scaffold.py::_LAYER_PREFIX` 同一種各自維護的路徑前綴機械慣例（見 08a 二章「檔名規則」，`graph` 套件不應該對 `plan_agent` 產生新的 import-time 依賴）。
+
+**放行條件：`_tier_barrier_satisfied(tier)`**——tier 0 永遠放行；tier ≥ 1 要求「全專案所有 tier 數字更小的 task 都已到達終態（`task_done` 或 `task_failed`，不是只看成功）」。**用終態、不是只看成功，是這個機制唯一容易出錯、也是刻意設計的地方**：`skipped_interfaces` 命中的 task（六章「scaffold 缺口」）永遠不會進 `task_done`，若關卡條件寫成「全部成功」，一個 Phase 1 的 scaffold 缺口會讓整個 Phase 2 永遠放不出來——這正是七章「100% 由 `scaffold_gap_task_ids` 覆蓋的 module」處理過的同一種死結風險，這裡用同一種「終態，不是成功」的判斷方式一併規避。
+
+**全域範圍，不是逐 module**：`_tier_barrier_satisfied()` 掃描的是**全部** task（跨所有 module），不是只看同一個 module 底下的 task——這是 refactor_plan.md 一章刻意的設計取捨（「不管哪個 module，全部 module 的前一關都做完，才有任何 module 開始下一關」），代價是犧牲一些排程彈性換取規則簡單，見該章「為什麼是三層全域關卡，不是逐 module」的完整論證，本文件不重複。
+
+**跟既有 module 依賴排程、task 依賴排程是三層獨立疊加的關卡，不是互相取代**：`get_ready_tasks()` 現在依序檢查 module 狀態（`_module_deps_satisfied`）、Phase 關卡（`_tier_barrier_satisfied`）、task 依賴（`_task_deps_satisfied`），三者都通過才放行；`_backfill_missing_task_deps()` 既有的同 module 內序列化（沒填 `depends_on` 的 task 依原始順序自動串接）維持不變、繼續生效，兩層機制作用的範圍不同（module 內部順序 vs. 全專案分階段），互不衝突。
+
+**不影響 `debug → implement` 重入**：`_task_tier` 在每次 `ModuleScheduler.__init__()` 時從 `task_list` 重新算一次，是純函式、不依賴任何跨輪次狀態；`already_completed`／`already_failed` 建構參數（七章）已經正確反映到目前為止的終態，重入時關卡判斷自動延續前幾輪的進度，不需要額外同步。
+
+程式碼見 `graph/scheduler.py::_global_tier()`／`ModuleScheduler._tier_barrier_satisfied()`；單元測試見 `tests/graph/test_scheduler.py::TestGlobalPhaseTierBarrier`（tier 0 永遠放行、service 被全域 Phase 1 卡住＋跨 module 驗證、永久失敗不死鎖、router 被全域 service 卡住、`phase` 缺席的向後相容性）。
 
 ---
 

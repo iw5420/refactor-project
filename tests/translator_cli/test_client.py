@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from translator_cli import client, formatting, git_ops, ollama_client, scaffold
+from translator_cli import claude_client, client, formatting, git_ops, ollama_client, scaffold
 from translator_cli.exceptions import (
     TranslatorCliError,
     TranslatorCliNetworkError,
@@ -101,6 +101,9 @@ def test_fill_function_end_to_end(tmp_path, monkeypatch):
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId * 2; }",
+            referenced_source=[],
             description="回傳 user_id 乘以 2",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -138,6 +141,9 @@ def test_fill_function_with_fixed_body_skips_ollama_call(tmp_path, monkeypatch):
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId * 3; }",
+            referenced_source=[],
             description="回傳 user_id 乘以 2",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -170,6 +176,9 @@ def test_fill_function_with_fixed_body_invalid_syntax_returns_failure(tmp_path, 
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId * 2; }",
+            referenced_source=[],
             description="回傳 user_id 乘以 2",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -211,6 +220,9 @@ def test_fill_function_with_fixed_body_nested_same_name_def_rejected_and_logged(
                 target_file="app/repositories/user_repository.py",
                 class_name="UserRepository",
                 function_name="get_by_id",
+                translator_backend="qwen",
+                java_source="public int getById(int userId) { return userId * 2; }",
+                referenced_source=[],
                 description="回傳 user_id 乘以 2",
                 context="",
                 context_files=["app/repositories/user_repository.py"],
@@ -359,6 +371,9 @@ def test_fill_function_adds_missing_body_imports(tmp_path, monkeypatch):
             target_file="app/routers/user_router.py",
             class_name=None,
             function_name="get_user",
+            translator_backend="qwen",
+            java_source="public UserDto getUser(int userId) { ... }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/routers/user_router.py"],
@@ -377,14 +392,21 @@ def test_fill_function_marks_upstream_degraded_on_that_specific_error(tmp_path, 
     TranslatorCliUpstreamDegradedError（連續多個 task 都在傳輸層失敗）
     時，fill_function() 除了照常轉成 FillResult(success=False)，還要把
     upstream_degraded=True 一併帶出來，讓 implement_node.py 能提早停止
-    重試，不是每個 task 各自燒完重試預算才發現同一個根因。"""
+    重試，不是每個 task 各自燒完重試預算才發現同一個根因。這裡連
+    fallback 用的 Claude 也讓它失敗（見下方 fallback 測試），確認兩條
+    路徑都失敗時，upstream_degraded 沿用 qwen 那次的判斷，不是 claude
+    fallback 這次的。"""
     _init_repo(tmp_path)
     asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
 
     async def _raise_upstream_degraded(**kwargs):
         raise TranslatorCliUpstreamDegradedError("連續 3 次都在傳輸層失敗")
 
+    async def _claude_also_fails(**kwargs):
+        raise TranslatorCliNetworkError("claude fallback 這次也連不上")
+
     monkeypatch.setattr(ollama_client, "get_function_body", _raise_upstream_degraded)
+    monkeypatch.setattr(claude_client, "get_function_body", _claude_also_fails)
 
     result = asyncio.run(
         client.fill_function(
@@ -393,6 +415,9 @@ def test_fill_function_marks_upstream_degraded_on_that_specific_error(tmp_path, 
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=[],
@@ -412,7 +437,11 @@ def test_fill_function_does_not_mark_upstream_degraded_on_plain_network_error(tm
     async def _raise_plain_network_error(**kwargs):
         raise TranslatorCliNetworkError("這次剛好連不上")
 
+    async def _claude_also_fails(**kwargs):
+        raise TranslatorCliNetworkError("claude fallback 這次也連不上")
+
     monkeypatch.setattr(ollama_client, "get_function_body", _raise_plain_network_error)
+    monkeypatch.setattr(claude_client, "get_function_body", _claude_also_fails)
 
     result = asyncio.run(
         client.fill_function(
@@ -421,6 +450,9 @@ def test_fill_function_does_not_mark_upstream_degraded_on_plain_network_error(tm
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=[],
@@ -429,6 +461,85 @@ def test_fill_function_does_not_mark_upstream_degraded_on_plain_network_error(tm
 
     assert result.success is False
     assert result.upstream_degraded is False
+
+
+def test_fill_function_falls_back_to_claude_when_qwen_fails(tmp_path, monkeypatch):
+    """對應 docs/refactor_bug_trace.md：qwen 這一路失敗（含連線失敗、
+    模型輸出格式錯誤重試耗盡）時，不直接判這個 task 失敗——改用 Claude
+    API 對同一個 task 重試，成功的話這個 task 整體視為成功。避免同
+    module 同後端序列鏈上排在它後面的其他 qwen task 因為它永遠等不到
+    task_done 而卡在懸空狀態，連帶讓全域 Phase 關卡判斷不了「全專案
+    tier 0 是否已到終態」。"""
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    qwen_calls = []
+    claude_calls = []
+
+    async def _qwen_fails(**kwargs):
+        qwen_calls.append(kwargs)
+        raise TranslatorCliNetworkError("qwen 連不上")
+
+    async def _claude_succeeds(**kwargs):
+        claude_calls.append(kwargs)
+        return "return user_id"
+
+    monkeypatch.setattr(ollama_client, "get_function_body", _qwen_fails)
+    monkeypatch.setattr(claude_client, "get_function_body", _claude_succeeds)
+
+    result = asyncio.run(
+        client.fill_function(
+            str(tmp_path),
+            task_id="task_001",
+            target_file="app/repositories/user_repository.py",
+            class_name="UserRepository",
+            function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
+            description="d",
+            context="",
+            context_files=[],
+        )
+    )
+
+    assert result.success is True
+    assert len(qwen_calls) == 1
+    assert len(claude_calls) == 1  # fallback 真的被呼叫到，且引數跟原本 qwen 那次一致
+    assert claude_calls[0]["task_id"] == "task_001"
+    written = (tmp_path / "app" / "repositories" / "user_repository.py").read_text(encoding="utf-8")
+    assert "return user_id" in written
+
+
+def test_fill_function_claude_backend_does_not_fallback_on_its_own_failure(tmp_path, monkeypatch):
+    """translator_backend="claude" 本身失敗時沒有更保底的後端可以退，
+    維持原樣直接回報失敗——fallback 只在 qwen 失敗時才會觸發。"""
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+    async def _claude_fails(**kwargs):
+        raise TranslatorCliNetworkError("claude 這次連不上")
+
+    monkeypatch.setattr(claude_client, "get_function_body", _claude_fails)
+
+    result = asyncio.run(
+        client.fill_function(
+            str(tmp_path),
+            task_id="task_001",
+            target_file="app/repositories/user_repository.py",
+            class_name="UserRepository",
+            function_name="get_by_id",
+            translator_backend="claude",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
+            description="d",
+            context="",
+            context_files=[],
+        )
+    )
+
+    assert result.success is False
+    assert "claude 這次連不上" in result.error
 
 
 def test_fill_function_idempotent_rerun_with_identical_body_succeeds(tmp_path, monkeypatch):
@@ -447,6 +558,9 @@ def test_fill_function_idempotent_rerun_with_identical_body_succeeds(tmp_path, m
         target_file="app/repositories/user_repository.py",
         class_name="UserRepository",
         function_name="get_by_id",
+        translator_backend="qwen",
+        java_source="public int getById(int userId) { return userId * 2; }",
+        referenced_source=[],
         description="回傳 user_id 乘以 2",
         context="",
         context_files=["app/repositories/user_repository.py"],
@@ -486,6 +600,9 @@ def test_fill_function_missing_target_file_returns_scaffold_mismatch(tmp_path):
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -506,6 +623,9 @@ def test_fill_function_missing_function_returns_scaffold_mismatch(tmp_path, monk
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="delete",  # 骨架裡不存在的函式
+            translator_backend="qwen",
+            java_source="public void delete(int userId) { }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -529,6 +649,9 @@ def test_fill_function_context_files_missing_extra_file_does_not_abort(tmp_path,
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py", "app/models/user.py"],  # user.py 不存在
@@ -562,6 +685,9 @@ def test_fill_function_context_files_permission_error_returns_failure(tmp_path, 
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py", "app/models/user.py"],
@@ -599,6 +725,9 @@ def test_fill_function_detects_dirty_tree_that_appeared_during_llm_wait(tmp_path
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId * 2; }",
+            referenced_source=[],
             description="回傳 user_id 乘以 2",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -622,6 +751,9 @@ def test_fill_function_dirty_working_tree_refuses_to_write(tmp_path):
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -697,6 +829,9 @@ def test_fill_function_rolls_back_on_commit_failure(tmp_path, monkeypatch):
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId * 2; }",
+            referenced_source=[],
             description="回傳 user_id 乘以 2",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -732,6 +867,9 @@ def test_fill_function_rolls_back_on_format_failure(tmp_path, monkeypatch):
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId * 2; }",
+            referenced_source=[],
             description="回傳 user_id 乘以 2",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -767,6 +905,9 @@ def test_fill_function_write_oserror_returns_failure(tmp_path, monkeypatch):
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -790,10 +931,18 @@ def test_fill_function_missing_ollama_env_vars_returns_failure_not_crash(tmp_pat
     # OLLAMA_BASE_URL／OLLAMA_API_KEY 缺失時，ollama_client._call_ollama_once()
     # 會拋 TranslatorCliConfigError（見該模組），這裡驗證 fill_function()
     # 正確接住、轉成 FillResult(success=False)，不是原生例外洩漏擊穿合約。
+    # qwen 失敗會 fallback 到 Claude（見上方 fallback 測試）——這裡連
+    # Claude 也讓它失敗，確保驗證的是「兩條路徑都失敗才真的回報失敗」，
+    # 不是意外真的打了一次 Claude API。
     _init_repo(tmp_path)
     asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    async def _claude_also_fails(**kwargs):
+        raise TranslatorCliNetworkError("claude fallback 這次也連不上")
+
+    monkeypatch.setattr(claude_client, "get_function_body", _claude_also_fails)
 
     result = asyncio.run(
         client.fill_function(
@@ -802,6 +951,9 @@ def test_fill_function_missing_ollama_env_vars_returns_failure_not_crash(tmp_pat
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -888,7 +1040,7 @@ class TestTrimContextFilesIfOversized:
         source = "class ExamEntity(Base):\n    id: int\n\n\nclass OtherEntity(Base):\n    id: int\n"
         context_files = [("app/models/exam.py", source)]
         result = client._trim_context_files_if_oversized(
-            context_files, task_id="task_x", description="更新至 ExamEntity 並儲存",
+            context_files, task_id="task_x", java_source="更新至 ExamEntity 並儲存",
         )
         _, trimmed = result[0]
         assert "ExamEntity" in trimmed
@@ -968,6 +1120,9 @@ def test_fill_function_trims_oversized_context_before_calling_ollama(tmp_path, m
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py"],
@@ -1081,6 +1236,9 @@ def test_fill_function_passes_referenced_functions_through_to_context_extraction
             target_file="app/repositories/user_repository.py",
             class_name="UserRepository",
             function_name="get_by_id",
+            translator_backend="qwen",
+            java_source="public int getById(int userId) { return userId; }",
+            referenced_source=[],
             description="d",
             context="",
             context_files=["app/repositories/user_repository.py", "app/repositories/exam_repository.py"],
@@ -1094,3 +1252,135 @@ def test_fill_function_passes_referenced_functions_through_to_context_extraction
     assert "find_by_kind" not in received["app/repositories/exam_repository.py"]
     # target_files[0]（自己的檔案）不受影響，維持完整內容。
     assert "def get_by_id" in received["app/repositories/user_repository.py"]
+
+
+class TestFillFunctionBackendDispatch:
+    """對應 07a 七章「分派方式」：`translator_backend` 決定
+    `fill_function()` 走 `ollama_client` 還是 `claude_client` 這條
+    `get_function_body()` 路徑，兩者一次只該有一個被呼叫到。"""
+
+    def test_qwen_backend_calls_ollama_client_only(self, tmp_path, monkeypatch):
+        _init_repo(tmp_path)
+        asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+        ollama_called = {"n": 0}
+        claude_called = {"n": 0}
+
+        async def fake_ollama(**kwargs):
+            ollama_called["n"] += 1
+            return "return user_id\n"
+
+        async def fake_claude(**kwargs):
+            claude_called["n"] += 1
+            return "return user_id\n"
+
+        monkeypatch.setattr(ollama_client, "get_function_body", fake_ollama)
+        monkeypatch.setattr(claude_client, "get_function_body", fake_claude)
+
+        result = asyncio.run(
+            client.fill_function(
+                str(tmp_path),
+                task_id="task_001",
+                target_file="app/repositories/user_repository.py",
+                class_name="UserRepository",
+                function_name="get_by_id",
+                translator_backend="qwen",
+                java_source="public int getById(int userId) { return userId; }",
+                referenced_source=[],
+                description="d",
+                context="",
+                context_files=["app/repositories/user_repository.py"],
+            )
+        )
+
+        assert result.success is True
+        assert ollama_called["n"] == 1
+        assert claude_called["n"] == 0
+
+    def test_claude_backend_calls_claude_client_only(self, tmp_path, monkeypatch):
+        _init_repo(tmp_path)
+        asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+
+        ollama_called = {"n": 0}
+        claude_called = {"n": 0}
+
+        async def fake_ollama(**kwargs):
+            ollama_called["n"] += 1
+            return "return user_id\n"
+
+        async def fake_claude(**kwargs):
+            claude_called["n"] += 1
+            return "return user_id\n"
+
+        monkeypatch.setattr(ollama_client, "get_function_body", fake_ollama)
+        monkeypatch.setattr(claude_client, "get_function_body", fake_claude)
+
+        result = asyncio.run(
+            client.fill_function(
+                str(tmp_path),
+                task_id="task_001",
+                target_file="app/repositories/user_repository.py",
+                class_name="UserRepository",
+                function_name="get_by_id",
+                translator_backend="claude",
+                java_source="public int getById(int userId) { return userId; }",
+                referenced_source=[],
+                description="d",
+                context="",
+                context_files=["app/repositories/user_repository.py"],
+            )
+        )
+
+        assert result.success is True
+        assert claude_called["n"] == 1
+        assert ollama_called["n"] == 0
+
+
+def test_fill_function_waits_for_write_lock_before_writing(tmp_path, monkeypatch):
+    """對應 07a 八章「寫入段用細粒度鎖序列化」：`fill_function()` 取得
+    `body_source`（模型呼叫不持鎖）之後才 `await git_ops.WRITE_LOCK.acquire()`
+    開始讀檔／AST 替換／寫入／commit。這裡用一個背景 task 先持有
+    `WRITE_LOCK` 一小段時間再釋放，驗證 `fill_function()` 確實等到鎖釋放
+    之後才真正走完寫入段（不是搶在鎖釋放前就完成），且最終仍正確成功
+    ——用事件發生順序斷言，不用計時猜測，避免 flaky。
+    """
+    _init_repo(tmp_path)
+    asyncio.run(client.generate_scaffold(str(tmp_path), _python_structure()))
+    monkeypatch.setattr(ollama_client, "get_function_body", _fake_get_function_body)
+
+    async def scenario():
+        events = []
+
+        async def hold_lock_then_release():
+            await git_ops.WRITE_LOCK.acquire()
+            events.append("lock_held")
+            await asyncio.sleep(0.05)
+            events.append("lock_released")
+            git_ops.WRITE_LOCK.release()
+
+        async def call_fill_function():
+            result = await client.fill_function(
+                str(tmp_path),
+                task_id="task_001",
+                target_file="app/repositories/user_repository.py",
+                class_name="UserRepository",
+                function_name="get_by_id",
+                translator_backend="qwen",
+                java_source="public int getById(int userId) { return userId * 2; }",
+                referenced_source=[],
+                description="回傳 user_id 乘以 2",
+                context="",
+                context_files=["app/repositories/user_repository.py"],
+            )
+            events.append("fill_function_done")
+            return result
+
+        holder_task = asyncio.create_task(hold_lock_then_release())
+        await asyncio.sleep(0.01)  # 確保 holder_task 先拿到鎖
+        result = await call_fill_function()
+        await holder_task
+        return result, events
+
+    result, events = asyncio.run(scenario())
+    assert result.success is True
+    assert events == ["lock_held", "lock_released", "fill_function_done"]

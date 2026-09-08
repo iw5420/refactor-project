@@ -116,11 +116,10 @@ class MethodEntry:
 class ClassInfo:
     """單一 Java 頂層宣告（class／interface／enum）的解析結果，三章掃描
     階段的基礎單位——interface（`_extract_interfaces()`）、enum（見
-    `is_enum`、`_extract_enums()`，十三章）也各自建立這個結構，只是
-    `fields`／`methods` 多半是空的或不完整（沒有欄位/方法本體可摘要），
-    主要是為了讓它們能被 import 依賴閉包（四章
-    `controller_dependency_closure()`）看到、正確收進
-    `module_list.java_files`。
+    `is_enum`、`_extract_enums()`）也各自建立這個結構，只是 `fields`／
+    `methods` 多半是空的或不完整（沒有欄位/方法本體可摘要），主要是為了
+    讓它們能被 import 依賴閉包（`grouping.py::controller_dependency_
+    closure()`）看到、正確收進 `module_list.java_files`。
     """
 
     file_path: str
@@ -128,16 +127,19 @@ class ClassInfo:
     stereotype: str | None  # "RestController"/"Controller"/"Service"/"Component"/"Repository"/None
     bean_name_override: str | None  # 如 @Service("userService") 的字面 value；沒有明確指定時為 None
     implements: list[str] = field(default_factory=list)  # interface 簡單名稱清單
-    extends: str | None = None  # 父類別簡單名稱（Java 單一繼承，只有一個），沒有 extends 時為 None——見四章 _direct_deps() 對這個欄位的依賴邊處理，十四章
+    extends: str | None = None  # 父類別簡單名稱（Java 單一繼承，只有一個），沒有 extends 時為 None——見 grouping.py::_direct_deps() 對這個欄位的依賴邊處理，回應 docs/09b_bug_trace.md「新發現：@MappedSuperclass（如 BaseEntity）未被任何 module 的 java_files 收錄」
     is_primary: bool = False  # 是否標註 @Primary
-    is_enum: bool = False  # 是否來自 _extract_enums()。純標記，不驅動任何分支邏輯——enum 的 methods 恆為空清單，四章 needs_llm_summary() 既有規則 2 已自然覆蓋「不需要送 Map」，見十三章
+    is_enum: bool = False  # 這個 ClassInfo 是否來自 _extract_enums()（EnumDeclaration）。純標記用，不驅動任何分支邏輯——enum 的 methods 恆為空清單，grouping.py::needs_llm_summary() 既有規則 2（無實作類別且方法皆無本體）已經自然覆蓋「不需要送 Map」，這裡只是讓下游讀 project.classes 時能診斷「這筆是 enum」，不用回頭猜
     fields: list[FieldInfo] = field(default_factory=list)
     methods: list[MethodEntry] = field(default_factory=list)
     request_mapping_base: list[str] = field(default_factory=list)  # class 上 @RequestMapping 的 base path（可能多個），未標註為空清單
-    routes: list["RouteDecl"] = field(default_factory=list)  # method 層級 route 宣告，定義見三章 3.4 RouteDecl
-    imports: list[str] = field(default_factory=list)  # 這個檔案 import 的簡單類別名稱（非 wildcard、非 static），見三章 _extract_project_imports()——補足欄位/呼叫圖都解析不到的依賴（靜態呼叫、方法參考等），供四章 controller_dependency_closure() 使用
-    annotations: list[str] = field(default_factory=list)  # class 上所有 annotation 名稱（不只 stereotype），供四章判斷是否為純資料類別（@Entity/@Data/@Getter/@Setter 等）
-    uses_dynamic_query_signal: bool = False  # 這個檔案是否 import 了已知會承載動態查詢邏輯的型別（如 org.springframework.data.jpa.domain.Specification），見三章 _uses_dynamic_query_signal()
+    routes: list[RouteDecl] = field(default_factory=list)  # method 層級 route 宣告
+    imports: list[str] = field(default_factory=list)  # 這個檔案 import 的簡單類別名稱（非 wildcard、非 static），見 call_graph.py _extract_project_imports()——補足欄位/呼叫圖都解析不到的依賴（靜態呼叫、方法參考等），供 grouping.py controller_dependency_closure() 使用
+    annotations: list[str] = field(default_factory=list)  # class 上所有 annotation 名稱（不只 stereotype），供 grouping.py 判斷是否為純資料類別（@Entity/@Data/@Getter/@Setter 等）
+    uses_dynamic_query_signal: bool = False  # 這個檔案是否 import 了已知會承載動態查詢邏輯的型別（如 org.springframework.data.jpa.domain.Specification），見 call_graph.py _uses_dynamic_query_signal()
+    is_self_returning_static_factory: bool = False  # 這個 class 是不是「自我回傳靜態工廠」模式（如 ResponseResult<T>/Result<T> 的 ok()/error()/success()/failure()，或 UserProfileRs.fromEntity()）：至少一個 static 方法宣告回傳型別是自己。比類別名稱比對更精準的結構訊號，見 call_graph.py::_is_self_returning_static_factory()。對應 docs/refactor_bug_trace.md #38：原本要求 class 本身宣告泛型型別參數（欄位原名 is_generic_response_wrapper），但真實案例 UserProfileRs（非泛型 DTO）證明「必須泛型」只是多餘的額外限制，真正可靠的訊號只有「有 static 方法回傳自己」——已核對整個 Java 專案，拿掉泛型限制後不會誤判任何其他類別
+    is_utils_class: bool = False  # 這個 class 的 package 是否落在 xxx.utils 底下（如 CollectionUtil／CodeUtil 這類純靜態工具類），見 call_graph.py::_is_utils_package()。對應 docs/refactor_bug_trace.md #15：這類靜態工具類呼叫（ClassName.staticMethod()）不透過欄位，_resolve_qualifier_string() 既有的兩個特例（uses_dynamic_query_signal／is_self_returning_static_factory）都不涵蓋，需要第三個結構訊號才能讓呼叫圖看得到這條呼叫關係
+    jpa_base_entity: str | None = None  # 這個 interface 若繼承了 Spring Data 基底介面（JpaRepository/CrudRepository/PagingAndSortingRepository），這裡存它的 entity 型別簡單名稱；沒有繼承則為 None。見 common/jpa_base_repository.py::detect_jpa_base_entity()。對應 docs/refactor_bug_trace.md #16：examRepository.findAll() 這類繼承來、從未顯式宣告的方法呼叫，靠這個欄位讓呼叫圖能合成一條指向 Python 端 BaseRepository 對應方法的參考座標，不需要窮舉每個 repository 該有哪些方法
 
 
 @dataclass
@@ -194,6 +196,11 @@ import javalang.ast
 import javalang.tree
 import yaml
 
+from common.jpa_base_repository import (
+    JPA_BASE_METHOD_NAME_MAP,
+    detect_jpa_base_entity,
+    synthetic_java_method_id,
+)
 from parse_agent.types import ClassInfo, FieldInfo, MethodEntry, MethodId, ParsedProject, RouteDecl, method_id
 
 logger = logging.getLogger(__name__)
@@ -367,10 +374,11 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
 
     **`extends`**：只取父類別簡單名稱（Java 單一繼承，`class_decl.extends`
     是單一 `ReferenceType` 或 `None`，不是清單，跟 `implements` 不同）。
-    沒有這個欄位，`grouping.py::_direct_deps()` 完全沒有管道知道「這個
-    class 繼承了哪個父類別」，同套件內的 `extends`（Java 語言特性上不需要
-    import）因此連候選依賴邊都不存在，不是「解析不到」，是從一開始就沒被
-    問過——對應十四章 `extends` 依賴邊。
+    對應 `docs/09b_bug_trace.md`「新發現：`@MappedSuperclass`（如
+    `BaseEntity`）未被任何 module 的 `java_files` 收錄」——沒有這個欄位，
+    `grouping.py::_direct_deps()` 完全沒有管道知道「這個 class 繼承了
+    哪個父類別」，同套件內的 `extends`（Java 語言特性上不需要 import）
+    因此連候選依賴邊都不存在，不是「解析不到」，是從一開始就沒被問過。
     """
     result: list[ClassInfo] = []
     for class_decl in tree.types:
@@ -421,6 +429,7 @@ def _extract_classes(tree: javalang.tree.CompilationUnit, rel_path: str) -> list
                 request_mapping_base=raw_base_paths or [],
                 routes=routes,
                 annotations=[a.name for a in class_decl.annotations],
+                is_self_returning_static_factory=_is_self_returning_static_factory(class_decl),
             )
         )
     return result
@@ -487,6 +496,16 @@ def _extract_interfaces(tree: javalang.tree.CompilationUnit, rel_path: str) -> l
                 request_mapping_base=[],
                 routes=[],
                 annotations=[a.name for a in decl.annotations],
+                # 對應 docs/refactor_bug_trace.md #16：`extends` 鏈裡若有
+                # Spring Data 基底介面（JpaRepository/CrudRepository/
+                # PagingAndSortingRepository），記下它的 entity 型別，供
+                # `_yield_call()` 合成繼承來的方法呼叫關係。跟上面
+                # docstring「這裡不解析 extends 鏈」講的是不同層次的
+                # 解析——那句話說的是「不嘗試把 extends 目標當成專案內
+                # class 去查表」（JpaRepository 本來就查不到），這裡只是
+                # 讀出 extends 引用本身的名稱／泛型引數，不查表，兩者不
+                # 衝突。
+                jpa_base_entity=detect_jpa_base_entity(decl.extends),
             )
         )
     return result
@@ -830,6 +849,61 @@ def _resolve_member_context(
     return targets or None
 
 
+def _is_utils_package(package: str | None) -> bool:
+    """對應 docs/refactor_bug_trace.md #15：`CollectionUtil`／`CodeUtil`
+    這類純靜態工具類，呼叫端一律用「類別名稱直接呼叫」（`ClassName.
+    staticMethod()`），不透過欄位注入——`_resolve_qualifier_string()`
+    既有的兩個特例（`uses_dynamic_query_signal`／`is_generic_response_
+    wrapper`）都是針對特定結構訊號設計，utils 工具類兩者都不符合，這類
+    呼叫因此完全不會被記進呼叫圖，[P] 的 `reference_targets` 自然也看
+    不到，⑤ 翻譯時只能照 Java 靜態呼叫語法瞎猜 Python 端的呼叫慣例。
+
+    判斷方式沿用 `design_agent/layout.py::is_utils_package()` 已經定案
+    的同一個訊號——package 名稱最後一段是不是 `utils`，比「無 stereotype
+    ＋全靜態方法」這種行為推斷簡單、可靠得多（見 05a 三章「Utils
+    特例」）。`parse_agent`／`design_agent` 是各自獨立套件，不互相
+    import（01 二章「設計原則」），這裡是同一個判斷邏輯的獨立副本，不是
+    忘記共用——這個邏輯只有一行、極不可能跟 design_agent 那份走向分岔，
+    重複維護的成本遠低於為了共用一行邏輯在兩個套件間建立耦合。
+    """
+    if not package:
+        return False
+    return package.rsplit(".", 1)[-1] == "utils"
+
+
+def _is_self_returning_static_factory(class_decl: javalang.tree.ClassDeclaration) -> bool:
+    """判斷這個 class 是不是「自我回傳靜態工廠」模式——回應包裝類別
+    （`ResponseResult<T>`／`Result<T>` 的 `ok()`／`error()`／`success()`／
+    `failure()`）跟 entity 轉換 DTO（`UserProfileRs.fromEntity()`）共有
+    的結構特徵：真實案例（見 `ExamController::search()` 呼叫
+    `ResponseResult.ok(...)`）證實這類呼叫跟 `ExamSpecification` 這類
+    Specification helper 一樣，是不透過欄位注入使用的靜態呼叫，
+    `_resolve_qualifier_string()` 靜態呼叫解析（見下方）需要一個訊號
+    辨識「這是可以直接靜態呼叫的工廠類別」，才知道要不要放行。
+
+    **判斷條件**：至少有一個 `static` 方法的宣告回傳型別就是這個 class
+    自己。**根因訂正（docs/refactor_bug_trace.md #38）**：原本額外要求
+    「class 本身宣告泛型型別參數」（`ClassName<T>`），理由是「一般 DTO
+    不是泛型類別，也不會有 static 工廠方法回傳自己」——真實案例
+    `UserProfileRs.fromEntity(ExamEntity entity): UserProfileRs` 推翻了
+    這個假設：它是非泛型 DTO，卻真的有 static 工廠方法回傳自己，導致
+    `CandidateController.getCandidate()` 呼叫 `UserProfileRs.fromEntity()`
+    這條邊在呼叫圖裡完全消失，⑤ 看不到 `UserProfileRs.java` 建構子的
+    真實欄位對應（`this.name = entity.getUserName();`），猜錯成
+    `entity.name`（`ExamEntity` 沒有這個欄位），真實觸發
+    `AttributeError`。已對整個 Java 專案掃過全部 `public static` 方法
+    確認：拿掉泛型限制後，只有 `UserProfileRs` 這一個類別會新命中，
+    不會誤判其他任何類別（`GetExamResultRq`／`GetExamResultRs` 這兩個
+    名稱帶 `Result` 字樣的一般 DTO 完全沒有 `static` 方法）。
+    """
+    return any(
+        "static" in method.modifiers
+        and isinstance(method.return_type, javalang.tree.ReferenceType)
+        and method.return_type.name == class_decl.name
+        for method in class_decl.methods
+    )
+
+
 def _resolve_qualifier_string(
     qualifier: str,
     current_class: ClassInfo,
@@ -837,10 +911,61 @@ def _resolve_qualifier_string(
     interface_implementors: dict[str, list[ClassInfo]],
 ) -> list[ClassInfo] | None:
     """把 qualifier 字串（可能是單一 field 名稱，也可能是 javalang 折疊
-    出的點號路徑，見本節前言）逐段解析：開頭的 `"this"` 視為
-    `current_class` 本身，其餘每一段都當作「目前候選類別清單裡任一個的
-    field 名稱」依序解析下去，任何一段解析不到就回傳 None。
+    出的點號路徑，見本節前言）解析成目標類別清單。
+
+    **三種已知靜態呼叫特例，優先判斷**：qualifier 整串直接是專案內某個
+    類別名稱、且該類別命中下面任一個結構訊號時，視為靜態呼叫，直接把
+    該類別當目標，不進入下面的欄位鏈解析——這幾類 helper class 都不是
+    透過欄位注入使用，走欄位解析永遠找不到，之前會直接回傳 `None`、
+    這個呼叫完全從呼叫圖裡消失：
+    1. `uses_dynamic_query_signal=True`（這個檔案 import 了
+       `org.springframework.data.jpa.domain.Specification`，見
+       `_uses_dynamic_query_signal()`、04a 三章「Import 依賴補充」既知
+       案例）——真實案例：`ExamController::search()` 呼叫
+       `ExamSpecification.withYear/withGrade/...`。
+    2. `is_self_returning_static_factory=True`（自我回傳靜態工廠，見
+       `_is_self_returning_static_factory()`）——真實案例：`ExamController`
+       等多個 controller 呼叫 `ResponseResult.ok(...)`／
+       `Result.success(...)`；`CandidateController.getCandidate()` 呼叫
+       `UserProfileRs.fromEntity(...)`（見 docs/refactor_bug_trace.md
+       #38，這個訊號原本要求泛型，訂正後才涵蓋這個非泛型 DTO 案例）。
+    3. `is_utils_class=True`（package 落在 `xxx.utils` 底下的純靜態工具
+       類，見 `_is_utils_package()`）——真實案例（`docs/refactor_bug_
+       trace.md` #15）：`ExamService::createRandom()` 呼叫
+       `CodeUtil.generateRandomCode()`，`exam_router.py::getAllExamKind()`
+       呼叫 `CollectionUtil.findDistinctField(...)`，兩者都因為兩個舊
+       特例都不命中，完全消失在呼叫圖裡，[P] 的 `reference_targets`
+       BFS 因此看不到這條呼叫，⑤ 只能照 Java 靜態呼叫語法瞎猜 Python
+       端的呼叫慣例（utils 已經被翻成模組層級函式，不是類別）。
+
+    **刻意不是「任何裸類別名稱靜態呼叫一律解析」這種通用規則**：呼叫圖
+    同時供 `skip_filter.py` 的可達性分析、`plan_agent/call_chain.py` 的
+    `reference_targets` BFS 使用，貿然放寬到所有靜態呼叫會擴大這個函式
+    的行為變動範圍到整個呼叫圖的語意，需要重新評估對這些下游消費者的
+    影響；只鎖定這幾個已經有明確結構訊號、已知問題模式的類別，範圍
+    精準、風險可控——`is_self_returning_static_factory` 刻意不用類別
+    名稱比對（`Result`／`Response` 這類字樣），因為這個專案裡就有名稱
+    剛好帶 `Result` 字樣、但其實是一般 Request／Response DTO 的反例
+    （`GetExamResultRq`／`GetExamResultRs`，兩者都沒有任何 `static`
+    方法），名稱比對會誤判；`is_utils_class` 同樣不用類別名稱比對
+    （`Util`／`Utils` 這類字樣），改用比對 package 名稱這個更可靠的
+    結構訊號（見 `_is_utils_package()` docstring），理由跟
+    `is_self_returning_static_factory` 一致。
+    `_resolve_type_name_to_classes()` 找不到、或找到但三個訊號都沒命中，
+    都落到下面既有的欄位鏈解析（`this.xxxService.foo()` 這類）。
+
+    其餘每一段都當作「目前候選類別清單裡任一個的 field 名稱」依序解析
+    下去，開頭的 `"this"` 視為 `current_class` 本身，任何一段解析不到
+    就回傳 None。
     """
+    static_targets = [
+        t
+        for t in _resolve_type_name_to_classes(qualifier, classes, interface_implementors)
+        if t.uses_dynamic_query_signal or t.is_self_returning_static_factory or t.is_utils_class
+    ]
+    if static_targets:
+        return static_targets
+
     segments = qualifier.split(".")
     context = [current_class]
     if segments[0] == "this":
@@ -863,17 +988,13 @@ def _method_return_context(
     """呼叫 context 內任一候選類別的 member_name 方法後，把回傳型別解析
     到的類別當成鏈式呼叫下一段的接續基礎（見本節前言）。
 
-    **必須遍歷 context 內每個候選類別的每一個同名多載方法，聯集所有能
-    解析出來的回傳型別，不能只取第一個成功的就回傳**——04a 三章「設計
-    原則：多連、少排除」明講漏掉一個實際存在的連結是不可逆的錯誤，這裡
-    有兩種情況會漏連：(1) 同一個 class 裡 `member_name` 有多個多載方法
-    （見 `types.py` `MethodId` 的多載共用 method_id 說明），若只取第一個
-    宣告的多載、剛好回傳 `void` 或無法解析，會讓後面明明可以解析的多載
-    被忽略；(2) `context` 裡有多個介面實作類別時，不同實作的回傳型別
-    未必相同（例如 covariant return type），只取第一個成功的候選、放棄
-    其餘候選，會讓依賴其他實作回傳型別的後續呼叫鏈整條斷掉。這裡不去猜
-    哪個多載或哪個實作才是「真正」被呼叫的那個（引數型別推導不在 javalang
-    語法層解析範圍內，見三章「決策」），而是比照 `resolve_field_target_
+    必須遍歷 context 內每個候選類別的每一個同名多載方法，聯集所有能
+    解析出來的回傳型別，不能只取第一個成功的就回傳（見 04a 三章「設計
+    原則：多連、少排除」）：(1) 同一個 class 裡 `member_name` 有多個多載
+    方法，若只取第一個宣告的多載、剛好回傳 `void` 或無法解析，會讓後面
+    明明可以解析的多載被忽略；(2) `context` 裡有多個介面實作類別時，
+    不同實作的回傳型別未必相同，只取第一個成功的候選會讓依賴其他實作
+    回傳型別的後續呼叫鏈整條斷掉。這裡比照 `resolve_field_target_
     classes()` 消歧失敗時的「保守全連結」精神，把所有解析得到的候選都
     留著。
     """
@@ -891,9 +1012,37 @@ def _method_return_context(
 
 
 def _yield_call(member_name: str, context: list[ClassInfo]):
+    """對應 docs/refactor_bug_trace.md #16：`member_name` 若不是任何候選
+    類別顯式宣告的方法，但候選類別繼承了 Spring Data 基底介面
+    （`jpa_base_entity` 非 `None`）、且 `member_name` 剛好是那幾個已知的
+    繼承來的固定方法名稱之一（`findAll`／`findById`／`save`……），一樣視為
+    一次合法呼叫，只是目標換成合成座標（指向 Python 端 `BaseRepository`
+    的對應方法，見 `common/jpa_base_repository.py`），不是這個 repository
+    自己的檔案／類別——這幾個方法在 Java 原始碼裡從未顯式宣告過（Spring
+    在執行期動態產生），沒有真實座標可以指，用固定的虛擬座標取代。
+
+    對應 docs/refactor_bug_trace.md #21：只 yield 合成座標，⑤只看得到
+    `BaseRepository` 這個抽象基底方法本身的內容，看不到「這次實際呼叫的
+    是哪一個具體 repository 子類別、它自己定義在哪個檔案」——真實案例
+    `ExamRepository`（有 `findByKind` 等其他顯式方法，但這次呼叫剛好是
+    純繼承的 `findAll()`）證實模型會因此瞎猜一個檔名慣例（`app.repositories.
+    exam_repository`），猜錯就整段 `ImportError`。若 `cls` 除了這個純繼承
+    呼叫之外還有其他顯式方法（`cls.methods` 非空），額外 yield 一個指向
+    `cls` 自己任一顯式方法的參考——這個參考本來就會被翻譯成真正的
+    `java_index` 項目（指向 `cls` 實際定義的檔案），順便讓 reference_targets
+    帶出「這個具體子類別定義在哪個檔案」這個資訊，不需要另外新增一種
+    「class 宣告」座標格式。`cls.methods` 全空（真正的孤兒類別，如
+    `QuestionRepository`）時沒有東西可以 piggyback，維持只 yield 合成
+    座標——那種情況本來就交給 `_synthesize_inherited_repository_reads()`
+    合成出「真正的」InterfaceSpec／`java_method_id`，不受這裡影響。
+    """
     for cls in context:
         if any(m.name == member_name for m in cls.methods):
             yield method_id(cls.file_path, cls.class_name, member_name)
+        elif cls.jpa_base_entity is not None and member_name in JPA_BASE_METHOD_NAME_MAP:
+            yield synthetic_java_method_id(member_name)
+            if cls.methods:
+                yield method_id(cls.file_path, cls.class_name, cls.methods[0].name)
 
 
 def _continue_chain(
@@ -2677,9 +2826,26 @@ def run_map_reduce(project: ParsedProject) -> tuple[list[_ModuleDraft], dict[str
 
 ```python
 # parse_agent/skip_filter.py
-"""① 解析 Agent：skip 呼叫鏈排除，對應 04a 五章全節。「非-skip 全集」
-來源見本節前言——openapi_spec["paths"]，不是 route_index.keys()；
-route_index 只當 endpoint_key → method_id 的查表工具。
+"""① 解析 Agent：skip 呼叫鏈排除，對應 04a 五章全節。
+
+**「非-skip 全集」的來源是 `openapi_spec["paths"]`，不是
+`route_index.keys()`**——`route_index` 是三章從 Java 原始碼機械掃出的
+索引，annotation 引用非字面字串常量、或 route 標在 interface 方法上等
+情況（見 04b 三章 3.4、十一章已知限制）會讓部分實際存在的 route 完全不
+出現在 `route_index` 裡；如果拿 `route_index` 自己當「全集」，這些消失的
+route 不會產生任何「查無對應」警告——因為根本沒有外部基準可以比對出
+「少了什麼」。這不只是精準度問題：若消失的剛好是一個合法的非-skip
+endpoint，而它呼叫到的方法又同時被某個 skip endpoint 的呼叫鏈碰到、且
+沒有其他非-skip 路徑能到達，`excluded = skip_reachable − non_skip_
+reachable` 會把這個方法**誤判為只服務 skip、實際上仍在被使用**，正是
+04a 三章設計原則要防的「不可逆的錯誤」。
+
+`openapi_spec["paths"]`（[A] Spec Agent 對著實際跑起來的 Java 服務取得，
+不是靜態分析，因此沒有 `route_index` 的漏掃問題）是「全集」來源，
+`route_index` 只當 `endpoint_key → method_id` 的查表工具。任何 route 若
+因為三章的解析限制而沒有進 `route_index`，不論它屬於 skip 組還是非-skip
+組，都會在查表時觸發同一套「查無對應」warning（見下方
+`_endpoints_to_method_ids()`），偵測機制對兩組對稱生效。
 """
 from __future__ import annotations
 
@@ -2694,7 +2860,7 @@ logger = logging.getLogger(__name__)
 
 # 跟 spec_collection_agent/chain_dependency_detect.py 的 _HTTP_METHODS
 # 同一份 OpenAPI paths 物件列舉邏輯，但不跨套件 import——各 Agent 套件
-# 自我封裝、不互相依賴，見 06 章 llm.py 的既有慣例。
+# 自我封裝、不互相依賴，見 llm.py 的既有慣例。
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
 
 
@@ -2718,12 +2884,9 @@ def _all_endpoints_from_openapi(openapi_spec: dict) -> list[str]:
     """把 `openapi_spec["paths"]` 展開成 `{HTTP_METHOD} {path}` 字串清單，
     當作 04a 五章「非-skip 全集」的來源（見本節前言）。`path` 直接沿用
     OpenAPI 的樣板格式（如 `/api/users/{id}`），跟 `unfilled_endpoints.json`
-    的 `endpoint` 欄位、三章 `route_index` 的 key 是同一種格式——
-    `spec_collection_agent/postman_tree.py` 的 `normalized_path_from_item()`
-    就是為了把 Postman `:id` 風格路徑換回這種格式、對回
-    `openapi_spec["paths"]`，見該函式 docstring，這裡不需要再處理一次
-    轉換。非 HTTP method 的 path item 欄位（如 `parameters`／`summary`）
-    直接過濾掉，不當成 route。
+    的 `endpoint` 欄位、三章 `route_index` 的 key 是同一種格式。非 HTTP
+    method 的 path item 欄位（如 `parameters`／`summary`）直接過濾掉，
+    不當成 route。
     """
     endpoints: list[str] = []
     for path, path_item in (openapi_spec.get("paths") or {}).items():
@@ -2741,10 +2904,9 @@ def _endpoints_to_method_ids(
 ) -> set[MethodId]:
     """對應 04a 五章步驟 1：把 endpoint 字串查表轉成 method_id 起點集合。
     查到多個 method_id（route_index 值本身就是清單）全部視為起點，沿用
-    「多連、少排除」原則（見 04a 五章步驟 1 第二點）。`group`（`"skip"`
-    或 `"非-skip"`）只供下面 warning log 標明是哪一組查無對應，不影響
-    排除邏輯本身——兩組都會走這裡，查無對應時的警告因此對稱生效（見
-    本節前言）。
+    「多連、少排除」原則。`group`（`"skip"` 或 `"非-skip"`）只供下面
+    warning log 標明是哪一組查無對應，不影響排除邏輯本身——兩組都會走
+    這裡，查無對應時的警告因此對稱生效（見本節前言）。
     """
     method_ids: set[MethodId] = set()
     unmatched: list[str] = []
@@ -2815,13 +2977,15 @@ def compute_excluded_methods(
     # skip_starts 與 non_skip_starts 的交集：某個 method_id 同時是 skip
     # endpoint 與非-skip endpoint 的直接繫結目標。這只可能發生在同一個
     # class 內有多個同名多載方法、各自掛不同 HTTP method 的 route（如
-    # FileController 的 voice/image，見 04a 五章「skip endpoint 的絕對
-    # 排除保證」）——method_id 不含參數簽名，兩個不同的物理方法被誤判成
-    # 同一個方法，讓「共用方法會被保護」規則把 skip 的那個分支也保護
-    # 下來。這個方法不會進 excluded（module_list 仍會保留它的描述），但
-    # 對應的 skip endpoint 本身在 assemble_api_mapping()（七章）有獨立的
-    # 絕對排除保證，不受這裡的判斷影響——這裡只負責記警告，讓 module_
-    # list 裡這個方法的描述（可能混雜了 skip 分支的行為）能被人工核對到。
+    # FileController 的 voice/image，一個 @PostMapping、一個
+    # @GetMapping）——method_id 不含參數簽名（javalang 不做 overload
+    # resolution，見 04a 三章「決策」），兩個不同的物理方法被誤判成同一個
+    # 方法，讓「共用方法會被保護」規則把 skip 的那個分支也保護下來。這個
+    # 方法不會進 excluded（module_list 仍會保留它的描述），但對應的
+    # skip endpoint 本身在 assemble_api_mapping() 有獨立的絕對排除保證
+    # （見該函式 docstring），不受這裡的判斷影響——這裡只負責記警告，讓
+    # module_list 裡這個方法的描述（可能混雜了 skip 分支的行為）能被人工
+    # 核對到。
     protected_by_sharing = skip_starts & non_skip_starts
     if protected_by_sharing:
         logger.warning(
@@ -2834,6 +2998,45 @@ def compute_excluded_methods(
             sorted(protected_by_sharing),
         )
 
+    return excluded
+
+
+def compute_skip_excluded_overloads(
+    *,
+    skip_endpoints: list[str],
+    route_index: dict[str, list[MethodId]],
+) -> list[tuple[str, str, str]]:
+    """使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」——
+    不是只跳過自動化測試（見 `docs/03a_spec_collection_agent_architecture.md`
+    「Decision.SKIP 的語意」）。但 `compute_excluded_methods()` 只能在
+    `method_id`（不含 HTTP method，見 04a 三章「決策」）這個粗粒度上排除
+    ——`FileController` 的 `voice`／`image` 這種「同名、不同 HTTP method」
+    的多載，兩個物理上完全不同的方法共用同一個 `method_id`，若 skip 只
+    命中其中一個 HTTP method（如 `image` 的 POST 上傳），method_id 層級
+    的排除完全無法只排除那一個多載、保留另一個（GET 下載）。
+
+    這裡改成直接輸出「HTTP method 精確」的排除清單：`(class_name,
+    method_name, http_method)` 三元組，供 `design_agent/design.py` 在
+    `signature_scan.scan_java_files()` 重新掃描出**每個物理多載各自的
+    `http_method`**之後，直接用這個清單把該排除的多載從 `class_sig.
+    methods` 濾掉——濾完之後產生一份新的、乾淨的資料，`design.py`
+    後續展開 overloads／生成骨架的既有邏輯完全不用改，因為它讀到的
+    資料本來就不會再包含這個多載了。
+
+    `endpoint_key` 格式固定是 `"{HTTP_METHOD} {path}"`（見
+    `load_skip_endpoints()`），直接切開第一個空白就能拿到 http_method，
+    不需要另外解析。`method_id` 格式是 `"{file}::{class}::{method}"`
+    （見 `parse_agent/types.py::method_id()`），這裡只取後兩段——
+    `design.py` 的 `class_signatures` 是逐檔案分開存的 dict，同一個
+    `class_name` 不會跨檔案出現在同一次查找裡，不需要 file 這一段也能
+    唯一定位。
+    """
+    excluded: list[tuple[str, str, str]] = []
+    for endpoint_key in skip_endpoints:
+        http_method, _, _ = endpoint_key.partition(" ")
+        for method_id_str in route_index.get(endpoint_key, ()):
+            _, class_name, method_name = method_id_str.split("::")
+            excluded.append((class_name, method_name, http_method.upper()))
     return excluded
 ```
 
@@ -2856,24 +3059,46 @@ from __future__ import annotations
 from pathlib import Path
 
 from graph.state import ApiMapping, ModuleInfo
-from parse_agent import skip_filter, summarize
+from parse_agent import grouping, skip_filter, summarize
 from parse_agent.call_graph import parse_java_project
 
 
 def run_parse_agent(
-    *, java_project_path: str, unfilled_endpoints_path: Path, openapi_spec: dict
-) -> tuple[list[ModuleInfo], list[ApiMapping]]:
+    *,
+    java_project_path: str,
+    unfilled_endpoints_path: Path,
+    openapi_spec: dict,
+    force_include_classes_path: Path,
+) -> tuple[list[ModuleInfo], list[ApiMapping], list[tuple[str, str, str]]]:
     """對應 04a 全文：解析 Java 專案，輸出 `(module_list,
-    api_to_python_target)`，直接對應 `RefactorState` 的
-    `module_list`／`api_to_python_target` 兩個欄位（見 04a 六章）。
+    api_to_python_target, skip_excluded_overloads)`，直接對應
+    `RefactorState` 的 `module_list`／`api_to_python_target`／
+    `skip_excluded_overloads` 三個欄位（見 04a 六章）。
+
+    `skip_excluded_overloads`：使用者填 skip，是人工判斷「這個 endpoint
+    整段不進翻譯流程」，不只是跳過自動化測試（見
+    `docs/03a_spec_collection_agent_architecture.md`「Decision.SKIP 的
+    語意」）。`compute_excluded_methods()` 排除的 `method_id` 不含 HTTP
+    method，同名不同 HTTP method 的多載（如 `FileController` 的
+    `voice`／`image`）會共用同一個 method_id、只能整組保留或整組排除，
+    這裡改用 `compute_skip_excluded_overloads()` 額外算出 HTTP method
+    精確的排除清單，交給 ③ `design_agent/design.py` 在重新掃描出每個
+    多載各自的 `http_method` 之後，直接把該排除的多載從資料裡濾掉。
 
     `openapi_spec`：`RefactorState.openapi_spec`，[A] Spec Agent 產出，
     供 `skip_filter` 判定「非-skip 全集」使用（見 04a 二章、04b 八章，
     不是新增的 Claude API 呼叫或檔案讀取，單純從 state 轉傳）。
+
+    `force_include_classes_path`：對應 04a 四章「人工強制納入清單」，
+    比照 `unfilled_endpoints_path` 的既有慣例由呼叫端（`parse_node.py`）
+    明確傳入固定路徑，不在這裡寫死——這份清單檔案本身是選填的（不存在
+    視為空清單，見 `grouping.load_force_include_classes()`），但路徑
+    本身仍是必要引數，維持跟 `unfilled_endpoints_path` 一致的呼叫慣例。
     """
     project = parse_java_project(java_project_path)
 
-    module_drafts, class_to_module = summarize.run_map_reduce(project)
+    force_include_class_names = grouping.load_force_include_classes(project, force_include_classes_path)
+    module_drafts, class_to_module = summarize.run_map_reduce(project, force_include_class_names)
 
     skip_endpoints = skip_filter.load_skip_endpoints(unfilled_endpoints_path)
     excluded_methods = skip_filter.compute_excluded_methods(
@@ -2887,7 +3112,12 @@ def run_parse_agent(
     api_to_python_target = summarize.assemble_api_mapping(project, class_to_module, filtered_drafts, set(skip_endpoints))
     module_list = summarize.finalize_module_list(filtered_drafts)
 
-    return module_list, api_to_python_target
+    skip_excluded_overloads = skip_filter.compute_skip_excluded_overloads(
+        skip_endpoints=skip_endpoints,
+        route_index=project.route_index,
+    )
+
+    return module_list, api_to_python_target, skip_excluded_overloads
 ```
 
 ---
@@ -2897,7 +3127,6 @@ def run_parse_agent(
 比照 `spec_node.py`／`collection_node.py` 的慣例：`run_parse_agent()` 內部是同步阻塞呼叫（javalang 掃描＋多次 Claude API 呼叫，且 Map 重試佇列的 5 分鐘等待，見 04a 四章），丟到執行緒跑，避免卡住事件迴圈。
 
 ```python
-# graph/nodes/parse_node.py
 """
 ① 解析 Agent（Claude API）
 輸入：Java 專案路徑、[B] Collection Agent 已定案的 postman/unfilled_endpoints.json、
@@ -2925,17 +3154,19 @@ async def run(state: RefactorState) -> RefactorState:
     # run_parse_agent() 內部是同步阻塞呼叫（javalang 掃描＋多次 Claude
     # API 呼叫，且 Map 重試佇列的 5 分鐘等待，見 04a 四章），丟到執行緒
     # 跑，避免卡住事件迴圈（與 spec_node.py／collection_node.py 做法一致）。
-    module_list, api_to_python_target = await asyncio.to_thread(
+    module_list, api_to_python_target, skip_excluded_overloads = await asyncio.to_thread(
         run_parse_agent,
         java_project_path=state["java_project_path"],
         unfilled_endpoints_path=Path("postman") / "unfilled_endpoints.json",
         openapi_spec=state["openapi_spec"],
+        force_include_classes_path=Path("config") / "force_include_classes.json",
     )
 
     return {
         **state,
         "module_list": module_list,
         "api_to_python_target": api_to_python_target,
+        "skip_excluded_overloads": skip_excluded_overloads,
     }
 ```
 

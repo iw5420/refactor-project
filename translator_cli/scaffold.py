@@ -9,12 +9,24 @@ from __future__ import annotations
 
 import ast
 import builtins
+import logging
 import re
 from pathlib import Path
 
+from common.jpa_base_repository import BASE_REPOSITORY_CLASS, BASE_REPOSITORY_FILE
 from translator_cli.exceptions import TranslatorCliAssemblyError
 from translator_cli.python_adapter import PythonAdapter
 from translator_cli.types import InterfaceSpec, PythonStructure
+
+logger = logging.getLogger(__name__)
+
+# `common/jpa_base_repository.py::BASE_REPOSITORY_FILE` 的 import 路徑形式，
+# 對應 docs/refactor_bug_trace.md #10／#16：repositories 層的類別若繼承
+# Spring Data 基底介面（`InterfaceSpec.jpa_base_entity` 非 None），渲染成
+# `class X(BaseRepository[Entity]):` 時固定需要這行 import，跟 routers 層
+# 固定需要 `from fastapi import APIRouter` 是同一種「已知固定樣板」處理。
+_BASE_REPOSITORY_MODULE = BASE_REPOSITORY_FILE.removesuffix(".py").replace("/", ".")
+_BASE_REPOSITORY_IMPORT = f"from {_BASE_REPOSITORY_MODULE} import {BASE_REPOSITORY_CLASS}"
 
 # 05a 三章「全域基礎設施檔案」：內容就是完整檔案內容，直接寫入，不需要
 # 像 Schema 定義段那樣合併（見四章「輸入解析：directory_tree 三段格式」
@@ -24,7 +36,15 @@ _INFRA_FILES = {"app/main.py", "app/core/database.py"}
 # 05a 三章「檔名規則」的層級判定，`file_path` 開頭字串即可判斷——跟
 # `plan_agent/module_index.py` 的 `_LAYER_SUFFIX` 是同一種各自维护機械
 # 慣例的既有先例（見該檔案 docstring），這裡不 import design_agent。
-_LAYER_PREFIX = {"app/routers/": "routers", "app/services/": "services", "app/repositories/": "repositories"}
+# `app/utils/`：08a 二章「Utils 檔案結構——已定案」，一個 Java class 對
+# 一個 Python 檔案、不歸屬任何 module，渲染規則跟 routers／global_advice
+# 同一種「class_name=None 自由函式」形狀（見下方 _FREE_FUNCTION_LAYERS）。
+_LAYER_PREFIX = {
+    "app/routers/": "routers",
+    "app/services/": "services",
+    "app/repositories/": "repositories",
+    "app/utils/": "utils",
+}
 
 # `_global` 保留模組固定輸出的全域例外處理檔案（見 design_agent/design.py
 # `_design_global_advice_module()`、docs/09b_bug_trace.md #11/#12）——
@@ -36,6 +56,11 @@ _LAYER_PREFIX = {"app/routers/": "routers", "app/services/": "services", "app/re
 # 三層目錄底下，全域例外處理的檔案會被誤判成 unknown layer 整個跳過。
 _GLOBAL_ADVICE_FILE = "app/core/exception_handlers.py"
 _GLOBAL_ADVICE_LAYER = "global_advice"
+
+# `class_name=None` 自由函式、不包 APIRouter 樣板的層級集合：routers 層
+# 本身（一般路由函式）、global_advice（上方）、utils（同上方 _LAYER_PREFIX
+# 註解）——三者渲染形狀相同，統一判斷、避免三處各自重複寫同一份 tuple。
+_FREE_FUNCTION_LAYERS = frozenset({"routers", _GLOBAL_ADVICE_LAYER, "utils"})
 
 # 四章「已知關鍵字表」，子字串比對，一個檔案內出現多次只加一次。
 _KNOWN_KEYWORD_IMPORTS: list[tuple[str, str]] = [
@@ -49,6 +74,10 @@ _KNOWN_KEYWORD_IMPORTS: list[tuple[str, str]] = [
     # 對應 docs/09b_bug_trace.md #11/#12/#30。
     ("Response", "from fastapi import Response"),
     ("UploadFile", "from fastapi import UploadFile"),
+    # 對應 docs/refactor_bug_trace.md #20：MultipartFile 端點的其餘
+    # @RequestParam 欄位補 Form(...)（見 design_agent/type_mapping.py
+    # ::_classify_params() 新增分支）。
+    ("Form(", "from fastapi import Form"),
     ("HTTPException", "from fastapi import HTTPException"),
     ("Decimal", "from decimal import Decimal"),
     # 08a_scaffold_agent_architecture.md 五章新增：common/java_type_mapping.py
@@ -64,6 +93,9 @@ _KNOWN_KEYWORD_IMPORTS: list[tuple[str, str]] = [
     ("time", "from datetime import time"),
     ("UUID", "from uuid import UUID"),
     ("Callable[", "from typing import Callable"),
+    # `Specification<T>` 型別對應（見 common/java_type_mapping.py
+    # map_java_type()），對應 docs/refactor_bug_trace.md #14。
+    ("ColumnElement", "from sqlalchemy.sql.elements import ColumnElement"),
 ]
 
 # 05a 三章「格式慣例」固定格式：`### {file_path}` 標題 + python fenced
@@ -225,7 +257,7 @@ def _table_assignment_names(tree: ast.Module) -> list[str]:
 
 def _build_custom_type_index(
     interfaces: list[InterfaceSpec], schema_trees: dict[str, ast.Module], db_models_valid: dict[str, ast.Module]
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, frozenset[str]]]:
     """對應四章「import 解析：兩層機制」自訂型別索引，三個來源合併：
 
     - 來源一：Schema 定義段合併後的每個檔案，AST 掃出頂層 `ClassDef`
@@ -243,12 +275,34 @@ def _build_custom_type_index(
     parse 一次相同的原始碼字串——比照 07a 四章對 `db_models` 這個來源
     「不是新增的驗證負擔，直接複用同一次解析結果」的既有原則，兩個
     來源一致處理。
+
+    第二個回傳值 `schema_classes_by_module`（對應
+    `docs/refactor_bug_trace.md` #8 真實案例）：`ResponseResult<T>` 這類
+    專案自訂泛型的具名包裝類別（如 `ResponseResultString`）常常被多個
+    模組各自獨立定義一份——③ 逐模組產生 schema，模組之間互不知道彼此
+    定義了同名的東西。上面 `index` 是全域、只認 class 名稱的扁平結構，
+    同名 class 在多個 `schema_trees` 檔案裡都出現時，只會留住迭代到
+    最後的那一份（字典覆寫），導致其他模組明明自己也定義了同名 class，
+    `_resolve_imports()` 查到的卻是別的模組的檔案路徑。這裡額外記錄
+    「每個模組（`app/schemas/{module}.py` 的 `module` 段）自己的 schema
+    檔案定義了哪些 class 名稱」，供 `_resolve_imports()` 優先查「這個
+    檔案自己所屬的模組」，查得到就用同一個模組的 schema 檔案，不必依賴
+    可能被覆寫過的全域 `index`。
     """
     index: dict[str, str] = {}
+    schema_classes_by_module: dict[str, set[str]] = {}
     for file_path, tree in schema_trees.items():
+        module = (
+            file_path.removeprefix("app/schemas/").removesuffix(".py")
+            if file_path.startswith("app/schemas/") and file_path.endswith(".py")
+            else None
+        )
+        names = schema_classes_by_module.setdefault(module, set()) if module is not None else None
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 index[node.name] = file_path
+                if names is not None:
+                    names.add(node.name)
     for iface in interfaces:
         if iface["class_name"]:
             index[iface["class_name"]] = iface["file_path"]
@@ -258,7 +312,27 @@ def _build_custom_type_index(
                 index[node.name] = file_path
         for name in _table_assignment_names(tree):
             index[name] = file_path
-    return index
+    return index, {module: frozenset(names) for module, names in schema_classes_by_module.items()}
+
+
+def _module_for_file_path(file_path: str) -> str | None:
+    """從 routers／services／repositories 層的 `file_path` 反推 module
+    名稱，對應 `design_agent/layout.py::file_path_for_layer()`「檔名規則：
+    `{module}_{layer_singular}.py`」的反向操作——`translator_cli` 各自
+    獨立維護同一套機械慣例、不 import `design_agent`（見本檔案既有
+    `_LAYER_PREFIX` 旁的說明）。`utils`（橫跨多個 module，見
+    `file_path_for_utils()`）與 `_global` 保留模組的固定檔案都沒有
+    module 概念，回傳 `None`——呼叫端遇到 `None` 時退回既有的全域索引
+    行為，不特別處理。
+    """
+    for prefix, suffix in (
+        ("app/routers/", "_router.py"),
+        ("app/services/", "_service.py"),
+        ("app/repositories/", "_repository.py"),
+    ):
+        if file_path.startswith(prefix) and file_path.endswith(suffix):
+            return file_path.removeprefix(prefix).removesuffix(suffix)
+    return None
 
 
 def _keyword_hits(keyword: str, combined: str) -> bool:
@@ -282,7 +356,12 @@ def _keyword_hits(keyword: str, combined: str) -> bool:
 
 
 def _resolve_imports(
-    type_strings: list[str], custom_type_index: dict[str, str], same_file_class_names: frozenset[str] = frozenset()
+    type_strings: list[str],
+    custom_type_index: dict[str, str],
+    same_file_class_names: frozenset[str] = frozenset(),
+    schema_classes_by_module: dict[str, frozenset[str]] | None = None,
+    own_module: str | None = None,
+    is_repository_layer: bool = False,
 ) -> list[str]:
     """對應四章「import 解析：兩層機制」：已知關鍵字表（子字串比對，見
     `_keyword_hits()`）＋自訂型別索引（AST `ast.Name` 節點比對，不用
@@ -306,9 +385,43 @@ def _resolve_imports(
     09b_implement_agent_code.md 十章「已知限制」）。填空階段的對應
     排除見 `resolve_body_imports()`——這裡是骨架生成階段的簽名層級
     版本，同一個問題、兩個不同時機點的兩份獨立實作，各自要排除。
+
+    `schema_classes_by_module`／`own_module`（對應 `docs/refactor_bug_
+    trace.md` #8 真實案例）：同名的具名回應包裝 class（如
+    `ResponseResultString`）常常被多個模組各自獨立定義一份，`custom_
+    type_index` 這個全域扁平索引在這種情況下只留得住其中一個模組的
+    檔案路徑（見 `_build_custom_type_index()` docstring）。這裡查到
+    `own_module`（這個檔案自己所屬的模組，`None` 代表 utils／`_global`
+    這種沒有 module 概念的檔案）自己的 schema 檔案剛好也定義了同名
+    class 時，**優先**直接用同一個模組的 schema 檔案，不查可能已經被
+    覆寫過的全域索引——這樣同一個模組的檔案永遠 import 自己的 schema
+    定義，不會意外指向別的模組。查不到（`own_module` 是 `None`，或
+    這個模組自己沒有定義這個 class 名稱）才退回既有的全域索引行為。
+
+    `is_repository_layer`（對應 `docs/refactor_bug_trace.md` #17 真實
+    案例）：repositories 層需要的是 SQLAlchemy ORM model（`app/models/
+    {module}.py`），但 `ExamEntity`／`AnswerEntity`／`ExamkindEntity` 這類
+    entity 名稱常常剛好也被同一個模組的 schema 檔案（Pydantic DTO）定義
+    一份——上面這條 `own_module_schema_classes` 優先序原本是為了 #8
+    （`ResponseResultString` 這類跨模組同名回應包裝類別）設計，沒有分
+    「這個檔案是哪一層」，repositories 層的檔案因此被這條規則誤導，優先
+    選到同名的 schema 定義，把 Pydantic `BaseModel` 子類別傳給 SQLAlchemy
+    查詢，在真正執行查詢時才炸 `sqlalchemy.exc.ArgumentError`（本體程式碼
+    本身完全正確，純粹被錯誤的 import 拖累）。`is_repository_layer=True`
+    時完全跳過這條「優先查同模組 schema」的規則，直接退回下面的全域
+    `custom_type_index`——`_build_custom_type_index()` 組裝索引時
+    `db_models_valid`（來源三）是最後寫入、覆寫掉同名的 schema 條目（來源
+    一），全域索引本來就已經是「同名時 model 贏」，不需要另外查一次
+    `app/models/`。
     """
     combined = "\n".join(type_strings)
     lines = [import_line for keyword, import_line in _KNOWN_KEYWORD_IMPORTS if _keyword_hits(keyword, combined)]
+
+    own_module_schema_classes = (
+        frozenset()
+        if is_repository_layer
+        else (schema_classes_by_module or {}).get(own_module, frozenset()) if own_module else frozenset()
+    )
 
     custom_imports: dict[str, list[str]] = {}
     for type_str in type_strings:
@@ -317,11 +430,17 @@ def _resolve_imports(
         except SyntaxError:
             continue  # 型別字串已在渲染前個別驗證過，這裡理論上不會發生
         for node in ast.walk(expr):
-            if isinstance(node, ast.Name) and node.id in custom_type_index and node.id not in same_file_class_names:
+            if not (isinstance(node, ast.Name) and node.id not in same_file_class_names):
+                continue
+            if node.id in own_module_schema_classes:
+                module_path = f"app.schemas.{own_module}"
+            elif node.id in custom_type_index:
                 module_path = custom_type_index[node.id].removesuffix(".py").replace("/", ".")
-                names = custom_imports.setdefault(module_path, [])
-                if node.id not in names:
-                    names.append(node.id)
+            else:
+                continue
+            names = custom_imports.setdefault(module_path, [])
+            if node.id not in names:
+                names.append(node.id)
 
     lines.extend(f"from {module_path} import {', '.join(sorted(names))}" for module_path, names in sorted(custom_imports.items()))
     return lines
@@ -352,6 +471,7 @@ def _assemble_file_text(
     import_lines: list[str],
     valid: list[tuple[InterfaceSpec, str]],
     all_class_names: list[str],
+    class_bases: dict[str, str] | None = None,
 ) -> str:
     """把單一檔案已驗證通過的函式片段組成完整檔案原始文字（尚未經過
     `PythonAdapter.parse → render` 的最終格式化，見
@@ -362,15 +482,26 @@ def _assemble_file_text(
     與寫入」步驟 3：同一個 `class_name` 分組若所有方法都被跳過（極端
     情況），該 `class` 仍要渲染出來，body 用 `pass` 佔位，維持檔案
     語法合法。
+
+    `class_bases`（repositories 層專用，對應 docs/refactor_bug_trace.md
+    #10／#16）：`class_name → entity 型別簡單名稱`，來自這個類別任一
+    `InterfaceSpec.jpa_base_entity`（見 `_render_interface_files()` 組裝
+    端）。有值代表這個 interface 繼承了 Spring Data 基底介面，渲染成
+    `class X(BaseRepository[Entity]):` 並注入 `model = Entity` 當第一行
+    body——讓 `find_all`/`find_by_id` 等內建方法透過繼承「真的」存在，
+    不需要像 `_synthesize_inherited_repository_reads()` 舊版那樣逐一
+    合成方法（那個函式仍保留，只是現在合成出的 InterfaceSpec 一樣帶
+    `jpa_base_entity`，走同一條繼承渲染路徑，不再是唯一手段）。
     """
     if layer == "routers":
         header = ["from __future__ import annotations", "", "from fastapi import APIRouter", *import_lines, "", "router = APIRouter()", ""]
         body = "\n".join(snippet for _, snippet in valid)
         return "\n".join(header) + "\n" + body
 
-    if layer == _GLOBAL_ADVICE_LAYER:
+    if layer in (_GLOBAL_ADVICE_LAYER, "utils"):
         # class_name=None 自由函式（跟 routers 層同一種形狀），但不是
-        # 真正的路由檔案，不需要 APIRouter 樣板。
+        # 真正的路由檔案，不需要 APIRouter 樣板。utils 同一套理由：
+        # Java 靜態工具方法對應 Python module-level 函式，不是路由。
         header = ["from __future__ import annotations", "", *import_lines, ""]
         body = "\n".join(snippet for _, snippet in valid)
         return "\n".join(header) + "\n" + body
@@ -379,11 +510,18 @@ def _assemble_file_text(
     for iface, snippet in valid:
         by_class.setdefault(iface["class_name"], []).append(snippet)
 
-    lines = ["from __future__ import annotations", "", *import_lines, ""]
+    class_bases = class_bases or {}
+    header_import_lines = [*import_lines, _BASE_REPOSITORY_IMPORT] if class_bases else import_lines
+    lines = ["from __future__ import annotations", "", *header_import_lines, ""]
     for class_name in all_class_names:
-        lines.append(f"class {class_name}:")
+        entity = class_bases.get(class_name)
+        if entity is not None:
+            lines.append(f"class {class_name}({BASE_REPOSITORY_CLASS}[{entity}]):")
+            lines.append(f"    model = {entity}")
+        else:
+            lines.append(f"class {class_name}:")
         snippets = by_class.get(class_name, [])
-        if not snippets:
+        if not snippets and entity is None:
             lines.append("    pass")
         for snippet in snippets:
             lines.extend(f"    {line}" if line else "" for line in snippet.splitlines())
@@ -392,11 +530,19 @@ def _assemble_file_text(
 
 
 def _render_interface_files(
-    interfaces: list[InterfaceSpec], custom_type_index: dict[str, str]
+    interfaces: list[InterfaceSpec],
+    custom_type_index: dict[str, str],
+    schema_classes_by_module: dict[str, frozenset[str]],
 ) -> tuple[dict[str, str], list[dict]]:
     """對應四章「interfaces：函式簽名渲染」＋「語法驗證與寫入」：逐
     `InterfaceSpec` 隔離失敗（步驟 1／2），最後用 `PythonAdapter` 的
     `parse → render` 統一格式化，確保骨架與填空兩階段格式化風格一致。
+
+    `schema_classes_by_module`：對應 `docs/refactor_bug_trace.md` #8，
+    逐檔案用 `_module_for_file_path()` 反推這個檔案自己所屬的模組，
+    傳給 `_resolve_imports()` 優先查同一個模組自己的 schema 定義，避免
+    同名的具名回應包裝 class（如 `ResponseResultString`）被誤導到別的
+    模組（見該函式 docstring）。
     """
     adapter = PythonAdapter()
     by_file: dict[str, list[InterfaceSpec]] = {}
@@ -413,7 +559,7 @@ def _render_interface_files(
             layer = next((v for prefix, v in _LAYER_PREFIX.items() if file_path.startswith(prefix)), None)
         if layer is None:
             # 按照 05a／07a 契約，interfaces 的 file_path 只會落在
-            # routers／services／repositories 三層（或上面明確處理過的
+            # routers／services／repositories／utils（或上面明確處理過的
             # _GLOBAL_ADVICE_FILE），理論上不會再觸發這裡——但比照本函式
             # 其餘失敗路徑（語法錯誤、組裝驗證失敗）一律顯式記錄成
             # skipped_interfaces，不靜默丟棄，避免上游一旦出現非預期
@@ -425,14 +571,14 @@ def _render_interface_files(
                         "file_path": file_path,
                         "class_name": iface["class_name"],
                         "function_name": iface["function_name"],
-                        "error": f"{file_path} 不在 routers／services／repositories 三層目錄底下（unknown layer）",
+                        "error": f"{file_path} 不在 routers／services／repositories／utils 目錄底下（unknown layer）",
                     }
                 )
             continue
 
         valid: list[tuple[InterfaceSpec, str]] = []
         for iface in ifaces:
-            snippet = _render_function_snippet(iface, is_class_method=(layer not in ("routers", _GLOBAL_ADVICE_LAYER)))
+            snippet = _render_function_snippet(iface, is_class_method=(layer not in _FREE_FUNCTION_LAYERS))
             try:
                 ast.parse(snippet)
             except SyntaxError as exc:
@@ -448,16 +594,32 @@ def _render_interface_files(
             valid.append((iface, snippet))
 
         all_class_names: list[str] = []
-        if layer not in ("routers", _GLOBAL_ADVICE_LAYER):
+        if layer not in _FREE_FUNCTION_LAYERS:
             for iface in ifaces:
                 if iface["class_name"] not in all_class_names:
                     all_class_names.append(iface["class_name"])
 
+        # 對應 docs/refactor_bug_trace.md #10／#16：repositories 層才會有
+        # `jpa_base_entity`（見 design_agent/design.py 組裝端），逐 iface
+        # 找第一個非 None 的值即可——同一個 class 的全部 InterfaceSpec
+        # 理論上要嘛全部帶同一個 entity（都繼承自同一個 Java interface），
+        # 要嘛全部是 None，不會同一個 class 出現互相矛盾的兩種 entity。
+        class_bases: dict[str, str] = {}
+        for iface in ifaces:
+            entity = iface.get("jpa_base_entity")
+            if entity is not None and iface["class_name"] not in class_bases:
+                class_bases[iface["class_name"]] = entity
+
         type_strings = [_normalize_type(p["type"]) for iface, _ in valid for p in iface["params"]]
         type_strings += [_normalize_type(iface["return_type"]) for iface, _ in valid]
-        import_lines = _resolve_imports(type_strings, custom_type_index, frozenset(all_class_names))
+        type_strings += [_normalize_type(entity) for entity in class_bases.values()]
+        import_lines = _resolve_imports(
+            type_strings, custom_type_index, frozenset(all_class_names),
+            schema_classes_by_module, _module_for_file_path(file_path),
+            is_repository_layer=(layer == "repositories"),
+        )
 
-        raw_text = _assemble_file_text(layer, import_lines, valid, all_class_names)
+        raw_text = _assemble_file_text(layer, import_lines, valid, all_class_names, class_bases)
         try:
             tree = adapter.parse(raw_text)
         except SyntaxError as exc:
@@ -530,10 +692,12 @@ def build_files(
         files[file_path] = content
 
     # 自訂型別索引（四章「import 解析」來源一／二／三）
-    custom_type_index = _build_custom_type_index(interfaces, schema_trees, db_models_valid)
+    custom_type_index, schema_classes_by_module = _build_custom_type_index(interfaces, schema_trees, db_models_valid)
 
     # interfaces：逐 InterfaceSpec 隔離失敗渲染
-    interface_files, skipped_interfaces = _render_interface_files(interfaces, custom_type_index)
+    interface_files, skipped_interfaces = _render_interface_files(
+        interfaces, custom_type_index, schema_classes_by_module,
+    )
     files.update(interface_files)
 
     # 步驟 4：全域最終檢查（防禦性，見四章「語法驗證與寫入」）
@@ -560,7 +724,7 @@ def write_files(python_project_path: str, files: dict[str, str]) -> None:
         full_path.write_text(content, encoding="utf-8")
 
 
-def _scan_project_custom_types(python_project_path: str) -> dict[str, str]:
+def _scan_project_custom_types(python_project_path: str) -> tuple[dict[str, str], dict[str, frozenset[str]]]:
     """掃描 `python_project_path` 底下 `app/` 目錄所有 `.py` 檔案的頂層
     `ClassDef`（以及 `_table_assignment_names()` 找到的 `Table(...)`
     賦值，見該函式 docstring），建立 `class_name -> file_path` 索引。供
@@ -574,23 +738,49 @@ def _scan_project_custom_types(python_project_path: str) -> dict[str, str]:
     而且天然反映最新狀態（含同一次 pipeline 執行中先前 task 已經填入
     的內容）。單一檔案解析失敗（理論上不該發生，骨架階段已驗證過）就
     跳過那個檔案，不拖累整體掃描。
+
+    第二個回傳值 `schema_classes_by_module`（對應 docs/refactor_bug_
+    trace.md #45 真實案例）：跟 `_build_custom_type_index()` 的同名回傳
+    值一樣的道理，同名 schema class 若被多個模組各自獨立定義一份，這裡
+    的 `index` 是全域扁平索引，`sorted(root.rglob("*.py"))` 掃描順序
+    （字母序）決定了同名 class 最後留誰的路徑，跟這個名稱實際是哪個
+    模組要用完全無關（真實案例：`GetAllGradeRs` 同時在 `app/schemas/
+    exam.py`／`app/schemas/school.py` 各自定義一份，字母序 "exam" <
+    "school"，"school" 版本覆寫掉 "exam" 版本，導致 `exam_router.py::
+    grades()` 這個明明該用自己模組 schema 的函式，填空階段補 import 時
+    被指到 `school.py` 去）。這裡額外記錄「每個模組（`app/schemas/
+    {module}.py` 的 `module` 段）自己的 schema 檔案定義了哪些 class
+    名稱」，供 `resolve_body_imports()` 依樣比照 `_resolve_imports()`
+    （#8）優先查「這個函式自己所屬的模組」，不必依賴可能被覆寫過的
+    全域 `index`——這是 #8 當初就記錄下來、暫緩處理的分層盲區（見
+    docs/refactor_bug_trace.md #17「附帶風險」），#45 是它第一次真的
+    被踩到的真實案例。
     """
     root = Path(python_project_path) / "app"
     index: dict[str, str] = {}
+    schema_classes_by_module: dict[str, set[str]] = {}
     if not root.is_dir():
-        return index
+        return index, {}
     for py_file in sorted(root.rglob("*.py")):
         try:
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
         except (SyntaxError, OSError):
             continue
         rel_path = py_file.relative_to(Path(python_project_path)).as_posix()
+        module = (
+            rel_path.removeprefix("app/schemas/").removesuffix(".py")
+            if rel_path.startswith("app/schemas/") and rel_path.endswith(".py")
+            else None
+        )
+        names = schema_classes_by_module.setdefault(module, set()) if module is not None else None
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 index[node.name] = rel_path
+                if names is not None:
+                    names.add(node.name)
         for name in _table_assignment_names(tree):
             index[name] = rel_path
-    return index
+    return index, {module: frozenset(names) for module, names in schema_classes_by_module.items()}
 
 
 def resolve_body_imports(
@@ -598,6 +788,7 @@ def resolve_body_imports(
     tree: ast.Module,
     body_statements: list[ast.stmt],
     bound_names: set[str],
+    own_module: str | None = None,
 ) -> list[str]:
     """對應 07a 五章「填空模式：本體 import 解析」。`fill_function()`
     填入的函式本體是 qwen 自由生成的內容，可能引用簽名以外的名稱（跨
@@ -616,6 +807,17 @@ def resolve_body_imports(
     名稱補 import，其餘一律不猜——本體裡任何其他未定義名稱，維持現狀
     （不主動修正），留給 Harness 的 module 局部驗證與 ⑦ Debug Agent
     處理，不在這裡窮舉。
+
+    `own_module`（對應 docs/refactor_bug_trace.md #45 真實案例，補齊
+    #8／#17 當初留下的分層盲區）：這個函式所屬的模組（呼叫端用既有的
+    `_module_for_file_path(target_file)` 算出，`None` 代表 utils／
+    `_global` 這種沒有 module 概念的檔案）。`_scan_project_custom_types()`
+    回傳的 `index` 是全域扁平索引，同名 schema class 若被多個模組各自
+    獨立定義一份，掃描順序（字母序）決定留誰的路徑，跟這個名稱實際該
+    屬於哪個模組無關（真實案例：`GetAllGradeRs` 同時在 `exam.py`／
+    `school.py` 定義，`exam_router.py::grades()` 卻被指到 `school.py`）
+    ——這裡比照 `_resolve_imports()`（#8）優先查同一個模組自己的
+    schema 定義，查不到才退回全域索引。
     """
     referenced: set[str] = set()
     assigned: set[str] = set(bound_names)
@@ -673,12 +875,25 @@ def resolve_body_imports(
         import_line for keyword, import_line in _KNOWN_KEYWORD_IMPORTS if keyword.rstrip("([") in candidates
     ]
 
-    custom_type_index = _scan_project_custom_types(python_project_path)
-    lines.extend(
-        f"from {custom_type_index[name].removesuffix('.py').replace('/', '.')} import {name}"
-        for name in sorted(candidates)
-        if name in custom_type_index
-    )
+    custom_type_index, schema_classes_by_module = _scan_project_custom_types(python_project_path)
+    own_module_schema_classes = schema_classes_by_module.get(own_module, frozenset()) if own_module else frozenset()
+
+    for name in sorted(candidates):
+        if name in own_module_schema_classes:
+            module_path = f"app.schemas.{own_module}"
+            if name in custom_type_index and custom_type_index[name] != f"app/schemas/{own_module}.py":
+                logger.info(
+                    "resolve_body_imports()：本體引用的 %s 在全域索引裡指向 %s，"
+                    "但這個函式自己所屬的模組 %s 也定義了同名 class，優先用自己"
+                    "模組的定義（見 docs/refactor_bug_trace.md #45／#8）：改成 "
+                    "from %s import %s",
+                    name, custom_type_index[name], own_module, module_path, name,
+                )
+        elif name in custom_type_index:
+            module_path = custom_type_index[name].removesuffix(".py").replace("/", ".")
+        else:
+            continue
+        lines.append(f"from {module_path} import {name}")
 
     return lines
 

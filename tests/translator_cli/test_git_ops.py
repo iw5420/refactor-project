@@ -15,6 +15,8 @@ from translator_cli.git_ops import (
     discard_file_changes,
     discard_written_files,
     ensure_git_repo,
+    reset_python_project_dir,
+    rollback_python_project_dir,
 )
 
 
@@ -22,6 +24,114 @@ def _init_repo(path):
     subprocess.run(["git", "init"], cwd=path, capture_output=True, text=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, capture_output=True, text=True, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=path, capture_output=True, text=True, check=True)
+
+
+class TestResetPythonProjectDir:
+    """對應 docs/refactor_bug_trace.md #28／#29：每輪 pipeline 開始前
+    重置生成專案目錄，避免上一輪殘留檔案在模組切法改變時變成孤兒或
+    真正衝突。"""
+
+    def test_creates_fresh_git_repo_when_target_does_not_exist_yet(self, tmp_path):
+        target = tmp_path / "exam-platform-api"
+        backup_path = reset_python_project_dir(str(target), run_id="20260906_000000_abcdef")
+
+        assert target.is_dir()
+        assert backup_path is None  # 沒有東西可備份
+        ensure_git_repo(str(target))  # 不應拋出
+
+    def test_existing_dir_is_renamed_to_timestamped_backup_not_deleted(self, tmp_path):
+        target = tmp_path / "exam-platform-api"
+        target.mkdir()
+        (target / "leftover.py").write_text("stale = True\n", encoding="utf-8")
+
+        backup_path = reset_python_project_dir(str(target), run_id="20260906_010203_abcdef")
+
+        backup = tmp_path / "exam-platform-api.bak-20260906_010203_abcdef"
+        # 舊內容原封不動保留在備份資料夾，沒有被刪除。
+        assert backup.is_dir()
+        assert (backup / "leftover.py").read_text(encoding="utf-8") == "stale = True\n"
+        assert backup_path == backup
+        # 這一輪拿到的是全新、乾淨的空目錄，看不到任何舊檔案。
+        assert target.is_dir()
+        assert not (target / "leftover.py").exists()
+        ensure_git_repo(str(target))  # 新目錄已經 git init 過，不應拋出
+
+    def test_backup_folder_name_uses_the_run_id_passed_in(self, tmp_path):
+        """備份資料夾命名沿用呼叫端傳入的 run_id，不在函式內部另外
+        產生一個新的時間戳記——確保跟同一輪其他 log／report 用同一個
+        run_id 互相對應。"""
+        target = tmp_path / "exam-platform-api"
+        target.mkdir()
+
+        reset_python_project_dir(str(target), run_id="20260906_161715_4b2116")
+
+        assert (tmp_path / "exam-platform-api.bak-20260906_161715_4b2116").is_dir()
+
+
+class TestRollbackPythonProjectDir:
+    """對應 docs/refactor_bug_trace.md #31：這一輪 pipeline 若整個
+    crash（連 write_run_report() 都沒執行到），reset_python_project_dir()
+    建立的新目錄只是半成品，不該取代上一輪的真實產物——刪掉半成品、把
+    備份還原回來。"""
+
+    def test_restores_backup_and_removes_half_finished_new_dir(self, tmp_path):
+        target = tmp_path / "exam-platform-api"
+        target.mkdir()
+        (target / "real_work.py").write_text("real = True\n", encoding="utf-8")
+
+        backup_path = reset_python_project_dir(str(target), run_id="20260906_010203_abcdef")
+        # 模擬這一輪 pipeline 才剛起步就 crash，新目錄裡只有極少量半成品內容。
+        (target / "half_finished.py").write_text("half = True\n", encoding="utf-8")
+
+        rollback_python_project_dir(str(target), backup_path)
+
+        # 半成品不見了，目錄內容是上一輪的真實產物，不是半成品也不是空的。
+        assert target.is_dir()
+        assert (target / "real_work.py").read_text(encoding="utf-8") == "real = True\n"
+        assert not (target / "half_finished.py").exists()
+        assert not backup_path.exists()  # 備份已經改名還原回來，原路徑不再存在
+
+    def test_no_backup_to_restore_just_removes_half_finished_dir(self, tmp_path):
+        """這一輪開始前 python_project_path 本來就不存在（第一次跑），
+        reset_python_project_dir() 回傳 None——rollback 時只需要刪掉
+        這次的半成品，沒有東西可還原。"""
+        target = tmp_path / "exam-platform-api"
+        backup_path = reset_python_project_dir(str(target), run_id="20260906_000000_abcdef")
+        (target / "half_finished.py").write_text("half = True\n", encoding="utf-8")
+
+        rollback_python_project_dir(str(target), backup_path)
+
+        assert not target.exists()
+
+    def test_no_op_when_neither_target_nor_backup_exists(self, tmp_path):
+        target = tmp_path / "exam-platform-api"
+        rollback_python_project_dir(str(target), None)  # 不應拋出
+        assert not target.exists()
+
+    def test_restore_succeeds_even_if_deleting_half_finished_dir_fails(self, tmp_path, monkeypatch, caplog):
+        """對應真實案例 20260906_152648_d36540：Windows 上剛 git init
+        產生的 .git 內部檔案短暫鎖定，shutil.rmtree() 丟出
+        PermissionError——還原備份不能因此連帶失敗，半成品目錄改名
+        讓出路徑之後，刪不掉只記警告即可。"""
+        target = tmp_path / "exam-platform-api"
+        target.mkdir()
+        (target / "real_work.py").write_text("real = True\n", encoding="utf-8")
+
+        backup_path = reset_python_project_dir(str(target), run_id="20260906_152648_d36540")
+        (target / "half_finished.py").write_text("half = True\n", encoding="utf-8")
+
+        def fail_rmtree(path, *args, **kwargs):
+            raise PermissionError(f"[WinError 5] simulated lock on {path}")
+
+        monkeypatch.setattr("translator_cli.git_ops.shutil.rmtree", fail_rmtree)
+
+        with caplog.at_level("WARNING"):
+            rollback_python_project_dir(str(target), backup_path)
+
+        assert target.is_dir()
+        assert (target / "real_work.py").read_text(encoding="utf-8") == "real = True\n"
+        assert not backup_path.exists()
+        assert "刪除半成品目錄" in caplog.text
 
 
 def test_ensure_git_repo_raises_on_missing_dir(tmp_path):

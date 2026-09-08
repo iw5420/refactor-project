@@ -172,3 +172,42 @@ def compute_excluded_methods(
         )
 
     return excluded
+
+
+def compute_skip_excluded_overloads(
+    *,
+    skip_endpoints: list[str],
+    route_index: dict[str, list[MethodId]],
+) -> list[tuple[str, str, str]]:
+    """使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」——
+    不是只跳過自動化測試（見 `docs/03a_spec_collection_agent_architecture.md`
+    「Decision.SKIP 的語意」）。但 `compute_excluded_methods()` 只能在
+    `method_id`（不含 HTTP method，見 04a 三章「決策」）這個粗粒度上排除
+    ——`FileController` 的 `voice`／`image` 這種「同名、不同 HTTP method」
+    的多載，兩個物理上完全不同的方法共用同一個 `method_id`，若 skip 只
+    命中其中一個 HTTP method（如 `image` 的 POST 上傳），method_id 層級
+    的排除完全無法只排除那一個多載、保留另一個（GET 下載）。
+
+    這裡改成直接輸出「HTTP method 精確」的排除清單：`(class_name,
+    method_name, http_method)` 三元組，供 `design_agent/design.py` 在
+    `signature_scan.scan_java_files()` 重新掃描出**每個物理多載各自的
+    `http_method`**之後，直接用這個清單把該排除的多載從 `class_sig.
+    methods` 濾掉——濾完之後產生一份新的、乾淨的資料，`design.py`
+    後續展開 overloads／生成骨架的既有邏輯完全不用改，因為它讀到的
+    資料本來就不會再包含這個多載了。
+
+    `endpoint_key` 格式固定是 `"{HTTP_METHOD} {path}"`（見
+    `load_skip_endpoints()`），直接切開第一個空白就能拿到 http_method，
+    不需要另外解析。`method_id` 格式是 `"{file}::{class}::{method}"`
+    （見 `parse_agent/types.py::method_id()`），這裡只取後兩段——
+    `design.py` 的 `class_signatures` 是逐檔案分開存的 dict，同一個
+    `class_name` 不會跨檔案出現在同一次查找裡，不需要 file 這一段也能
+    唯一定位。
+    """
+    excluded: list[tuple[str, str, str]] = []
+    for endpoint_key in skip_endpoints:
+        http_method, _, _ = endpoint_key.partition(" ")
+        for method_id_str in route_index.get(endpoint_key, ()):
+            _, class_name, method_name = method_id_str.split("::")
+            excluded.append((class_name, method_name, http_method.upper()))
+    return excluded

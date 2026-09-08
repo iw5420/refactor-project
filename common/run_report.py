@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 
+from common.llm_trace import list_recent
 from graph.state import RefactorState
 
 REPORTS_ROOT = os.path.join("logs", "reports")
@@ -57,8 +58,16 @@ def _compute_summary(state: RefactorState) -> dict:
     docs/10a_debug_agent_architecture.md 三章），沒有一個可靠的訊號能
     回答「這個 task 的 fix_instruction 有沒有讓對應的測試案例通過」
     （related_files → task_id 本來就是反查，不是精確對應，見 10a 五
-    章）——曾被 ⑦ 標記為 root_cause、但最後不在 failed_modules／
-    blocked_modules 裡的 module，才是有把握說「修好了」的判斷。
+    章）——曾被 ⑦ 標記為 root_cause、且最後真的落在 `verified_modules`
+    裡的 module，才是有把握說「修好了」的判斷。
+
+    **用正面訊號（`verified_modules`），不是「不在 failed_modules／
+    blocked_modules 裡」這種負面推論**（對應 docs/refactor_bug_trace.md
+    #13 真實案例）：module 卡在 `"in_progress"` 永遠到不了終態時（如
+    #12 死結修正前，部分 task 成功、但 router 從沒被排到），既不會落在
+    `failed_modules`（沒觸發過失敗判定）、也不會落在 `blocked_modules`
+    （不是從沒動過的 `"pending"`）——用「兩個負面集合都沒抓到＝修好了」
+    會把這種「其實還卡著、只是卡法比較隱蔽」的情況誤判成已解決。
     """
     task_list = state.get("task_list", [])
     completed_tasks = set(state.get("completed_tasks", []))
@@ -73,15 +82,29 @@ def _compute_summary(state: RefactorState) -> dict:
     fix_attempts = [tf for r in debug_rounds for tf in r["task_fixes"]]
     modules_ever_flagged = sorted({r["module"] for r in debug_rounds if r["origin"] == "root_cause"})
 
-    still_broken = set(state.get("failed_modules", [])) | set(state.get("blocked_modules", []))
-    modules_fixed = sorted(set(modules_ever_flagged) - still_broken)
-    modules_still_broken = sorted(set(modules_ever_flagged) & still_broken)
+    verified = set(state.get("verified_modules", []))
+    modules_fixed = sorted(set(modules_ever_flagged) & verified)
+    modules_still_broken = sorted(set(modules_ever_flagged) - verified)
+
+    # 對應 docs/refactor_bug_trace.md #33：「曾經翻譯失敗（含後來補救成功
+    # 的）」這行原本只算 State 的 task_failures，但本地模型（qwen）呼叫
+    # 失敗、退回 Claude 才成功的情況完全不會進 task_failures（task 整體
+    # 是成功的，只有第一次嘗試失敗），這個訊號目前只活在 llm_traces.db
+    # 裡，沒有真實案例（`e867f4` 這輪 13 個函式）就沒人會發現——不用另外
+    # 起一份新 log，llm_traces.db 本來就記錄了每次呼叫的 vendor／status，
+    # 這裡直接查出來、讓它在報告裡看得到，不需要每次都靠 `llmlog` 手動
+    # 排查才能注意到。
+    local_model_call_failures = sorted({
+        t.task_id for t in list_recent(status="error", run_id=state["run_id"])
+        if t.vendor == "ollama" and t.task_id
+    })
 
     return {
         "total_tasks": len(task_list),
         "translated_successfully": len(completed_tasks),
         "tasks_with_translation_issues": tasks_with_translation_issues,
         "permanently_unfillable_tasks": permanently_unfillable_tasks,
+        "local_model_call_failures": local_model_call_failures,
         "fix_attempts_issued": len(fix_attempts),
         "modules_ever_flagged": modules_ever_flagged,
         "modules_fixed": modules_fixed,
@@ -118,6 +141,14 @@ def _render_human_readable_report(state: RefactorState, summary: dict) -> str:
         )
     else:
         lines.append("- 永久無法生成（骨架缺口）：0")
+
+    if summary["local_model_call_failures"]:
+        lines.append(
+            f"- 本地模型（qwen）呼叫失敗、退回 Claude 才成功：{len(summary['local_model_call_failures'])} 個"
+            f" → {', '.join(summary['local_model_call_failures'])}（見 docs/refactor_bug_trace.md #33）"
+        )
+    else:
+        lines.append("- 本地模型（qwen）呼叫失敗、退回 Claude 才成功：0")
 
     ts = summary["test_summary"]
     lines += ["", "## API 測試總覽（最後一輪）"]
@@ -193,6 +224,10 @@ def write_run_report(state: RefactorState) -> str:
         "task_failures": state.get("task_failures", []),
         "debug_rounds": state.get("debug_rounds", []),
         "unanalyzed_root_cause_modules": state.get("unanalyzed_root_cause_modules", []),
+        # 見 docs/refactor_bug_trace.md #33：本地模型（qwen）呼叫失敗、
+        # 退回 Claude 才成功的 task_id 清單，跟人類可讀報告同一個來源
+        # （_compute_summary()），JSON 這份給程式／未來工具解析用。
+        "local_model_call_failures": _compute_summary(state)["local_model_call_failures"],
     }
 
     date_folder = _date_folder_from_run_id(run_id)

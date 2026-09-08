@@ -6,6 +6,8 @@ LLM』」。
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from collections import deque
@@ -16,6 +18,8 @@ from common.chunking import chunk_by_char_budget
 from common.java_annotations import DATA_CLASS_ANNOTATIONS as _DATA_ANNOTATIONS
 from parse_agent.call_graph import build_interface_implementors, resolve_field_target_classes
 from parse_agent.types import ClassInfo, ParsedProject
+
+logger = logging.getLogger(__name__)
 
 # 4a／4b 共用的批次字元預算：用「批次內容序列化後字元數」當 context 大小
 # 的代理指標，比單純數 class 數量更能反映真實 payload 大小。門檻值是
@@ -139,6 +143,45 @@ def build_global_advice_units(project: ParsedProject, global_advice_class_names:
         MapUnit(label=f"4c:global_advice_batch_{i + 1}", classes=chunk, project_root=project.project_root)
         for i, chunk in enumerate(chunks)
     ]
+
+
+def load_force_include_classes(project: ParsedProject, path: Path) -> set[str]:
+    """對應 04a 四章「人工強制納入清單」：讀取選填的
+    `config/force_include_classes.json`（陣列元素是 Java 檔案相對
+    `java_project_path` 的路徑），把清單裡的檔案路徑對回 `project.classes`
+    找到的 class 名稱集合，回傳給 `summarize.run_map_reduce()` 併入共用
+    類別集合。
+
+    `path` 不存在視為空清單，不是錯誤——這是選填的人工輸入，多數情況下
+    這份清單根本不存在。清單裡的路徑對不到任何 `ClassInfo`（打錯字、
+    檔案已被移除或搬走）只記警告並跳過，不中止整條 `parse` run，比照
+    skip endpoint 清單「選填的人工輸入不該讓 pipeline 掛掉」的既有容錯
+    精神（見 04a 四章）。同一個檔案若有多個 top-level class（少見，見
+    04b 十一章已知限制），全部一併強制納入，不用另外指定要哪一個。
+    """
+    if not path.exists():
+        return set()
+
+    file_paths = json.loads(path.read_text(encoding="utf-8"))
+
+    by_file_path: dict[str, list[str]] = {}
+    for class_info in project.classes.values():
+        by_file_path.setdefault(class_info.file_path, []).append(class_info.class_name)
+
+    result: set[str] = set()
+    for rel_path in file_paths:
+        matched = by_file_path.get(rel_path)
+        if not matched:
+            logger.warning(
+                "%s 列出的路徑 %r 在呼叫圖掃描結果中找不到對應類別"
+                "（路徑可能打錯字或檔案已被移除／搬走），已略過（見 04a 四章"
+                "「人工強制納入清單」）",
+                path,
+                rel_path,
+            )
+            continue
+        result.update(matched)
+    return result
 
 
 def find_shared_classes(controller_deps: dict[str, set[str]]) -> set[str]:

@@ -111,9 +111,44 @@ class TestValidateTaskFixes:
         assert result == []
         assert any("皆空" in r.message for r in caplog.records)
 
+    def test_retranslate_true_with_empty_fixed_body_and_file_fixes_kept(self):
+        """對應 docs/refactor_bug_trace.md #9：retranslate=True 本身就是
+        「有效內容」，不該因為 fixed_body／file_fixes 都空就被當成空
+        task_fix 捨棄。"""
+        raw = [{"task_id": "t1", "diagnosis": "需要重新翻譯", "retranslate": True, "fixed_body": None, "file_fixes": []}]
+        result = _validate_task_fixes(raw, valid_task_ids={"t1"})
+        assert len(result) == 1
+        assert result[0]["retranslate"] is True
+        assert result[0]["fixed_body"] is None
+
+    def test_retranslate_true_forces_fixed_body_to_none_even_if_llm_provided_both(self, caplog):
+        """對應 docs/refactor_bug_trace.md #9：LLM 若違反 prompt 指示、
+        同時給了 retranslate=true 與非 null 的 fixed_body，retranslate
+        優先生效，fixed_body 的內容被忽略——不能讓一次沒遵守指示的回應
+        繞過「⑦ 沒有 Java 原始碼、不該自己寫函式本體」這個保護。"""
+        raw = [{
+            "task_id": "t1", "diagnosis": "d1", "retranslate": True,
+            "fixed_body": "自己猜寫的內容", "file_fixes": [],
+        }]
+        with caplog.at_level("WARNING"):
+            result = _validate_task_fixes(raw, valid_task_ids={"t1"})
+        assert len(result) == 1
+        assert result[0]["retranslate"] is True
+        assert result[0]["fixed_body"] is None
+        assert any("優先採用 retranslate" in r.message for r in caplog.records)
+
+    def test_retranslate_defaults_to_false_when_absent(self):
+        """既有（修改前）的 task_fixes 字典沒有 retranslate 這個 key，
+        向後相容：預設視為 False，維持既有 fixed_body 行為。"""
+        raw = [{"task_id": "t1", "diagnosis": "d1", "fixed_body": "f1", "file_fixes": []}]
+        result = _validate_task_fixes(raw, valid_task_ids={"t1"})
+        assert result[0]["retranslate"] is False
+        assert result[0]["fixed_body"] == "f1"
+
 
 def _base_state(**overrides) -> dict:
     state = {
+        "run_id": "test_run",
         "test_results": {"failures": []},
         "task_failures": [],
         "task_list": [],
@@ -208,7 +243,35 @@ class TestGiveUpEarlyRootCauseAnalysis:
         result = run_debug_analysis(state)
         assert result["give_up_early"] is False
         assert result["pending_fixed_bodies"] == {"t1": "補上 score"}
+        assert result["pending_retranslate_tasks"] == {}
         assert result["unanalyzed_root_cause_modules"] == []
+
+    def test_retranslate_task_fix_populates_pending_retranslate_tasks_not_fixed_bodies(self, monkeypatch, tmp_path):
+        """對應 docs/refactor_bug_trace.md #9：retranslate=True 的
+        task_fix 進 pending_retranslate_tasks（value 是 diagnosis，作為
+        重新翻譯的提示），不進 pending_fixed_bodies——兩者互斥。"""
+        def _fake_call(**kwargs):
+            return {
+                "root_cause_summary": "從沒成功翻譯過", "fixable": True,
+                "task_fixes": [{
+                    "task_id": "t1", "diagnosis": "known_fill_failure，需要重新翻譯",
+                    "retranslate": True, "fixed_body": None, "file_fixes": [],
+                }],
+                "unfixable_reasons": [],
+            }
+
+        monkeypatch.setattr(analysis, "call_claude_for_json", _fake_call)
+
+        state = _base_state(
+            test_results={"failures": [{"case_id": "a", "module": "exam", "related_files": []}]},
+            task_list=[_task("t1", "exam")],
+            module_list=[{"module": "exam", "summary": "考試模組"}],
+            python_project_path=str(tmp_path),
+        )
+        result = run_debug_analysis(state)
+        assert result["give_up_early"] is False
+        assert result["pending_fixed_bodies"] == {}
+        assert result["pending_retranslate_tasks"] == {"t1": "known_fill_failure，需要重新翻譯"}
 
     def test_file_fixes_flattened_into_pending_file_fixes_with_task_id(self, monkeypatch, tmp_path):
         """10a 八章「phase 2」：task_fixes[].file_fixes 攤平成

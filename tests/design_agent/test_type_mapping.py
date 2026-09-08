@@ -9,10 +9,12 @@ import ast
 import pytest
 
 from design_agent.type_mapping import (
+    _classify_params,
     collect_named_schemas,
     extract_schema_fields,
     is_response_entity_return_type,
     map_java_type,
+    openapi_type_to_python,
     resolve_api_boundary_signature,
 )
 from design_agent.types import JavaMethodSignature, JavaParam
@@ -23,6 +25,54 @@ def _assert_valid_annotation(type_str: str) -> None:
     ——這是這次修正真正要保證的事，不是只比對字串。
     """
     ast.parse(f"def f(x: {type_str}) -> None:\n    pass\n")
+
+
+class TestOpenapiTypeToPythonObjectSchema:
+    """對應 docs/refactor_bug_trace.md #40：真實案例 `GetAllExamRs.allExams`
+    對應 Java `Map<String, List<ExamkindEntity>>`，springdoc 產生的
+    schema 是 `additionalProperties` 形狀，修復前這裡直接落到最後一行
+    退回字面字串 `"object"`——語法合法但完全不做型別檢查，讓⑤合理但
+    錯誤地推論「不用把 entity 轉成 schema 物件」。"""
+
+    def test_additional_properties_object_becomes_dict(self, caplog):
+        schema = {
+            "type": "object",
+            "additionalProperties": {"type": "array", "items": {"$ref": "#/components/schemas/ExamkindEntity"}},
+        }
+        with caplog.at_level("INFO"):
+            result = openapi_type_to_python(schema)
+
+        assert result == "dict[str, list[ExamkindEntity]]"
+        _assert_valid_annotation(result)
+        assert any("Map" in r.message for r in caplog.records)
+
+    def test_object_with_title_and_no_additional_properties_uses_title(self):
+        schema = {"type": "object", "title": "InlineNamedThing"}
+        assert openapi_type_to_python(schema) == "InlineNamedThing"
+
+    def test_object_with_properties_and_additional_properties_is_not_treated_as_map(self):
+        """有 `properties`（固定形狀物件）時，即使剛好也有
+        `additionalProperties`，不該被判定成 Map——這種情況目前落到
+        「看不懂就 raise」分支，不是這次要修的既有已知案例，但也不能
+        被新的 Map 分支誤判。"""
+        schema = {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "additionalProperties": {"type": "string"},
+            "title": "HasBoth",
+        }
+        assert openapi_type_to_python(schema) == "HasBoth"
+
+    def test_unrecognized_object_schema_still_falls_back_to_literal_object(self):
+        """既沒有 $ref／additionalProperties，也沒有 title——這個共用
+        函式本身刻意保留寬容 fallback（給 `_classify_params()` 這條
+        參數分類路徑用，見 `TestMultipartFileBodyParam::
+        test_non_multipart_body_param_unaffected`），不在這裡 raise，
+        「遇到裸 object 就失敗」的更嚴格規則改放在
+        `extract_schema_fields()` 自己身上，見
+        `TestExtractSchemaFieldsRejectsBareObject`。"""
+        schema = {"type": "object"}
+        assert openapi_type_to_python(schema) == "object"
 
 
 class TestSimpleTypes:
@@ -135,15 +185,10 @@ class TestUnknownGenericFallback:
         # Map[String, Object] 這種同樣不合法的殘留。
         assert map_java_type("ResponseResult<Map<String, Object>>") == "ResponseResult[dict[str, Object]]"
 
-    def test_framework_internal_type(self):
-        # 07a 四章原文案例：Specification<ExamEntity>（Spring Data JPA）。
-        assert map_java_type("Specification<ExamEntity>") == "Specification[ExamEntity]"
-
     def test_all_produce_valid_annotations(self):
         for java_type in [
             "ResponseResult<T>",
             "ResponseResult<Map<String, Object>>",
-            "Specification<ExamEntity>",
         ]:
             _assert_valid_annotation(map_java_type(java_type))
 
@@ -168,6 +213,25 @@ class TestResponseEntity:
 
     def test_output_is_valid_annotation(self):
         _assert_valid_annotation(map_java_type("ResponseEntity<FileRs>"))
+
+
+class TestSpecification:
+    """`Specification<T>`（Spring Data JPA 動態查詢 pattern）需要特殊
+    處理，不能落入 Layer 1 未知泛型 fallback（`Specification[ExamEntity]`
+    在 Python 端從未被定義，任何用到它的方法一被呼叫就會 `NameError`）
+    ——見 docs/refactor_bug_trace.md #14 真實案例。跟 `ResponseEntity`
+    一樣丟棄內層型別參數，因為 T 只是「這個條件對哪個 entity 產生」，
+    不是容器語意。
+    """
+
+    def test_specification_maps_to_column_element_or_none(self):
+        assert map_java_type("Specification<ExamEntity>") == "ColumnElement | None"
+
+    def test_specification_nested_generic_still_maps_to_column_element(self):
+        assert map_java_type("Specification<Map<String, Object>>") == "ColumnElement | None"
+
+    def test_output_is_valid_annotation(self):
+        _assert_valid_annotation(map_java_type("Specification<ExamEntity>"))
 
 
 class TestIsResponseEntityReturnType:
@@ -363,6 +427,124 @@ class TestResolveApiBoundarySignatureRequestBody:
         assert return_type == "OrderRs"
 
 
+class TestMultipartFileBodyParam:
+    """docs/refactor_bug_trace.md #7：真實環境端對端重跑發現
+    `file_router.py` 的 `image()`／`voice()` 簽名帶著裸字串型別 `object`
+    ——springdoc 對 `MultipartFile` 參數幾乎不會產生具名 schema（多半是
+    inline object、沒有 `$ref`／`title`），型別比對必然落空、退回「唯一
+    剩餘參數」啟發式後，`openapi_type_to_python()` 對這種 inline schema
+    沒有 `$ref`／`title` 可用，只能吐出裸字串 `"object"`，FastAPI 完全
+    解不了 multipart 上傳。改成偵測 Java 型別本身是不是 `MultipartFile`
+    ——這是 Spring MVC 檔案上傳的框架型別，跟方法名稱／路徑無關，直接
+    對應 FastAPI 的 `UploadFile`，不再嘗試從 openapi schema 猜型別。
+    """
+
+    def test_multipart_file_param_maps_to_upload_file(self):
+        method = JavaMethodSignature(
+            class_name="FileController", method_name="image",
+            params=[
+                JavaParam(name="kind", java_type="String"),
+                JavaParam(name="file", java_type="MultipartFile"),
+            ],
+            return_type="ResponseResult<Map<String,Object>>",
+        )
+        operation = {
+            "parameters": [{"name": "kind", "schema": {"type": "string"}}],
+            "requestBody": {
+                "content": {
+                    "multipart/form-data": {
+                        "schema": {"type": "object", "properties": {"file": {"type": "string", "format": "binary"}}}
+                    }
+                }
+            },
+            "responses": {"200": {"content": {"application/json": {"schema": {"type": "object"}}}}},
+        }
+        params, _ = resolve_api_boundary_signature(method, operation, {})
+        assert {"name": "kind", "type": "str"} in params
+        assert {"name": "file", "type": "UploadFile"} in params
+
+    def test_non_multipart_body_param_unaffected(self):
+        # 確認這個特判只對 Java 型別剛好是 MultipartFile 的參數生效，不會
+        # 誤傷既有的「唯一剩餘參數」啟發式對其他型別的既有行為。
+        method = JavaMethodSignature(
+            class_name="OrderController", method_name="create",
+            params=[JavaParam(name="req", java_type="OrderCreateRequest")],
+            return_type="OrderRs",
+        )
+        operation = {
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
+            "responses": {"200": {"content": {"application/json": {"schema": {"type": "object"}}}}},
+        }
+        params, _ = resolve_api_boundary_signature(method, operation, {})
+        assert params == [{"name": "req", "type": "object"}]
+
+
+class TestMultipartFileWithSiblingFormFields:
+    """docs/refactor_bug_trace.md #20：真實案例 `FileController.voice()`——
+    Spring 用 4 個獨立的 `@RequestParam` 字串參數 + 1 個 `MultipartFile`
+    宣告同一個 multipart 端點（不是單一 DTO body）。openapi 不會把這些
+    欄位放進 `parameters`（它們是 multipart body 欄位，不是 path/query），
+    `_classify_params()` 既有的 requestBody 邏輯只在「剩餘參數剛好只有
+    一個」時才嘗試判定，5 個剩餘參數完全不會觸發，全部原封不動流向
+    `find_uncovered_framework_params()` 交六章 LLM 逐一亂猜——真實生成
+    結果證實除了 `file` 猜對成 `UploadFile`，其餘 4 個都猜成裸 `str`，
+    FastAPI 因此把它們當成 query parameter，真實 multipart 請求被判定
+    缺必填參數。逐行比對 Java 原始碼確認 `voice()` 本體邏輯翻譯完全正確，
+    這是唯一擋住它成功執行的問題。
+    """
+
+    def _voice_like_method(self, extra_param: JavaParam | None = None) -> JavaMethodSignature:
+        params = [
+            JavaParam(name="kind", java_type="String"),
+            JavaParam(name="randomId", java_type="String"),
+            JavaParam(name="partNumber", java_type="String"),
+            JavaParam(name="questionNumber", java_type="String"),
+        ]
+        if extra_param is not None:
+            params.append(extra_param)
+        params.append(JavaParam(name="file", java_type="MultipartFile"))
+        return JavaMethodSignature(
+            class_name="FileController", method_name="voice", params=params, return_type="ResponseResult<String>",
+        )
+
+    def _voice_like_operation(self) -> dict:
+        # 真實案例：openapi 完全沒有把這 4 個欄位放進 parameters，
+        # multipart/form-data 的 schema 也只列出 file（springdoc 對這種
+        # 端點的既有限制，見 TestMultipartFileBodyParam docstring）。
+        return {
+            "requestBody": {
+                "content": {
+                    "multipart/form-data": {
+                        "schema": {"type": "object", "properties": {"file": {"type": "string", "format": "binary"}}}
+                    }
+                }
+            },
+            "responses": {"200": {"content": {"application/json": {"schema": {"type": "string"}}}}},
+        }
+
+    def test_sibling_string_params_get_form_wrapper_and_upload_file_stays_bare(self):
+        method = self._voice_like_method()
+        params, _ = resolve_api_boundary_signature(method, self._voice_like_operation(), {})
+        assert {"name": "kind", "type": "str = Form(...)"} in params
+        assert {"name": "randomId", "type": "str = Form(...)"} in params
+        assert {"name": "partNumber", "type": "str = Form(...)"} in params
+        assert {"name": "questionNumber", "type": "str = Form(...)"} in params
+        assert {"name": "file", "type": "UploadFile"} in params
+        assert len(params) == 5
+
+    def test_non_primitive_sibling_param_not_wrapped_in_form(self):
+        """防呆：`HttpServletRequest` 這類框架注入物件型別若剛好也跟
+        `MultipartFile` 出現在同一個簽名裡，不應該被誤包成 `Form(...)`
+        ——那不是 multipart 表單欄位，維持交給六章 LLM 的既有框架注入
+        物件判斷路徑（05a 五章），不在這裡處理。"""
+        method = self._voice_like_method(extra_param=JavaParam(name="request", java_type="HttpServletRequest"))
+        covered, remaining = _classify_params(method, self._voice_like_operation(), {})
+        covered_names = {p.name for p, _ in covered}
+        assert "request" not in covered_names
+        assert any(p.name == "request" for p in remaining)
+        assert dict(next(spec for p, spec in covered if p.name == "file")) == {"name": "file", "type": "UploadFile"}
+
+
 def _assert_valid_field_declaration(name: str, declaration: str) -> None:
     """驗證 extract_schema_fields() 的輸出接在 Pydantic BaseModel 的
     class body 裡是合法 Python 語法。"""
@@ -415,3 +597,78 @@ class TestExtractSchemaFields:
         fields = extract_schema_fields(raw_schema)
         assert fields == [("name", "str = Field(..., max_length=50)")]
         _assert_valid_field_declaration(*fields[0])
+
+    def test_map_field_via_additional_properties_becomes_dict(self):
+        """對應 docs/refactor_bug_trace.md #40 真實案例
+        `GetAllExamRs.allExams`（Java `Map<String, List<ExamkindEntity>>`）
+        ——修復前這裡會拿到裸 `"object"`（見下面的
+        `TestExtractSchemaFieldsRejectsBareObject`），修復後要正確產生
+        `dict[str, list[ExamkindEntity]]`。"""
+        raw_schema = {
+            "properties": {
+                "allExams": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {"$ref": "#/components/schemas/ExamkindEntity"},
+                    },
+                },
+            },
+            "required": [],
+        }
+        fields = extract_schema_fields(raw_schema)
+        assert fields == [("allExams", "dict[str, list[ExamkindEntity]] | None = None")]
+        _assert_valid_field_declaration(*fields[0])
+
+
+class TestExtractSchemaFieldsBareObjectHandling:
+    """對應 docs/refactor_bug_trace.md #40／#41：`openapi_type_to_python()`
+    對「猜不出來的 object」故意保留寬容 fallback（給 `_classify_params()`
+    參數分類路徑用），但 `extract_schema_fields()` 是在產生真正會寫進
+    Pydantic model 的欄位型別宣告——裸 `object` 完全不做型別檢查，語法
+    合法但語意等於沒有型別，會讓⑤合理但錯誤地推論「這個欄位不用把
+    entity 轉成 schema 物件」。**分兩種情況**（#41 真實重跑訂正）：
+    schema 除了 `type` 真的沒有其他資訊時（真實案例 Java
+    `ResponseResult<Void>` 的 `data` 欄位）代表本來就沒有更精確的型別
+    可救，退回 `Any`，不 raise；schema 還帶著這個函式看不懂的其他鍵
+    （代表可能真的漏接了一個能救回來的結構，跟 `GetAllExamRs.allExams`
+    是同一種情況）才 raise。"""
+
+    def test_bare_object_with_no_other_info_falls_back_to_any(self, caplog):
+        """真實案例：Java `ResponseResult<Void>` 的 `data` 欄位，schema
+        就只有 `{"type": "object"}`，除了 type 沒有任何其他資訊——這是
+        泛型抹除後本來就沒有資料可以描述，不是漏掉的結構，退回 `Any`，
+        不該讓整條 pipeline 崩潰。"""
+        raw_schema = {
+            "properties": {"data": {"type": "object"}},
+            "required": [],
+        }
+        with caplog.at_level("INFO"):
+            fields = extract_schema_fields(raw_schema)
+
+        assert fields == [("data", "Any | None = None")]
+        _assert_valid_field_declaration(*fields[0])
+        assert any("Void" in r.message for r in caplog.records)
+
+    def test_object_with_unexplained_extra_keys_still_raises(self, caplog):
+        """跟上一個測試唯一的差異是多了一個這個函式看不懂的鍵
+        （`oneOf`）——代表可能真的漏接了一個能救回來的結構，維持嚴格
+        失敗，不要悄悄退回 Any 蓋掉一個真正的缺口。"""
+        raw_schema = {
+            "properties": {"mystery": {"type": "object", "oneOf": [{"type": "string"}]}},
+            "required": [],
+        }
+        with caplog.at_level("WARNING"):
+            with pytest.raises(ValueError, match="mystery"):
+                extract_schema_fields(raw_schema)
+        assert any("裸 object" in r.message for r in caplog.records)
+
+    def test_field_with_title_does_not_raise(self):
+        """有 `title` 可用時走既有的具名 inline 型別行為，不受這次修正
+        影響。"""
+        raw_schema = {
+            "properties": {"named": {"type": "object", "title": "InlineNamedThing"}},
+            "required": ["named"],
+        }
+        fields = extract_schema_fields(raw_schema)
+        assert fields == [("named", "InlineNamedThing")]

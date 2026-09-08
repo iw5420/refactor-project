@@ -19,9 +19,9 @@ DEBUG_SYSTEM_PROMPT = """\
    方向提示，僅供參考，不一定準確）
 3. known_fill_failures：已知確定「連程式碼都沒能成功生成」的函式，附
    上失敗訊息 error——這些函式目前極可能還是空骨架或殘缺內容。**這些
-   task 一律要求你直接寫出完整函式本體，不是選擇性的**，見下方任務
+   task 一律要求你在 task_fixes 標記 retranslate=true**，見下方任務
    說明第 0 點——本地模型已經證明做不到，不會再有機會重新嘗試，這是
-   它們唯一的修復機會
+   它們被排入下一次真正翻譯的唯一機會
 4. known_scaffold_gaps：已知這些函式在骨架階段就沒有被建立、目前根本
    不存在於任何檔案裡——**這些函式無法透過重新生成修好**，若你判斷某個
    失敗是這些函式造成的，把原因寫進 unfixable_reasons，絕對不要把它們
@@ -68,22 +68,26 @@ DEBUG_SYSTEM_PROMPT = """\
     target_file 也可以指向它）
 
 你的任務：
-0. **對 known_fill_failures 裡的每一個 task，一律要求輸出 task_fixes**
-   （除非確實無法判斷，見下方例外）——這一步跟第 1 點的「分析既有程式
-   碼找 bug」是完全不同性質的工作，不要混為一談：這些函式從來沒有成功
-   翻譯過，`source_files` 裡對應的內容可能是殘缺的骨架、上一次失敗留
-   下的半成品，或完全不相關的內容，**不要嘗試在裡面「抓 bug」**，直接
-   忽略它現在寫了什麼，只根據 `tasks` 清單裡這個 task_id 對應的
-   `description`（這個函式該做什麼的業務描述）、`class_name`、
-   `target_files` 重新寫出一份正確、完整的 `fixed_body`。這是「從零
-   生成」，不是「修正現有程式碼」——`error` 欄位（本地模型當初失敗的
-   訊息，如格式違反、語法錯誤）只是背景資訊，讓你知道這個函式為什麼
-   卡住，不代表你要延續它的錯誤方向。這一步**每一個 known_fill_failures
-   裡的 task 都要嘗試**，不是「你覺得有關聯才做」——本地模型已經證明
-   處理不了這些函式，不會再有其他機會重新嘗試翻譯，這是它們唯一的
-   修復機會。只有在 description 本身完全不足以判斷該寫什麼（例如業務
-   邏輯描述模糊到連猜都猜不出合理實作）時，才寫進 unfixable_reasons
-   誠實說明，不要用猜的邏輯硬湊一個看似合理但實際上是編造的實作
+0. **對 known_fill_failures 裡的每一個 task，一律要求輸出 task_fixes、
+   標記 retranslate=true**（除非確實無法判斷，見下方例外）——這一步跟
+   第 1 點的「分析既有程式碼找 bug」是完全不同性質的工作，不要混為
+   一談：這些函式從來沒有成功翻譯過，`source_files` 裡對應的內容可能
+   是殘缺的骨架、上一次失敗留下的半成品，或完全不相關的內容，**不要
+   嘗試在裡面「抓 bug」**，也**不要自己根據 `description` 編出一份
+   `fixed_body`**——`description` 是純機械模板文字，本來就不是給模型
+   讀的翻譯依據（見 `06a_plan_agent_architecture.md`：「對模型沒有任何
+   有效信號」），你手上又沒有這些函式對應的真實 Java 原始碼，自己猜
+   寫的實作即使語法合法，也可能整段偏離真正的業務邏輯。正確做法是設
+   `retranslate=true`、`fixed_body=null`，讓 ⑤ 用真實 Java 原始碼重新
+   翻譯這個函式（見下方第 2 點「retranslate」欄位說明）；`diagnosis`
+   只需要說明「這是 known_fill_failure，需要重新翻譯」以及 `error`
+   欄位（本地模型當初失敗的訊息，如格式違反、語法錯誤）這段背景，
+   不需要、也不應該自己猜測正確的實作邏輯。這一步**每一個
+   known_fill_failures 裡的 task 都要嘗試**，不是「你覺得有關聯才
+   做」——本地模型已經證明處理不了這些函式，這是它們被排入下一次真正
+   翻譯的唯一機會。只有在這個 task_id 因為其他理由（例如同時也在
+   known_scaffold_gaps 裡）判斷完全無法修時，才寫進 unfixable_reasons
+   誠實說明
 1. 逐一分析 harness_failures，對照 source_files 的實際內容，判斷根本
    原因——注意常見的翻譯品質問題模式：用內建關鍵字（如 list、set、dict、
    type）當變數名稱遮蔽 builtin、查詢缺少明確排序（ORDER BY）、必填欄位
@@ -94,45 +98,64 @@ DEBUG_SYSTEM_PROMPT = """\
    沒有明顯的 import／語法層級問題，而不是先假設是業務邏輯比對錯誤
 2. 對每一個你判斷「能修好」的 task，在 task_fixes 輸出一筆：task_id
    （只能引用 tasks 清單裡的值，且不能是 known_scaffold_gaps 裡的）、
-   diagnosis（根本原因，具體到「哪一行/哪個邏輯錯在哪」）、fixed_body、
-   file_fixes（見下方說明），兩者至少要有一個非空
-   - fixed_body：這個函式修正後的完整程式碼本體，直接會被拿去取代目前
-     的函式本體，不是給人看的建議文字。格式要求：只寫函式本體的陳述式，
-     **不要**包含 `def ...():` 那一行簽名，也不要縮排（跟目前簽名同一
-     層級，視覺上像函式體整段往左靠齊）；必須是語法完整、可以直接執行
-     的 Python 陳述式，不要省略、不要用「...其餘不變」這類佔位文字帶
-     過——你能看到 source_files 裡這個函式目前的完整程式碼，直接在正確
-     的地方修正，把其餘沒問題的部分原樣寫回去。若這個函式的本體完全不
-     需要改（問題只出在檔案層級，見下方 file_fixes），設為 null
+   diagnosis（根本原因，具體到「哪一行/哪個邏輯錯在哪」）、retranslate、
+   fixed_body、file_fixes（見下方說明），三者至少要有一個真正生效
+   （retranslate=true，或 fixed_body 非 null，或 file_fixes 非空）
+   - retranslate：**這個函式本體本身的業務邏輯寫錯、或從沒被成功生成
+     過時的預設做法**——設 `true`、`fixed_body` 設 `null`，把這個 task
+     交還給⑤用真實 Java 原始碼重新翻譯，不要自己動手寫 `fixed_body`。
+     你看得到的 `source_files` 只是 Python 端現有的內容，你手上**沒有**
+     這個函式對應的真實 Java 原始碼可以核對——自己憑 `source_files`／
+     `harness_failures` 的症狀反推、寫出來的實作，即使能通過這次測試，
+     也可能悄悄偏離真正的業務邏輯（例如漏掉一個你看不到的排序條件、
+     猜錯一個你看不到的邊界值）；⑤ 那條路徑看得到真正的 Java 原始碼，
+     交給它重新翻譯永遠比你自己憑猜測寫更可靠。`diagnosis` 這時候的
+     角色是「告訴⑤上一輪／目前這個版本錯在哪」，會被當成重新翻譯時的
+     提示一併附上，寫得越具體（哪個條件、哪一行邏輯、對照哪一筆
+     harness_failures），重新翻譯就越可能一次就對
+   - fixed_body：**只在你能百分之百確定、完全不需要核對 Java 原始碼
+     就能判斷對錯的機械性修正才使用**（例如純粹的變數名稱筆誤、明顯
+     的語法錯誤）——這類情況應該很少見，多數函式本體的問題都該用上面
+     的 retranslate，不要因為手上剛好看得到 source_files 就順手自己
+     改寫業務邏輯。真的要用時：這個函式修正後的完整程式碼本體，直接
+     會被拿去取代目前的函式本體，不是給人看的建議文字。格式要求：只寫
+     函式本體的陳述式，**不要**包含 `def ...():` 那一行簽名，也不要
+     縮排（跟目前簽名同一層級，視覺上像函式體整段往左靠齊）；必須是
+     語法完整、可以直接執行的 Python 陳述式，不要省略、不要用「...其餘
+     不變」這類佔位文字帶過。若這個函式的本體完全不需要改（問題只出在
+     檔案層級，見下方 file_fixes；或該用 retranslate 處理），設為 null
    - file_fixes：若根本原因出在函式本體以外的地方（例如檔案開頭的
-     import 敘述、模組層級的常數宣告），fixed_body 這個機制碰不到，改
-     用這個欄位——每一筆是 {target_file, old_snippet, new_snippet}：
-     target_file 是這份修正要套用到的檔案路徑（必須是 source_files 的
-     其中一個 key）；old_snippet 必須是 source_files 裡那個檔案目前
-     內容的**逐字**子字串（連同縮排、換行都要一模一樣），而且必須在整
-     個檔案裡**只出現一次**——這是精確字串取代，不是模糊比對，找不到
-     或出現超過一次都會讓這筆修正直接失敗；new_snippet 是取代後的內容。
-     只圈出真正需要改的最小範圍（例如只圈一行 import 敘述），不要為了
-     「保險」把整個檔案或整個函式都當成 old_snippet——範圍越大，之後這
-     個檔案有其他變動時越容易不再逐字相符而套用失敗。這個函式本身若同時
-     也需要改本體，fixed_body 一樣要填，兩者不衝突——**但如果 file_fixes
-     的 `old_snippet`／`new_snippet` 已經涵蓋這個函式完整的簽名行（含
+     import 敘述、模組層級的常數宣告），retranslate／fixed_body 這兩個
+     機制都碰不到函式本體以外的內容，改用這個欄位——每一筆是
+     {target_file, old_snippet, new_snippet}：target_file 是這份修正要
+     套用到的檔案路徑（必須是 source_files 的其中一個 key）；old_snippet
+     必須是 source_files 裡那個檔案目前內容的**逐字**子字串（連同縮排、
+     換行都要一模一樣），而且必須在整個檔案裡**只出現一次**——這是精確
+     字串取代，不是模糊比對，找不到或出現超過一次都會讓這筆修正直接
+     失敗；new_snippet 是取代後的內容。只圈出真正需要改的最小範圍
+     （例如只圈一行 import 敘述），不要為了「保險」把整個檔案或整個函式
+     都當成 old_snippet——範圍越大，之後這個檔案有其他變動時越容易不再
+     逐字相符而套用失敗。這個函式本身若同時也需要改本體，retranslate／
+     fixed_body 一樣可以填，不衝突——**但如果 file_fixes 的
+     `old_snippet`／`new_snippet` 已經涵蓋這個函式完整的簽名行（含
      `def`/`async def`／裝飾器），也就是這筆 file_fixes 本身已經是整個
-     函式（簽名＋本體）的完整替換，這種情況 fixed_body 必須設為
-     `null`，不要再重複填一份幾乎一樣的內容**：`fixed_body` 只會被拿去
-     取代「這個函式目前的 body」，如果 file_fixes 已經把整個函式（含簽
-     名）換成新的一份，`fixed_body` 這時候等於是在剛換好的新函式外面
-     再包一層，會被當成一段合法但完全不會被呼叫的巢狀函式定義寫進去
-     ——語法合法、語意全壞，且下一輪你自己重新讀到這段巢狀死程式碼時
-     很容易誤判成「還沒修好的舊 bug」再修一次，陷入自己跟自己打架的迴圈
-     （真實案例見 `docs/09b_bug_trace.md #52`）。判斷準則：這次的修正
-     只需要動到簽名本身（例如把 `def` 改成 `async def`、加裝飾器），且
-     函式內部原有的業務邏輯不變，一律只用 file_fixes 做完整替換、
-     fixed_body 設 `null`；只有當函式簽名不動、只有內部陳述式需要修正
-     時，才只填 fixed_body、不需要 file_fixes
+     函式（簽名＋本體）的完整替換，這種情況 retranslate 必須是
+     `false`、`fixed_body` 必須設為 `null`，不要再重複處理一份幾乎一樣
+     的內容**：`retranslate`／`fixed_body` 只會被拿去取代「這個函式目前
+     的 body」，如果 file_fixes 已經把整個函式（含簽名）換成新的一份，
+     這兩個機制其中任一個生效都等於是在剛換好的新函式外面再包一層，會
+     被當成一段合法但完全不會被呼叫的巢狀函式定義寫進去——語法合法、
+     語意全壞，且下一輪你自己重新讀到這段巢狀死程式碼時很容易誤判成
+     「還沒修好的舊 bug」再修一次，陷入自己跟自己打架的迴圈（真實案例
+     見 `docs/09b_bug_trace.md #52`）。判斷準則：這次的修正只需要動到
+     簽名本身（例如把 `def` 改成 `async def`、加裝飾器），且函式內部
+     原有的業務邏輯不變，一律只用 file_fixes 做完整替換、retranslate
+     設 `false`、fixed_body 設 `null`；只有當函式簽名不動、只有內部
+     陳述式需要修正時，才用 retranslate（或極少數情況用 fixed_body）、
+     不需要 file_fixes
    - **根因若確實是檔案層級的問題（缺 import、模組層級常數/enum 沒被
      正確引用等），必須用 file_fixes 精確補上這個缺口，不要為了避開它
-     而在 fixed_body 裡改寫業務邏輯繞道**——例如某個函式引用了一個未
+     而在 retranslate／fixed_body 裡改寫業務邏輯繞道**——例如某個函式引用了一個未
      import 的 enum／常數，正確做法是用 file_fixes 補上那個 import，
      讓函式繼續依原本的方式引用該 enum／常數；不要因此把函式本體改成
      不再依賴那個 enum／常數（例如原本該回傳 ErrorCode.XXX.value 這種
@@ -168,6 +191,7 @@ DEBUG_OUTPUT_SCHEMA: dict = {
                 "properties": {
                     "task_id": {"type": "string"},
                     "diagnosis": {"type": "string"},
+                    "retranslate": {"type": "boolean"},
                     "fixed_body": {"type": ["string", "null"]},
                     "file_fixes": {
                         "type": "array",
@@ -183,7 +207,7 @@ DEBUG_OUTPUT_SCHEMA: dict = {
                         },
                     },
                 },
-                "required": ["task_id", "diagnosis", "fixed_body", "file_fixes"],
+                "required": ["task_id", "diagnosis", "retranslate", "fixed_body", "file_fixes"],
                 "additionalProperties": False,
             },
         },

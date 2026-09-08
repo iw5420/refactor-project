@@ -384,7 +384,14 @@ class FileFix(TypedDict):
 class TaskFix(TypedDict):
     task_id: str
     diagnosis: str
-    fixed_body: str | None  # None：這個 task 的函式本體不需要改
+    # 對應 docs/refactor_bug_trace.md #9：函式本體邏輯有問題時（不論是
+    # 從沒成功翻譯過，還是翻過但邏輯錯）優先設 True，交還給⑤用真實 Java
+    # 原始碼重新翻譯，diagnosis 當成重新翻譯的提示。NotRequired：既有
+    # 建構 TaskFix 的測試 fixture 不用跟著補，預設視為 False。
+    retranslate: NotRequired[bool]
+    # None：這個 task 的函式本體不需要改（或已由 retranslate=True 處理）。
+    # 只在 retranslate 是 False（或缺省）時才可能非 None——兩者互斥。
+    fixed_body: str | None
     file_fixes: list[FileFix]
 
 
@@ -424,6 +431,16 @@ class RefactorState(TypedDict):
     # 資料，有值的 task 直接傳給 fill_function() 的 fixed_body 參數，
     # 完全跳過 ⑤ 本地模型（見 10a 八章）。
     pending_fixed_bodies: dict[str, str]
+
+    # Agent ⑦（對應 docs/refactor_bug_trace.md #9）：這一輪判定「函式
+    # 本體邏輯需要重新翻譯」的 task，key 是 task_id、value 是 ⑦ 的
+    # diagnosis（作為重新翻譯的提示）。跟 pending_fixed_bodies 同一種
+    # 「這一輪的修正」語意，也一樣不掛 reducer；但
+    # implement_node._run_one_task() 讀到這裡的 task_id 時**不**跳過
+    # 模型呼叫——正常解析 java_source／referenced_source、真的呼叫
+    # fill_function()，只是把 diagnosis 疊加進 context（見 10a 八章）。
+    # 跟 pending_fixed_bodies 互斥。
+    pending_retranslate_tasks: dict[str, str]
 
     # Agent ⑦：這一輪產出的檔案層級修正（phase 2，見 10a 八章）——
     # fixed_body／fill_function() 的 AST 函式定位機制只能碰函式本體，
@@ -513,9 +530,9 @@ DEBUG_SYSTEM_PROMPT = """\
    方向提示，僅供參考，不一定準確）
 3. known_fill_failures：已知確定「連程式碼都沒能成功生成」的函式，附
    上失敗訊息 error——這些函式目前極可能還是空骨架或殘缺內容。**這些
-   task 一律要求你直接寫出完整函式本體，不是選擇性的**，見下方任務
+   task 一律要求你在 task_fixes 標記 retranslate=true**，見下方任務
    說明第 0 點——本地模型已經證明做不到，不會再有機會重新嘗試，這是
-   它們唯一的修復機會
+   它們被排入下一次真正翻譯的唯一機會
 4. known_scaffold_gaps：已知這些函式在骨架階段就沒有被建立、目前根本
    不存在於任何檔案裡——**這些函式無法透過重新生成修好**，若你判斷某個
    失敗是這些函式造成的，把原因寫進 unfixable_reasons，絕對不要把它們
@@ -547,24 +564,41 @@ DEBUG_SYSTEM_PROMPT = """\
    模組的 target_files 裡，根因很可能在 batch_sibling_modules 列出的
    其他模組，在 unfixable_reasons 如實說明，不要勉強在這個模組裡找一個
    不存在的 bug
+9b. harness_failures 裡若出現 failure_type 為 response_not_json（Python
+    服務回傳非 JSON），常見成因不是這個模組自己端點程式碼的業務邏輯
+    錯誤，而是全域例外處理器（app/core/exception_handlers.py，一定會
+    出現在 source_files 裡，即使它不屬於這個模組）本身在被呼叫時又丟出
+    另一個例外，導致連錯誤回應都無法正常序列化成 JSON，被上層框架攔截
+    成一頁純文字/HTML 錯誤頁。出現這個 failure_type 時，除了檢查這個
+    模組自己的程式碼，務必也核對 app/core/exception_handlers.py 呼叫
+    ResponseResult／Result（app/services/common_service.py）相關方法時，
+    使用的關鍵字參數名稱是否跟該類別方法的真實簽名（同樣在 source_files
+    裡）逐一比對一致；若這個模組自己的程式碼看不出明顯問題，這是優先
+    該懷疑、且可以直接在 file_fixes 裡修正的方向（即使
+    exception_handlers.py 不是這個模組自己的檔案，file_fixes 的
+    target_file 也可以指向它）
 
 你的任務：
-0. 對 known_fill_failures 裡的每一個 task，一律要求輸出 task_fixes
-   （除非確實無法判斷，見下方例外）——這一步跟第 1 點的「分析既有程式
-   碼找 bug」是完全不同性質的工作，不要混為一談：這些函式從來沒有成功
-   翻譯過，source_files 裡對應的內容可能是殘缺的骨架、上一次失敗留
-   下的半成品，或完全不相關的內容，不要嘗試在裡面「抓 bug」，直接
-   忽略它現在寫了什麼，只根據 tasks 清單裡這個 task_id 對應的
-   description（這個函式該做什麼的業務描述）、class_name、
-   target_files 重新寫出一份正確、完整的 fixed_body。這是「從零
-   生成」，不是「修正現有程式碼」——error 欄位（本地模型當初失敗的
-   訊息，如格式違反、語法錯誤）只是背景資訊，讓你知道這個函式為什麼
-   卡住，不代表你要延續它的錯誤方向。這一步每一個 known_fill_failures
-   裡的 task 都要嘗試，不是「你覺得有關聯才做」——本地模型已經證明
-   處理不了這些函式，不會再有其他機會重新嘗試翻譯，這是它們唯一的
-   修復機會。只有在 description 本身完全不足以判斷該寫什麼（例如業務
-   邏輯描述模糊到連猜都猜不出合理實作）時，才寫進 unfixable_reasons
-   誠實說明，不要用猜的邏輯硬湊一個看似合理但實際上是編造的實作
+0. **對 known_fill_failures 裡的每一個 task，一律要求輸出 task_fixes、
+   標記 retranslate=true**（除非確實無法判斷，見下方例外）——這一步跟
+   第 1 點的「分析既有程式碼找 bug」是完全不同性質的工作，不要混為
+   一談：這些函式從來沒有成功翻譯過，`source_files` 裡對應的內容可能
+   是殘缺的骨架、上一次失敗留下的半成品，或完全不相關的內容，**不要
+   嘗試在裡面「抓 bug」**，也**不要自己根據 `description` 編出一份
+   `fixed_body`**——`description` 是純機械模板文字，本來就不是給模型
+   讀的翻譯依據（見 `06a_plan_agent_architecture.md`：「對模型沒有任何
+   有效信號」），你手上又沒有這些函式對應的真實 Java 原始碼，自己猜
+   寫的實作即使語法合法，也可能整段偏離真正的業務邏輯。正確做法是設
+   `retranslate=true`、`fixed_body=null`，讓 ⑤ 用真實 Java 原始碼重新
+   翻譯這個函式（見下方第 2 點「retranslate」欄位說明）；`diagnosis`
+   只需要說明「這是 known_fill_failure，需要重新翻譯」以及 `error`
+   欄位（本地模型當初失敗的訊息，如格式違反、語法錯誤）這段背景，
+   不需要、也不應該自己猜測正確的實作邏輯。這一步**每一個
+   known_fill_failures 裡的 task 都要嘗試**，不是「你覺得有關聯才
+   做」——本地模型已經證明處理不了這些函式，這是它們被排入下一次真正
+   翻譯的唯一機會。只有在這個 task_id 因為其他理由（例如同時也在
+   known_scaffold_gaps 裡）判斷完全無法修時，才寫進 unfixable_reasons
+   誠實說明
 1. 逐一分析 harness_failures，對照 source_files 的實際內容，判斷根本
    原因——注意常見的翻譯品質問題模式：用內建關鍵字（如 list、set、dict、
    type）當變數名稱遮蔽 builtin、查詢缺少明確排序（ORDER BY）、必填欄位
@@ -575,45 +609,64 @@ DEBUG_SYSTEM_PROMPT = """\
    沒有明顯的 import／語法層級問題，而不是先假設是業務邏輯比對錯誤
 2. 對每一個你判斷「能修好」的 task，在 task_fixes 輸出一筆：task_id
    （只能引用 tasks 清單裡的值，且不能是 known_scaffold_gaps 裡的）、
-   diagnosis（根本原因，具體到「哪一行/哪個邏輯錯在哪」）、fixed_body、
-   file_fixes（見下方說明），兩者至少要有一個非空
-   - fixed_body：這個函式修正後的完整程式碼本體，直接會被拿去取代目前
-     的函式本體，不是給人看的建議文字。格式要求：只寫函式本體的陳述式，
-     **不要**包含 `def ...():` 那一行簽名，也不要縮排（跟目前簽名同一
-     層級，視覺上像函式體整段往左靠齊）；必須是語法完整、可以直接執行
-     的 Python 陳述式，不要省略、不要用「...其餘不變」這類佔位文字帶
-     過——你能看到 source_files 裡這個函式目前的完整程式碼，直接在正確
-     的地方修正，把其餘沒問題的部分原樣寫回去。若這個函式的本體完全不
-     需要改（問題只出在檔案層級，見下方 file_fixes），設為 null
+   diagnosis（根本原因，具體到「哪一行/哪個邏輯錯在哪」）、retranslate、
+   fixed_body、file_fixes（見下方說明），三者至少要有一個真正生效
+   （retranslate=true，或 fixed_body 非 null，或 file_fixes 非空）
+   - retranslate：**這個函式本體本身的業務邏輯寫錯、或從沒被成功生成
+     過時的預設做法**——設 `true`、`fixed_body` 設 `null`，把這個 task
+     交還給⑤用真實 Java 原始碼重新翻譯，不要自己動手寫 `fixed_body`。
+     你看得到的 `source_files` 只是 Python 端現有的內容，你手上**沒有**
+     這個函式對應的真實 Java 原始碼可以核對——自己憑 `source_files`／
+     `harness_failures` 的症狀反推、寫出來的實作，即使能通過這次測試，
+     也可能悄悄偏離真正的業務邏輯（例如漏掉一個你看不到的排序條件、
+     猜錯一個你看不到的邊界值）；⑤ 那條路徑看得到真正的 Java 原始碼，
+     交給它重新翻譯永遠比你自己憑猜測寫更可靠。`diagnosis` 這時候的
+     角色是「告訴⑤上一輪／目前這個版本錯在哪」，會被當成重新翻譯時的
+     提示一併附上，寫得越具體（哪個條件、哪一行邏輯、對照哪一筆
+     harness_failures），重新翻譯就越可能一次就對
+   - fixed_body：**只在你能百分之百確定、完全不需要核對 Java 原始碼
+     就能判斷對錯的機械性修正才使用**（例如純粹的變數名稱筆誤、明顯
+     的語法錯誤）——這類情況應該很少見，多數函式本體的問題都該用上面
+     的 retranslate，不要因為手上剛好看得到 source_files 就順手自己
+     改寫業務邏輯。真的要用時：這個函式修正後的完整程式碼本體，直接
+     會被拿去取代目前的函式本體，不是給人看的建議文字。格式要求：只寫
+     函式本體的陳述式，**不要**包含 `def ...():` 那一行簽名，也不要
+     縮排（跟目前簽名同一層級，視覺上像函式體整段往左靠齊）；必須是
+     語法完整、可以直接執行的 Python 陳述式，不要省略、不要用「...其餘
+     不變」這類佔位文字帶過。若這個函式的本體完全不需要改（問題只出在
+     檔案層級，見下方 file_fixes；或該用 retranslate 處理），設為 null
    - file_fixes：若根本原因出在函式本體以外的地方（例如檔案開頭的
-     import 敘述、模組層級的常數宣告），fixed_body 這個機制碰不到，改
-     用這個欄位——每一筆是 {target_file, old_snippet, new_snippet}：
-     target_file 是這份修正要套用到的檔案路徑（必須是 source_files 的
-     其中一個 key）；old_snippet 必須是 source_files 裡那個檔案目前
-     內容的**逐字**子字串（連同縮排、換行都要一模一樣），而且必須在整
-     個檔案裡**只出現一次**——這是精確字串取代，不是模糊比對，找不到
-     或出現超過一次都會讓這筆修正直接失敗；new_snippet 是取代後的內容。
-     只圈出真正需要改的最小範圍（例如只圈一行 import 敘述），不要為了
-     「保險」把整個檔案或整個函式都當成 old_snippet——範圍越大，之後這
-     個檔案有其他變動時越容易不再逐字相符而套用失敗。這個函式本身若同時
-     也需要改本體，fixed_body 一樣要填，兩者不衝突——**但如果 file_fixes
-     的 `old_snippet`／`new_snippet` 已經涵蓋這個函式完整的簽名行（含
+     import 敘述、模組層級的常數宣告），retranslate／fixed_body 這兩個
+     機制都碰不到函式本體以外的內容，改用這個欄位——每一筆是
+     {target_file, old_snippet, new_snippet}：target_file 是這份修正要
+     套用到的檔案路徑（必須是 source_files 的其中一個 key）；old_snippet
+     必須是 source_files 裡那個檔案目前內容的**逐字**子字串（連同縮排、
+     換行都要一模一樣），而且必須在整個檔案裡**只出現一次**——這是精確
+     字串取代，不是模糊比對，找不到或出現超過一次都會讓這筆修正直接
+     失敗；new_snippet 是取代後的內容。只圈出真正需要改的最小範圍
+     （例如只圈一行 import 敘述），不要為了「保險」把整個檔案或整個函式
+     都當成 old_snippet——範圍越大，之後這個檔案有其他變動時越容易不再
+     逐字相符而套用失敗。這個函式本身若同時也需要改本體，retranslate／
+     fixed_body 一樣可以填，不衝突——**但如果 file_fixes 的
+     `old_snippet`／`new_snippet` 已經涵蓋這個函式完整的簽名行（含
      `def`/`async def`／裝飾器），也就是這筆 file_fixes 本身已經是整個
-     函式（簽名＋本體）的完整替換，這種情況 fixed_body 必須設為
-     `null`，不要再重複填一份幾乎一樣的內容**：`fixed_body` 只會被拿去
-     取代「這個函式目前的 body」，如果 file_fixes 已經把整個函式（含簽
-     名）換成新的一份，`fixed_body` 這時候等於是在剛換好的新函式外面
-     再包一層，會被當成一段合法但完全不會被呼叫的巢狀函式定義寫進去
-     ——語法合法、語意全壞，且下一輪你自己重新讀到這段巢狀死程式碼時
-     很容易誤判成「還沒修好的舊 bug」再修一次，陷入自己跟自己打架的迴圈
-     （真實案例見 `docs/09b_bug_trace.md #52`）。判斷準則：這次的修正
-     只需要動到簽名本身（例如把 `def` 改成 `async def`、加裝飾器），且
-     函式內部原有的業務邏輯不變，一律只用 file_fixes 做完整替換、
-     fixed_body 設 `null`；只有當函式簽名不動、只有內部陳述式需要修正
-     時，才只填 fixed_body、不需要 file_fixes
+     函式（簽名＋本體）的完整替換，這種情況 retranslate 必須是
+     `false`、`fixed_body` 必須設為 `null`，不要再重複處理一份幾乎一樣
+     的內容**：`retranslate`／`fixed_body` 只會被拿去取代「這個函式目前
+     的 body」，如果 file_fixes 已經把整個函式（含簽名）換成新的一份，
+     這兩個機制其中任一個生效都等於是在剛換好的新函式外面再包一層，會
+     被當成一段合法但完全不會被呼叫的巢狀函式定義寫進去——語法合法、
+     語意全壞，且下一輪你自己重新讀到這段巢狀死程式碼時很容易誤判成
+     「還沒修好的舊 bug」再修一次，陷入自己跟自己打架的迴圈（真實案例
+     見 `docs/09b_bug_trace.md #52`）。判斷準則：這次的修正只需要動到
+     簽名本身（例如把 `def` 改成 `async def`、加裝飾器），且函式內部
+     原有的業務邏輯不變，一律只用 file_fixes 做完整替換、retranslate
+     設 `false`、fixed_body 設 `null`；只有當函式簽名不動、只有內部
+     陳述式需要修正時，才用 retranslate（或極少數情況用 fixed_body）、
+     不需要 file_fixes
    - **根因若確實是檔案層級的問題（缺 import、模組層級常數/enum 沒被
      正確引用等），必須用 file_fixes 精確補上這個缺口，不要為了避開它
-     而在 fixed_body 裡改寫業務邏輯繞道**——例如某個函式引用了一個未
+     而在 retranslate／fixed_body 裡改寫業務邏輯繞道**——例如某個函式引用了一個未
      import 的 enum／常數，正確做法是用 file_fixes 補上那個 import，
      讓函式繼續依原本的方式引用該 enum／常數；不要因此把函式本體改成
      不再依賴那個 enum／常數（例如原本該回傳 ErrorCode.XXX.value 這種
@@ -649,6 +702,7 @@ DEBUG_OUTPUT_SCHEMA: dict = {
                 "properties": {
                     "task_id": {"type": "string"},
                     "diagnosis": {"type": "string"},
+                    "retranslate": {"type": "boolean"},
                     "fixed_body": {"type": ["string", "null"]},
                     "file_fixes": {
                         "type": "array",
@@ -664,7 +718,7 @@ DEBUG_OUTPUT_SCHEMA: dict = {
                         },
                     },
                 },
-                "required": ["task_id", "diagnosis", "fixed_body", "file_fixes"],
+                "required": ["task_id", "diagnosis", "retranslate", "fixed_body", "file_fixes"],
                 "additionalProperties": False,
             },
         },
@@ -677,7 +731,7 @@ DEBUG_OUTPUT_SCHEMA: dict = {
 
 **`file_fixes` 完整替換簽名＋本體時 `fixed_body` 必須為 `null`（10a 八章 phase 2「`fixed_body` 與 `file_fixes` 同時作用...」）**：這段新增文字對應缺陷總表 #52——2026-08-28 真實環境重跑撞到 ⑦ 對 `task_066` 同時給了完整替換函式的 `file_fixes` 與違反格式契約（夾帶裝飾器／簽名行）的 `fixed_body`，`translator_cli.client.py::fill_function()` 的 AST body-splice 把後者當成陳述式插進前者剛換好的新函式裡，寫出巢狀死程式碼，且後續輪次 ⑦ 反覆誤判成舊 bug 重修，耗光整輪 retry 預算。單元測試見 `tests/debug_agent/test_prompts.py::TestFileFixesFullReplacementForbidsRedundantFixedBody`。下游同時在 `translator_cli/python_adapter.py::extract_body_statements()` 加固了一道對應防線（見 07b 六章），不只靠 prompt 這一層。
 
-**`known_fill_failures` 一律要求輸出（10a 四章「一旦失敗過一次，不再退回本地模型」）**：`DEBUG_SYSTEM_PROMPT` 第 0 點是這次修正新增的——2026-08-27 真實環境重跑發現，`analysis.py`／`triage.py` 早就把 `known_fill_failures` 連同 `tasks`（含 `description`）一起送進同一次呼叫，`_validate_task_fixes()` 的合法 task_id 集合也早就涵蓋這些 task，底層機制完全撐得住，缺的只有這段強制性的 prompt 指示——`known_fill_failures` 原本只被當成背景參考資料，沒有明講「這些 task 一定要輸出 `task_fixes`，且要當成從零生成、不是修既有 bug」，這裡不需要任何 `triage.py`／`graph/state.py` 的結構性異動。單元測試見 `tests/debug_agent/test_prompts.py::TestKnownFillFailuresMandatoryRewrite`。
+**`known_fill_failures` 一律要求輸出（10a 四章「一旦失敗過一次，改由⑤帶著⑦的診斷重新翻譯」）**：`DEBUG_SYSTEM_PROMPT` 第 0 點是 2026-08-27 真實環境重跑逼出的修正——`analysis.py`／`triage.py` 早就把 `known_fill_failures` 連同 `tasks`（含 `description`）一起送進同一次呼叫，`_validate_task_fixes()` 的合法 task_id 集合也早就涵蓋這些 task，底層機制完全撐得住，缺的只有這段強制性的 prompt 指示。**2026-09-05 再次修正（`docs/refactor_bug_trace.md` #9）**：最初的版本要求 ⑦ 對這些 task「從零生成」`fixed_body`，後來查證發現 ⑦ 手上根本沒有真實 Java 原始碼、只有 `06a_plan_agent_architecture.md` 自己判定「對模型沒有任何有效信號」的 `description` 欄位可用——改成新增的 `retranslate` 欄位，`fixed_body=null`，交還給⑤帶著 ⑦ 的 `diagnosis` 重新翻譯（見五章 `pending_retranslate_tasks`）。單元測試見 `tests/debug_agent/test_prompts.py::TestKnownFillFailuresMandatoryRetranslate`／`TestRetranslatePreferredOverFixedBody`。
 
 ### `debug_agent/triage.py`
 
@@ -871,7 +925,11 @@ _MAX_MAP_WORKERS = default_concurrency()
 # 比照 design_agent/plan_agent 既有的批次重試慣例（同一顆常數
 # _RETRY_WAIT_SECONDS=300.0）：SDK 層級的 max_retries（見
 # common/llm_client.py）已經處理過短暫的傳輸層錯誤，這裡的等待是給
-# 「比 SDK 重試窗口更久」的暫時性外部服務中斷一個恢復機會。
+# 「比 SDK 重試窗口更久」的暫時性外部服務中斷一個恢復機會。跟
+# design_agent/plan_agent 不同的地方只在於重試後仍失敗時的處理方式：
+# 那兩個 Agent 會中止整條 run，這裡改成把該 module 視為「未分析」
+# （見 10a 4.4、七章「give_up_early 的判斷邊界」），不阻斷其餘 module
+# 的分析結果，也不讓整個 debug 節點失敗。
 _RETRY_WAIT_SECONDS = 300.0
 
 # 固定文字，比照 09a 五章 _RELATIONSHIP_GAP_NOTICE 的既有慣例：機械可
@@ -880,9 +938,10 @@ _SCAFFOLD_GAP_REASON = "④ 骨架階段未渲染此模組任何函式（100% �
 _MODULE_MISMATCH_REASON = "route_to_module_mapping／task_list 找不到這個 module 對應的 task，需人工核對③/[P]輸出或 skip 呼叫鏈設定，見 02a 十六章"
 
 # 保留模組名稱，跟 design_agent/design.py、parse_agent/summarize.py、
-# plan_agent/module_index.py 各自獨立定義的同名常數是同一個字面值——
-# 這幾個套件之間沒有共用常數的既有慣例，這裡沿用同一種「各自定義一份」
-# 的作法，不新開先例。
+# plan_agent/module_index.py 各自獨立定義的同名常數是同一個字面值（見
+# 10a 四章「_global 的檔案永遠不會被任何模組的 referenced_interfaces
+# 引用」）——這幾個套件之間沒有共用常數的既有慣例，這裡沿用同一種
+# 「各自定義一份」的作法，不新開先例。
 _GLOBAL_MODULE_NAME = "_global"
 
 
@@ -920,8 +979,8 @@ def _is_global_infra_file(
     endpoint」這一類檔案（如 app/services/common_service.py）——這種
     module 永遠不會出現在 test_results.failures，3.2 的模組篩選機制
     永遠選不中它，只能靠這裡被其他 module 的 referenced_interfaces 帶進
-    context。zero_endpoint_modules（triage.compute_zero_endpoint_modules()
-    算出）、file_to_module（{target_files[0]: module}，見呼叫端）都是
+    context。`zero_endpoint_modules`（`triage.compute_zero_endpoint_modules()`
+    算出）、`file_to_module`（`{target_files[0]: module}`，見呼叫端）都是
     可選參數、預設值等同舊行為（只看目錄名）——這是刻意的向後相容設計，
     既有測試以單一參數呼叫這個函式，不該被這次擴充打破。
 
@@ -947,15 +1006,23 @@ def _analyze_root_cause_module(
     zero_endpoint_modules: frozenset[str],
     file_to_module: dict[str, str],
     global_module_source_files: dict[str, str],
+    run_id: str,
 ) -> dict:
     """單一 module 的 Claude API 呼叫，回傳 output schema 的原始解析結果。
     呼叫失敗時往上拋 LlmJsonError，由呼叫端的重試佇列機制接手（見
     run_debug_analysis()）。
 
+    `run_id`：對應真實 pipeline 這一輪的 run_id，必填、往下傳給
+    `call_claude_for_json()`——原本沒有傳這個參數，`call_claude_for_json()`
+    省略時會各自呼叫 `adhoc_run_id()`，導致每一次⑦的分析呼叫都散落在
+    自己獨立的 `adhoc_*` run_id 底下，用 `llmlog recent --run <真正的
+    run_id>` 完全查不到任何⑦的呼叫紀錄，只能改用時間窗＋caller 名稱
+    去撈，違背 11a「查某個 run 到底做了什麼」的查詢設計初衷。
+
     service_diagnostics：10a 四章「service_diagnostics 要傳給所有
-    root_cause module」——這一輪 state["service_diagnostics"] 的值，不限於
-    special_reason=="batch_reload_timeout" 的 module 才傳，這一輪所有
-    root_cause module 統一傳入（正常情境下是 None，見呼叫端）。
+    root_cause module」——這一輪所有 root_cause module 統一傳入，不限於
+    special_reason=="batch_reload_timeout" 的 module 才傳（正常情境下是
+    None，見呼叫端）。
 
     zero_endpoint_modules／file_to_module：docs/09b_bug_trace.md #49 修法，
     傳給下面 _is_global_infra_file() 判斷 target_files[1:] 時使用。
@@ -1024,7 +1091,9 @@ def _analyze_root_cause_module(
 
     source_files = _read_source_files(python_project_path, related_files)
     # `_global` 保留模組無條件併入，不經過上面任何過濾規則——見本函式
-    # 開頭 docstring、docs/09b_bug_trace.md #49。
+    # 開頭 docstring、docs/09b_bug_trace.md #49。source_files 的 key 已經
+    # 用 related_files（真正的 target_files 路徑）算過一輪，這裡直接用
+    # dict 聯集，被跳過重複讀取也不會產生副作用。
     source_files = {**global_module_source_files, **source_files}
 
     known_fill_failures = [
@@ -1056,6 +1125,7 @@ def _analyze_root_cause_module(
         schema=DEBUG_OUTPUT_SCHEMA,
         model=DEFAULT_MODEL,
         max_tokens=DEBUG_AGENT_MAX_TOKENS,
+        run_id=run_id,
     )
 
 
@@ -1092,17 +1162,26 @@ def _build_user_prompt(
         "service_diagnostics": service_diagnostics,
     }
     # harness_failures 裡的 body_diff（DeepDiff 格式）可能含 Python type
-    # 物件（如 {'old_type': <class 'int'>}）——真實環境測試時實際發生過
-    # 的內容形狀，沒有 default=str 兜底會直接 TypeError，跟
+    # 物件（如 {'old_type': <class 'int'>}），json.dumps 沒有 default=str
+    # 兜底會直接 TypeError——這是真實環境重跑時實際發生過的內容形狀，跟
     # refactor_harness/langgraph_nodes/test_nodes.py::run_postman_tests()
-    # 寫 logs/report_{run_id}.json 時遇到的同一個坑（見 10a 四章）。
+    # 寫 logs/report_{run_id}.json 時遇到的同一個坑。
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _validate_task_fixes(raw_task_fixes: list[dict], valid_task_ids: set[str]) -> list[TaskFix]:
     """10a 4.3：task_id 反查驗證，捨棄不在合法集合內的 task_fix 並記警告，
-    不中止整個 module 的分析。也捨棄 fixed_body／file_fixes 兩者都空的
-    task_fix（phase 2）——這種輸出沒有任何實際修正內容。
+    不中止整個 module 的分析。10a 八章「phase 2」：也捨棄
+    retranslate／fixed_body／file_fixes 三者都沒有真正生效的 task_fix
+    ——這種輸出沒有任何實際修正內容，留著只會在 pending_fixed_bodies／
+    pending_retranslate_tasks／pending_file_fixes 裡製造一筆什麼都不做
+    的空紀錄。
+
+    對應 `docs/refactor_bug_trace.md` #9：`retranslate=True` 時強制把
+    `fixed_body` 視為 `None`（即使 LLM 違反 prompt 指示、兩者都給了值）
+    ——`retranslate` 優先，理由見 `debug_agent/prompts.py`：⑦ 沒有真實
+    Java 原始碼可以核對，這種情況下自己寫的 `fixed_body` 可靠度低於
+    交給⑤重新翻譯，不能讓一次沒遵守指示的回應繞過這個保護。
     """
     validated: list[TaskFix] = []
     for tf in raw_task_fixes:
@@ -1111,9 +1190,19 @@ def _validate_task_fixes(raw_task_fixes: list[dict], valid_task_ids: set[str]) -
                 "Debug Agent 回應引用了不存在或不合法的 task_id=%s，捨棄該筆 task_fix", tf["task_id"]
             )
             continue
-        if not tf["fixed_body"] and not tf["file_fixes"]:
+        retranslate = bool(tf.get("retranslate", False))
+        fixed_body = tf["fixed_body"]
+        if retranslate and fixed_body is not None:
             logger.warning(
-                "Debug Agent 對 task_id=%s 的回應 fixed_body／file_fixes 兩者皆空，捨棄該筆 task_fix",
+                "task_id=%s：Debug Agent 同時給了 retranslate=true 與非 null 的 fixed_body（違反 "
+                "prompt 指示），優先採用 retranslate、捨棄這次的 fixed_body 內容",
+                tf["task_id"],
+            )
+            fixed_body = None
+        if not retranslate and not fixed_body and not tf["file_fixes"]:
+            logger.warning(
+                "Debug Agent 對 task_id=%s 的回應 retranslate／fixed_body／file_fixes 三者皆空，"
+                "捨棄該筆 task_fix",
                 tf["task_id"],
             )
             continue
@@ -1125,8 +1214,8 @@ def _validate_task_fixes(raw_task_fixes: list[dict], valid_task_ids: set[str]) -
             for ff in tf["file_fixes"]
         ]
         validated.append(TaskFix(
-            task_id=tf["task_id"], diagnosis=tf["diagnosis"],
-            fixed_body=tf["fixed_body"], file_fixes=file_fixes,
+            task_id=tf["task_id"], diagnosis=tf["diagnosis"], retranslate=retranslate,
+            fixed_body=fixed_body, file_fixes=file_fixes,
         ))
     return validated
 
@@ -1140,6 +1229,7 @@ def _run_batch(
     zero_endpoint_modules: frozenset[str],
     file_to_module: dict[str, str],
     global_module_source_files: dict[str, str],
+    run_id: str,
 ) -> tuple[dict[str, dict], list[ModuleFailureContext]]:
     """平行分析一批 root_cause module，回傳
     (module -> 原始回應, 失敗待重試的 ModuleFailureContext 清單)。每個
@@ -1159,6 +1249,7 @@ def _run_batch(
                 zero_endpoint_modules,
                 file_to_module,
                 global_module_source_files,
+                run_id,
             ): ctx
             for ctx in contexts
         }
@@ -1181,24 +1272,20 @@ def _run_root_cause_analysis(
     zero_endpoint_modules: frozenset[str],
     file_to_module: dict[str, str],
     global_module_source_files: dict[str, str],
+    run_id: str,
 ) -> dict[str, dict | None]:
-    """對 root_cause_ctxs 逐一呼叫 Claude，失敗的批次重試一次——**比照
-    design_agent／plan_agent 既有的批次重試慣例**（同一顆常數
-    `_RETRY_WAIT_SECONDS=300.0`）：SDK 層級的 `max_retries`（見
-    `common/llm_client.py`）已經處理過短暫的傳輸層錯誤，這裡的等待是給
-    「比 SDK 重試窗口更久」的暫時性外部服務中斷一個恢復機會。跟
-    design_agent／plan_agent 不同的地方只在於重試後仍失敗時的處理方式：
-    那兩個 Agent 會中止整條 run，這裡改成把該 module 視為「未分析」
-    （見 10a 4.4、七章「give_up_early 的判斷邊界」）——回傳的 dict 用
-    None 標記，由 run_debug_analysis() 的 give_up_early 判斷正確排除，
-    不當作「LLM 判斷不可修」的證據，也不阻斷其餘 module 的分析結果。
+    """對 root_cause_ctxs 逐一呼叫 Claude，失敗的批次重試一次；比照
+    design_agent/plan_agent 既有的批次重試慣例，但重試仍失敗時**不中止
+    整個 debug 節點**——這裡回傳的 dict 用 None 標記「視為未分析」（見
+    10a 4.4），由 run_debug_analysis() 的 give_up_early 判斷正確排除，
+    不當作「LLM 判斷不可修」的證據。
     """
     if not root_cause_ctxs:
         return {}
 
     results, failed = _run_batch(
         root_cause_ctxs, module_summaries, task_list, python_project_path, service_diagnostics,
-        zero_endpoint_modules, file_to_module, global_module_source_files,
+        zero_endpoint_modules, file_to_module, global_module_source_files, run_id,
     )
     if not failed:
         return results
@@ -1211,7 +1298,7 @@ def _run_root_cause_analysis(
 
     retry_results, still_failed = _run_batch(
         failed, module_summaries, task_list, python_project_path, service_diagnostics,
-        zero_endpoint_modules, file_to_module, global_module_source_files,
+        zero_endpoint_modules, file_to_module, global_module_source_files, run_id,
     )
     results.update(retry_results)
     for ctx in still_failed:
@@ -1259,14 +1346,14 @@ def run_debug_analysis(state: RefactorState) -> dict:
     # docs/09b_bug_trace.md #49 修法（10a 四章）：算出「沒有任何 HTTP
     # endpoint」的模組全集，供 _is_global_infra_file() 判斷 target_files
     # [1:] 時使用；順便無條件讀出 `_global` 保留模組的原始碼（它從未被
-    # 任何模組的 referenced_interfaces 引用），等一下塞給每一個
-    # root_cause module，比照 service_diagnostics「給所有 root_cause
-    # module」的既有模式。全部條件在 root_cause_ctxs 非空時才算——沒有
-    # 任何 module 要分析時，連 RouteMapper() 這個檔案讀取
-    # （route_to_module_mapping 是③寫進 config/harness.yaml、唯一的
-    # 權威來源，不在 RefactorState 裡，見 02a 十三章 RouteMapper）都省
-    # 下來，理由同 give_up_early 案例二的既有短路精神：這一輪根本不會
-    # 呼叫 LLM，不需要為了呼叫準備任何 context。
+    # 任何模組的 referenced_interfaces 引用，見 _is_global_infra_file()
+    # docstring），等一下塞給每一個 root_cause module，比照
+    # service_diagnostics「給所有 root_cause module」的既有模式。全部
+    # 條件在 root_cause_ctxs 非空時才算——沒有任何 module 要分析時，連
+    # RouteMapper() 這個檔案讀取（route_to_module_mapping 是③寫進
+    # config/harness.yaml、唯一的權威來源，不在 RefactorState 裡，見
+    # 02a 十三章 RouteMapper）都省下來，理由同 give_up_early 案例二的
+    # 既有短路精神：這一輪根本不會呼叫 LLM，不需要為了呼叫準備任何 context。
     if root_cause_ctxs:
         zero_endpoint_modules = frozenset(
             compute_zero_endpoint_modules(state.get("module_list", []), RouteMapper().module_mapping)
@@ -1287,17 +1374,18 @@ def run_debug_analysis(state: RefactorState) -> dict:
 
     analyzed_results = _run_root_cause_analysis(
         root_cause_ctxs, module_summaries, task_list, python_project_path, service_diagnostics,
-        zero_endpoint_modules, file_to_module, global_module_source_files,
+        zero_endpoint_modules, file_to_module, global_module_source_files, state["run_id"],
     )
 
     # ⚠️ this_round_rounds 只裝這一次呼叫產生的 DebugRound，絕對不能跟
     # state.get("debug_rounds", [])（掛 operator.add reducer、逐輪累積
-    # 的歷史欄位，見二章）混用或誤讀——下面 give_up_early 的判斷必須只
-    # 看這一輪，見 10a 七章「為什麼一定要是這一輪、不能是累積歷史」的
-    # 完整說明：歷史紀錄裡可能混著更早輪次「fixable=True」的舊記錄，用
-    # 累積歷史判斷會讓 give_up_early 被過期資料卡死、永遠回傳 False。
+    # 的歷史欄位）混用或誤讀——give_up_early 的判斷必須只看這一輪，見
+    # 10a 七章「為什麼一定要是這一輪、不能是累積歷史」：歷史紀錄裡可能
+    # 混著更早輪次「fixable=True」的舊記錄，用累積歷史判斷會讓
+    # give_up_early 被過期資料卡死、永遠回傳 False。
     this_round_rounds: list[DebugRound] = []
     pending_fixed_bodies: dict[str, str] = {}
+    pending_retranslate_tasks: dict[str, str] = {}
     pending_file_fixes: list[FileFix] = []
 
     for ctx in contexts:
@@ -1343,9 +1431,7 @@ def run_debug_analysis(state: RefactorState) -> dict:
         # 驗證過的 task_fixes 推導——見 10a 4.2「這個順序不能反過來」。
         # fixable 直接定義成 bool(task_fixes)，不是讀 raw["fixable"] 再
         # 視情況覆寫：這樣寫從結構上就不可能出現「fixable=True 但
-        # task_fixes=[]」這種非法狀態（唯一一筆 task_fix 若因為幻覺
-        # task_id 被下面這行剔除，task_fixes 變空，fixable 自然也是
-        # False，不需要額外一步「校正」）。
+        # task_fixes=[]」這種非法狀態。
         valid_task_ids = {t["id"] for t in module_tasks(task_list, module)} - ctx["scaffold_gap_task_ids"]
         task_fixes = _validate_task_fixes(raw["task_fixes"], valid_task_ids)
 
@@ -1362,7 +1448,9 @@ def run_debug_analysis(state: RefactorState) -> dict:
             task_fixes=task_fixes, unfixable_reasons=unfixable_reasons,
         ))
         for tf in task_fixes:
-            if tf["fixed_body"] is not None:
+            if tf.get("retranslate"):
+                pending_retranslate_tasks[tf["task_id"]] = tf["diagnosis"]
+            elif tf["fixed_body"] is not None:
                 pending_fixed_bodies[tf["task_id"]] = tf["fixed_body"]
             pending_file_fixes.extend(tf["file_fixes"])
 
@@ -1381,18 +1469,6 @@ def run_debug_analysis(state: RefactorState) -> dict:
         # （見上方 `if raw is None: continue`），若判斷式只從
         # this_round_rounds 反推，這種 module 會直接從集合裡消失，讓
         # all_analyzed 這一關形同虛設。
-        #
-        # 這裡也刻意只看 this_round_rounds（這一輪剛建構出來的清單），
-        # 不是 state.get("debug_rounds", [])（累積歷史，見上方
-        # this_round_rounds 宣告處的警告註解）——用歷史判斷會讓某個
-        # module 若曾在更早輪次被判定 fixable=True，之後永遠卡死
-        # give_up_early 判斷成 False，見 10a 七章完整說明。
-        #
-        # 這裡刻意不用「this_round_rounds 裡 origin=="root_cause" 的
-        # 筆數」跟 len(root_cause_ctxs) 比較筆數是否相等這種寫法——用
-        # all() 逐一比對 analyzed_results 更直接表達「一個都不能少」的
-        # 意圖，避免未來有人加了别的原因导致 this_round_rounds 缺筆時
-        # （例如 4.3 驗證失敗但仍應計入已分析）被筆數比對誤傷。
         all_analyzed = all(analyzed_results.get(ctx["module"]) is not None for ctx in root_cause_ctxs)
         root_cause_rounds = [r for r in this_round_rounds if r["origin"] == "root_cause"]
         give_up_early = all_analyzed and all(not r["fixable"] for r in root_cause_rounds)
@@ -1410,6 +1486,7 @@ def run_debug_analysis(state: RefactorState) -> dict:
         "retry_count": new_retry_count,
         "debug_rounds": this_round_rounds,  # reducer（operator.add）在這裡才把這一輪併進歷史
         "pending_fixed_bodies": pending_fixed_bodies,
+        "pending_retranslate_tasks": pending_retranslate_tasks,
         "pending_file_fixes": pending_file_fixes,
         "give_up_early": give_up_early,
         "unanalyzed_root_cause_modules": unanalyzed_root_cause_modules,
@@ -1565,6 +1642,39 @@ async def _run_one_task(
 ```
 
 `pending_fixed_bodies`（`state.get("pending_fixed_bodies", {})`）已經在 `force_reschedule()` 呼叫段（下方）算過一次，`run()` 全程重複使用同一份，不需要在 while 迴圈內重讀——`pending_fixed_bodies` 在整個 `run()` 執行期間不會變（⑦ 只在 `debug` node 寫入，`implement` 執行期間是同一份快照）。
+
+**以上是本章最初的版本，`_run_one_task()` 之後又新增了 `java_source`／`referenced_source` 真實原始碼解析（見 09b 對應章節）——下面這段是 2026-09-05 在那之後、對應 `docs/refactor_bug_trace.md` #9 的追加修正，只描述這次新增的部分，不是重寫整個函式。**
+
+### `_run_one_task()`：新增 `pending_retranslate_tasks` 參數（2026-09-05，對應 #9）
+
+**⑦ 沒有真實 Java 原始碼可以核對，函式本體邏輯有問題時不該自己編寫 `fixed_body`**——完整理由見 10a 八章「`pending_retranslate_tasks`」。這裡跟 `pending_fixed_bodies` 的行為刻意相反：命中時**不**跳過模型呼叫，正常解析 `java_source`／`referenced_source`、真的呼叫 `fill_function()`，只是把 ⑦ 的 `diagnosis` 疊加進 `context`：
+
+```python
+def _RETRANSLATE_HINT(diagnosis: str) -> str:
+    return (
+        "⑦ Debug Agent 診斷這個函式先前的版本（或從沒成功生成過）有以下問題，"
+        f"這次翻譯請務必依照下方 java_source 的真實邏輯正確實作，避免重蹈同樣的問題：{diagnosis}"
+    )
+
+
+async def _run_one_task(
+    task: TaskSpec, python_project_path: str, java_project_path: str, run_id: str,
+    pending_fixed_bodies: dict[str, str],
+    pending_retranslate_tasks: dict[str, str] | None = None,
+) -> FillResult:
+    fixed_body = pending_fixed_bodies.get(task["id"])
+    context, context_files = _augment_task_io(task)
+    retranslate_diagnosis = (pending_retranslate_tasks or {}).get(task["id"])
+    if retranslate_diagnosis:
+        hint = _RETRANSLATE_HINT(retranslate_diagnosis)
+        context = f"{context}\n\n{hint}" if context else hint
+    ...  # 其餘不變：fixed_body 為 None 時照常解析 java_source／referenced_source，
+        # 呼叫 fill_function(..., fixed_body=fixed_body)——這個 task 不論是
+        # 「⑦ 從未出手」還是「⑦ 標記 retranslate」，都走同一條真實模型呼叫路徑，
+        # 差異只在 context 有沒有被疊加 ⑦ 的診斷提示。
+```
+
+`run()` 內的呼叫點、`force_reschedule()` 呼叫段都同步多讀一份 `pending_retranslate_tasks`（`state.get("pending_retranslate_tasks", {})`），`tasks_to_reopen_by_module` 改成對 `{*pending_fixed_bodies, *pending_retranslate_tasks}` 取聯集——兩份清單一視同仁地觸發 `force_reschedule()`，只有 `_run_one_task()` 內部「要不要跳過模型呼叫」這一步是分岔點。單元測試見 `tests/graph/test_implement_node.py::TestRunOneTaskRetranslate`、`TestForceRescheduleCallSite::test_pending_retranslate_tasks_also_reschedules_verified_module`。
 
 ### 新增檔案：`python_service/manager.py`——`_python_service` 單例從 `implement_node.py` 下沉到這裡
 
@@ -1956,6 +2066,7 @@ async def apply_file_fix(
         "test_results": {},
         "debug_rounds": [],
         "pending_fixed_bodies": {},
+        "pending_retranslate_tasks": {},  # 2026-09-05 新增，對應 docs/refactor_bug_trace.md #9
         "pending_file_fixes": [],
         "give_up_early": False,
         "retry_count": 0,
@@ -1999,6 +2110,7 @@ from __future__ import annotations
 import json
 import os
 
+from common.llm_trace import list_recent
 from graph.state import RefactorState
 
 REPORTS_ROOT = os.path.join("logs", "reports")
@@ -2048,10 +2160,18 @@ def _compute_summary(state: RefactorState) -> dict:
     「修好了沒」用 module 粒度判斷，不是 task 粒度：`debug_rounds` 的
     `origin`／`fixable` 本來就是逐 module 判斷（見
     docs/10a_debug_agent_architecture.md 三章），沒有一個可靠的訊號能
-    回答「這個 task 的修正有沒有讓對應的測試案例通過」（related_files
-    → task_id 本來就是反查，不是精確對應，見 10a 五章）——曾被 ⑦ 標記
-    為 root_cause、但最後不在 failed_modules／blocked_modules 裡的
-    module，才是有把握說「修好了」的判斷。
+    回答「這個 task 的 fix_instruction 有沒有讓對應的測試案例通過」
+    （related_files → task_id 本來就是反查，不是精確對應，見 10a 五
+    章）——曾被 ⑦ 標記為 root_cause、且最後真的落在 `verified_modules`
+    裡的 module，才是有把握說「修好了」的判斷。
+
+    **用正面訊號（`verified_modules`），不是「不在 failed_modules／
+    blocked_modules 裡」這種負面推論**（對應 docs/refactor_bug_trace.md
+    #13 真實案例）：module 卡在 `"in_progress"` 永遠到不了終態時（如
+    #12 死結修正前，部分 task 成功、但 router 從沒被排到），既不會落在
+    `failed_modules`（沒觸發過失敗判定）、也不會落在 `blocked_modules`
+    （不是從沒動過的 `"pending"`）——用「兩個負面集合都沒抓到＝修好了」
+    會把這種「其實還卡著、只是卡法比較隱蔽」的情況誤判成已解決。
     """
     task_list = state.get("task_list", [])
     completed_tasks = set(state.get("completed_tasks", []))
@@ -2066,28 +2186,37 @@ def _compute_summary(state: RefactorState) -> dict:
     fix_attempts = [tf for r in debug_rounds for tf in r["task_fixes"]]
     modules_ever_flagged = sorted({r["module"] for r in debug_rounds if r["origin"] == "root_cause"})
 
-    still_broken = set(state.get("failed_modules", [])) | set(state.get("blocked_modules", []))
-    modules_fixed = sorted(set(modules_ever_flagged) - still_broken)
-    modules_still_broken = sorted(set(modules_ever_flagged) & still_broken)
+    verified = set(state.get("verified_modules", []))
+    modules_fixed = sorted(set(modules_ever_flagged) & verified)
+    modules_still_broken = sorted(set(modules_ever_flagged) - verified)
+
+    # 對應 docs/refactor_bug_trace.md #33：「曾經翻譯失敗（含後來補救成功
+    # 的）」這行原本只算 State 的 task_failures，但本地模型（qwen）呼叫
+    # 失敗、退回 Claude 才成功的情況完全不會進 task_failures（task 整體
+    # 是成功的，只有第一次嘗試失敗），這個訊號目前只活在 llm_traces.db
+    # 裡，沒有真實案例（`e867f4` 這輪 13 個函式）就沒人會發現——不用另外
+    # 起一份新 log，llm_traces.db 本來就記錄了每次呼叫的 vendor／status，
+    # 這裡直接查出來、讓它在報告裡看得到，不需要每次都靠 `llmlog` 手動
+    # 排查才能注意到。
+    local_model_call_failures = sorted({
+        t.task_id for t in list_recent(status="error", run_id=state["run_id"])
+        if t.vendor == "ollama" and t.task_id
+    })
 
     return {
         "total_tasks": len(task_list),
         "translated_successfully": len(completed_tasks),
         "tasks_with_translation_issues": tasks_with_translation_issues,
         "permanently_unfillable_tasks": permanently_unfillable_tasks,
+        "local_model_call_failures": local_model_call_failures,
         "fix_attempts_issued": len(fix_attempts),
         "modules_ever_flagged": modules_ever_flagged,
         "modules_fixed": modules_fixed,
         "modules_still_broken": modules_still_broken,
         "test_summary": state.get("test_results", {}).get("summary") or {},
     }
-```
 
-**「修好了」的判斷式 `modules_ever_flagged - still_broken`，不是直接讀 `debug_rounds` 最後一筆的 `fixable`**：`fixable=True` 只代表「⑦ 這一輪認為給得出修法」，不代表套用後真的通過驗證——真正確認「修好了」的權威訊號是 `failed_modules`／`blocked_modules`（⑥ 全量驗證的結果，10a 三章），一個 module 曾經被標記 `root_cause`、但最終不在這兩個集合裡，才代表它是真的被修好、不是自稱修好。
 
-### `_render_human_readable_report()`／`write_human_readable_report()`：人類可讀版本
-
-```python
 _OUTCOME_LABELS = {
     "done": "成功完成",
     "give_up_scaffold_failed": "放棄（④ 骨架生成失敗）",
@@ -2116,6 +2245,14 @@ def _render_human_readable_report(state: RefactorState, summary: dict) -> str:
         )
     else:
         lines.append("- 永久無法生成（骨架缺口）：0")
+
+    if summary["local_model_call_failures"]:
+        lines.append(
+            f"- 本地模型（qwen）呼叫失敗、退回 Claude 才成功：{len(summary['local_model_call_failures'])} 個"
+            f" → {', '.join(summary['local_model_call_failures'])}（見 docs/refactor_bug_trace.md #33）"
+        )
+    else:
+        lines.append("- 本地模型（qwen）呼叫失敗、退回 Claude 才成功：0")
 
     ts = summary["test_summary"]
     lines += ["", "## API 測試總覽（最後一輪）"]

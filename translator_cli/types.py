@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 @dataclass
@@ -70,11 +70,29 @@ class InterfaceSpec(TypedDict):
     # 僅 routers 層 API 邊界方法非 None，見 graph/state.py 同名欄位註解。
     http_method: NotRequired[str | None]
     route_path: NotRequired[str | None]
+    # 僅 repositories 層、繼承 Spring Data 基底介面的類別非 None，見
+    # graph/state.py 同名欄位註解、docs/refactor_bug_trace.md #10／#16。
+    jpa_base_entity: NotRequired[str | None]
 
 
 class PythonStructure(TypedDict):
     directory_tree: str
     interfaces: list[InterfaceSpec]
+
+
+class ReferencedSourceItem(TypedDict):
+    """對應 07a 五章「為什麼是 `java_source`／`referenced_source`」：
+    06a 六章 `reference_targets` 座標，經呼叫端（09a／`implement_node.py`）
+    解析出的真實原始碼文字。`language="java"` 時 `source` 是 `.java`
+    原始碼片段；`language="python"` 時是已翻譯完成的 `.py` 函式原始碼。
+    結構對齊 `graph/state.py::ReferenceTarget`，多帶一個 `source` 欄位。
+    """
+
+    file_path: str
+    class_name: str | None
+    function_name: str
+    language: Literal["java", "python"]
+    source: str
 
 
 class ScaffoldResult(TypedDict):

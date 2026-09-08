@@ -16,6 +16,7 @@ def run_design_agent(
     api_to_python_target: list[ApiMapping],
     openapi_spec: dict,
     java_project_path: str,
+    skip_excluded_overloads: list[tuple[str, str, str]],
     harness_config_path: str = "config/harness.yaml",
 ) -> tuple[PythonStructure, dict]:
     """對應 05a 全文：設計 Python 專案結構，輸出
@@ -26,11 +27,20 @@ def run_design_agent(
     mappings()`），這不是可選的附加行為，是 05a 九章、00 八章明訂的③
     職責本身。`route_to_module_mapping` 不進回傳值、也不進 State（05a
     八章已定案，只寫 yaml）。
+
+    `skip_excluded_overloads`：`RefactorState` 同名欄位，① `parse_agent.
+    skip_filter.compute_skip_excluded_overloads()` 算出的 HTTP method
+    精確排除清單——使用者填 skip，是人工判斷「這個 endpoint 整段不進
+    翻譯流程」，不只是跳過自動化測試，見
+    `docs/03a_spec_collection_agent_architecture.md`「Decision.SKIP 的
+    語意」。
     """
-    interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars = (
-        design.design_all_modules(module_list, api_to_python_target, openapi_spec, java_project_path)
+    interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars, java_index = (
+        design.design_all_modules(
+            module_list, api_to_python_target, openapi_spec, java_project_path, skip_excluded_overloads,
+        )
     )
-    python_structure = PythonStructure(directory_tree=directory_tree, interfaces=interfaces)
+    python_structure = PythonStructure(directory_tree=directory_tree, interfaces=interfaces, java_index=java_index)
     if config_field_mappings:
         python_structure["config_field_mappings"] = config_field_mappings
     if config_env_vars:

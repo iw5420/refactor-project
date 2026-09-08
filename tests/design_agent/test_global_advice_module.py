@@ -64,8 +64,9 @@ def _write_global_handler(tmp_path):
 
 def test_exception_handler_targets_extracts_single_class_literal(tmp_path):
     java_files = _write_global_handler(tmp_path)
-    targets = design._exception_handler_targets(java_files, str(tmp_path))
+    targets, class_file_paths = design._exception_handler_targets(java_files, str(tmp_path))
     assert targets == {"handleBaseException": "BaseException", "handleAll": "Exception"}
+    assert class_file_paths == {"GlobalExceptionHandler": "GlobalExceptionHandler.java"}
 
 
 def test_exception_handler_targets_ignores_non_exception_handler_methods(tmp_path):
@@ -81,8 +82,9 @@ def test_exception_handler_targets_ignores_non_exception_handler_methods(tmp_pat
         """,
         encoding="utf-8",
     )
-    targets = design._exception_handler_targets(["Advice.java"], str(tmp_path))
+    targets, class_file_paths = design._exception_handler_targets(["Advice.java"], str(tmp_path))
     assert targets == {}
+    assert class_file_paths == {"Advice": "Advice.java"}
 
 
 # --------------------------------------------------------------------------
@@ -98,6 +100,7 @@ def test_design_module_only_covers_catch_all_exception_handler(tmp_path, caplog)
         result = _design_module(
             module=module, boundary_index={}, openapi_spec={"paths": {}},
             java_project_path=str(tmp_path), interfaces_by_module={},
+            skip_excluded_overloads=[],
         )
 
     assert result.module == "_global"
@@ -142,6 +145,7 @@ def test_design_module_no_interfaces_when_nothing_is_catch_all(tmp_path):
     result = _design_module(
         module=module, boundary_index={}, openapi_spec={"paths": {}},
         java_project_path=str(tmp_path), interfaces_by_module={},
+        skip_excluded_overloads=[],
     )
     assert result.interfaces == []
 
@@ -225,9 +229,11 @@ def test_design_all_modules_end_to_end_with_only_global_module(tmp_path):
     java_files = _write_global_handler(tmp_path)
     module_list = [_global_module(java_files)]
 
-    interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars = design_all_modules(
-        module_list=module_list, api_to_python_target=[], openapi_spec={"paths": {}},
-        java_project_path=str(tmp_path),
+    interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars, java_index = (
+        design_all_modules(
+            module_list=module_list, api_to_python_target=[], openapi_spec={"paths": {}},
+            java_project_path=str(tmp_path), skip_excluded_overloads=[],
+        )
     )
 
     assert len(interfaces) == 1
@@ -235,5 +241,12 @@ def test_design_all_modules_end_to_end_with_only_global_module(tmp_path):
     assert modules_with_schema_file == set()
     assert config_field_mappings == {}
     assert config_env_vars == []
+    assert interfaces[0]["java_method_id"] == "GlobalExceptionHandler.java::GlobalExceptionHandler::handleAll"
+    assert java_index[interfaces[0]["java_method_id"]] == {
+        "file_path": "app/core/exception_handlers.py",
+        "class_name": None,
+        "function_name": "handle_all",
+        "phase": 2,
+    }
     assert "app/core/exception_handlers.py" in directory_tree
     assert "app.add_exception_handler(Exception, handle_all)" in directory_tree

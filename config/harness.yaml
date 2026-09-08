@@ -29,15 +29,13 @@ diff_rules:
   ignore_order_at: []
 route_to_file_mapping:
   POST_api_candidate_search:
-  - app/repositories/exam_repository.py
-  - app/routers/exam_router.py
-  - app/schemas/exam.py
-  - app/services/exam_service.py
+  - app/routers/candidate_router.py
+  - app/schemas/candidate.py
+  - app/services/candidate_service.py
   POST_api_candidate_generateRandomId:
-  - app/repositories/exam_repository.py
-  - app/routers/exam_router.py
-  - app/schemas/exam.py
-  - app/services/exam_service.py
+  - app/routers/candidate_router.py
+  - app/schemas/candidate.py
+  - app/services/candidate_service.py
   POST_api_exam_answer_save:
   - app/repositories/exam_repository.py
   - app/routers/exam_router.py
@@ -132,8 +130,8 @@ route_to_file_mapping:
   - app/routers/registration_router.py
   - app/schemas/registration.py
 route_to_module_mapping:
-  POST_api_candidate_search: exam
-  POST_api_candidate_generateRandomId: exam
+  POST_api_candidate_search: candidate
+  POST_api_candidate_generateRandomId: candidate
   POST_api_exam_answer_save: exam
   POST_api_exam_search: exam
   POST_api_exam_answer_search: exam

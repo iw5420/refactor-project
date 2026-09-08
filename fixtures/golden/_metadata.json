@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-08-29T11:35:07.751279Z",
+  "recorded_at": "2026-09-07T03:15:02.399020Z",
   "total_cases": 25,
   "cases": [
     "test_exception_GET_api_grading_test-exception",
@@ -11,9 +11,11 @@
     "schools_1_GET_api_registration_exam_schools",
     "grades_GET_api_registration_exam_grades",
     "classes_GET_api_registration_exam_classes",
+    "get_all_exam_kind_POST_api_exam_getAllExamKind",
+    "get_single_exam_POST_api_exam_getSingleExam",
+    "get_candidate_POST_api_candidate_search",
     "create_random_POST_api_candidate_generateRandomId",
     "search_POST_api_exam_search",
-    "get_single_exam_POST_api_exam_getSingleExam",
     "search_answer_POST_api_exam_answer_search",
     "save_answer_POST_api_exam_answer_save",
     "grade_POST_api_grading_grade",
@@ -23,10 +25,8 @@
     "analyze_POST_api_grading_analyze",
     "score_POST_api_grading_score",
     "get_all_POST_api_exam_getAll",
-    "get_all_exam_kind_POST_api_exam_getAllExamKind",
     "login_POST_api_grading_login",
-    "schools_POST_api_general_schools",
-    "get_candidate_POST_api_candidate_search"
+    "schools_POST_api_general_schools"
   ],
   "skipped": [
     "get_version_GET_api_general_version"

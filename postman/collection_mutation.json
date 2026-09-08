@@ -1,202 +1,19 @@
 {
   "item": [
     {
-      "name": "search_getSingleExam_save_etc_flow",
+      "name": "search_getSingleExam_getAllExamKind_etc_flow",
       "item": [
         {
-          "id": "ff899c72-1c9b-4a06-82ef-23b6d0cdfbd3",
-          "name": "create Random",
+          "id": "3e0e5469-22a2-4c0a-943b-02b1bc9734a5",
+          "name": "get All Exam Kind",
           "request": {
-            "name": "create Random",
-            "description": {},
-            "url": {
-              "path": [
-                "api",
-                "candidate",
-                "generateRandomId"
-              ],
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Accept",
-                "value": "*/*"
-              }
-            ],
-            "method": "POST",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"email\": \"test3@gmail.com.tw\",\n  \"card\": \"26MA-A-0503X\",\n  \"kind\": \"\",\n  \"name\": \"黃小芳\",\n  \"school\": \"淡水國小\",\n  \"grade\": \"\",\n  \"classes\": \"1\",\n  \"role\": \"老師\",\n  \"department\": \"\",\n  \"local\": \"台北市\"\n}",
-              "options": {
-                "raw": {
-                  "headerFamily": "json",
-                  "language": "json"
-                }
-              }
-            },
-            "auth": null
-          },
-          "response": [
-            {
-              "id": "b56cc7d3-71cc-4875-b616-739af7d55320",
-              "name": "OK",
-              "originalRequest": {
-                "url": {
-                  "path": [
-                    "api",
-                    "candidate",
-                    "generateRandomId"
-                  ],
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "query": [],
-                  "variable": []
-                },
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  },
-                  {
-                    "key": "Accept",
-                    "value": "*/*"
-                  }
-                ],
-                "method": "POST",
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"school\": \"<string>\",\n  \"year\": \"<string>\",\n  \"grade\": \"<string>\",\n  \"classes\": \"<string>\",\n  \"kind\": \"<string>\",\n  \"name\": \"<string>\",\n  \"email\": \"<string>\",\n  \"card\": \"<string>\"\n}",
-                  "options": {
-                    "raw": {
-                      "headerFamily": "json",
-                      "language": "json"
-                    }
-                  }
-                }
-              },
-              "status": "OK",
-              "code": 200,
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "*/*"
-                }
-              ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"randomId\": \"<string>\",\n    \"result\": \"<string>\"\n  }\n}",
-              "cookie": [],
-              "_postman_previewlanguage": "text"
-            }
-          ],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture candidate_random_id\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id\", json.data.randomId);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture candidate_random_id_for_voice_upload\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_for_voice_upload\", json.data.randomId);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture candidate_random_id_for_image\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_for_image\", json.data.randomId);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture candidate_random_id_for_grade\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_for_grade\", json.data.randomId);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture candidate_random_id_for_exam_search\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_for_exam_search\", json.data.randomId);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture candidate_random_id_for_answer_search\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_for_answer_search\", json.data.randomId);",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"capture candidate_random_id_for_answer_save\", function () {",
-                  "    const json = pm.response.json();",
-                  "    pm.environment.set(\"candidate_random_id_for_answer_save\", json.data.randomId);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "protocolProfileBehavior": {
-            "disableBodyPruning": true
-          }
-        },
-        {
-          "id": "e340c275-7612-444a-bd05-50a74bcc3e83",
-          "name": "search",
-          "request": {
-            "name": "search",
+            "name": "get All Exam Kind",
             "description": {},
             "url": {
               "path": [
                 "api",
                 "exam",
-                "search"
+                "getAllExamKind"
               ],
               "host": [
                 "{{baseUrl}}"
@@ -206,37 +23,24 @@
             },
             "header": [
               {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
                 "key": "Accept",
                 "value": "*/*"
               }
             ],
             "method": "POST",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"card\": \"\",\n  \"classes\": \"\",\n  \"grade\": \"\",\n  \"kind\": \"\",\n  \"status\": \"\",\n  \"year\": \"113\",\n  \"randomId\": \"{{candidate_random_id_for_exam_search}}\"\n}",
-              "options": {
-                "raw": {
-                  "headerFamily": "json",
-                  "language": "json"
-                }
-              }
-            },
+            "body": {},
             "auth": null
           },
           "response": [
             {
-              "id": "26c35a3b-81e7-4372-9195-b1ed0e7c8d85",
+              "id": "caf7ab3b-c891-4d47-819d-5ba46098e482",
               "name": "OK",
               "originalRequest": {
                 "url": {
                   "path": [
                     "api",
                     "exam",
-                    "search"
+                    "getAllExamKind"
                   ],
                   "host": [
                     "{{baseUrl}}"
@@ -246,25 +50,12 @@
                 },
                 "header": [
                   {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  },
-                  {
                     "key": "Accept",
                     "value": "*/*"
                   }
                 ],
                 "method": "POST",
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"year\": \"<string>\",\n  \"grade\": \"<string>\",\n  \"classes\": \"<string>\",\n  \"kind\": \"<string>\",\n  \"card\": \"<string>\",\n  \"status\": \"<string>\",\n  \"randomId\": \"<string>\"\n}",
-                  "options": {
-                    "raw": {
-                      "headerFamily": "json",
-                      "language": "json"
-                    }
-                  }
-                }
+                "body": {}
               },
               "status": "OK",
               "code": 200,
@@ -274,7 +65,7 @@
                   "value": "*/*"
                 }
               ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"exam\": [\n      {\n        \"id\": \"<long>\",\n        \"created\": \"<dateTime>\",\n        \"updated\": \"<dateTime>\",\n        \"school\": \"<string>\",\n        \"year\": \"<string>\",\n        \"grade\": \"<string>\",\n        \"className\": \"<string>\",\n        \"status\": \"<string>\",\n        \"userName\": \"<string>\",\n        \"card\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"randomId\": \"<string>\",\n        \"finishTime\": \"<string>\",\n        \"score\": \"<string>\",\n        \"comment\": \"<string>\",\n        \"email\": \"<string>\",\n        \"registrationDate\": \"<date>\",\n        \"registrationSession\": \"<string>\",\n        \"cellPhone\": \"<string>\",\n        \"department\": \"<string>\",\n        \"role\": \"<string>\",\n        \"local\": \"<string>\",\n        \"gtptPassed\": \"<boolean>\",\n        \"gtptCertificate\": \"<string>\",\n        \"questionRelated\": \"<string>\",\n        \"isReviewer\": \"<boolean>\",\n        \"testNumber\": \"<string>\"\n      },\n      {\n        \"id\": \"<long>\",\n        \"created\": \"<dateTime>\",\n        \"updated\": \"<dateTime>\",\n        \"school\": \"<string>\",\n        \"year\": \"<string>\",\n        \"grade\": \"<string>\",\n        \"className\": \"<string>\",\n        \"status\": \"<string>\",\n        \"userName\": \"<string>\",\n        \"card\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"randomId\": \"<string>\",\n        \"finishTime\": \"<string>\",\n        \"score\": \"<string>\",\n        \"comment\": \"<string>\",\n        \"email\": \"<string>\",\n        \"registrationDate\": \"<date>\",\n        \"registrationSession\": \"<string>\",\n        \"cellPhone\": \"<string>\",\n        \"department\": \"<string>\",\n        \"role\": \"<string>\",\n        \"local\": \"<string>\",\n        \"gtptPassed\": \"<boolean>\",\n        \"gtptCertificate\": \"<string>\",\n        \"questionRelated\": \"<string>\",\n        \"isReviewer\": \"<boolean>\",\n        \"testNumber\": \"<string>\"\n      }\n    ],\n    \"result\": \"<string>\"\n  }\n}",
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"kinds\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
               "cookie": [],
               "_postman_previewlanguage": "text"
             }
@@ -287,7 +78,7 @@
                 "exec": [
                   "pm.test(\"capture exam_kind_for_single_exam\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_kind_for_single_exam\", json.data.exam[0].kind);",
+                  "    pm.environment.set(\"exam_kind_for_single_exam\", json.data.kinds[0]);",
                   "});"
                 ]
               }
@@ -299,7 +90,7 @@
                 "exec": [
                   "pm.test(\"capture exam_kind_for_answer_search\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_kind_for_answer_search\", json.data.exam[0].kind);",
+                  "    pm.environment.set(\"exam_kind_for_answer_search\", json.data.kinds[0]);",
                   "});"
                 ]
               }
@@ -311,7 +102,7 @@
                 "exec": [
                   "pm.test(\"capture exam_kind_for_answer_save\", function () {",
                   "    const json = pm.response.json();",
-                  "    pm.environment.set(\"exam_kind_for_answer_save\", json.data.exam[0].kind);",
+                  "    pm.environment.set(\"exam_kind_for_answer_save\", json.data.kinds[0]);",
                   "});"
                 ]
               }
@@ -322,7 +113,7 @@
           }
         },
         {
-          "id": "4b66527e-ad53-45c3-97bd-fb9e3a44c38e",
+          "id": "46c4c4cd-fe66-4644-8660-e44302dc84dd",
           "name": "get Single Exam",
           "request": {
             "name": "get Single Exam",
@@ -364,7 +155,7 @@
           },
           "response": [
             {
-              "id": "060d65db-da51-48c9-aa1e-af3b9511ddf8",
+              "id": "ec59c4a6-a3d7-41a0-9740-ed10a3eeb594",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -420,7 +211,399 @@
           }
         },
         {
-          "id": "295dbab1-167d-424b-95a7-f52752ed55b8",
+          "id": "5218352d-6515-4130-b504-e6a5de388fb0",
+          "name": "get Candidate",
+          "request": {
+            "name": "get Candidate",
+            "description": {},
+            "url": {
+              "path": [
+                "api",
+                "candidate",
+                "search"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "*/*"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"card\": \"26MA-A-0504I\"\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            },
+            "auth": null
+          },
+          "response": [
+            {
+              "id": "b23e9045-f3e8-4927-a7dd-299682c637b8",
+              "name": "OK",
+              "originalRequest": {
+                "url": {
+                  "path": [
+                    "api",
+                    "candidate",
+                    "search"
+                  ],
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "query": [],
+                  "variable": []
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "*/*"
+                  }
+                ],
+                "method": "POST",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"card\": \"<string>\"\n}",
+                  "options": {
+                    "raw": {
+                      "headerFamily": "json",
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "*/*"
+                }
+              ],
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"email\": \"<string>\",\n    \"card\": \"<string>\",\n    \"randomId\": \"<string>\",\n    \"kind\": \"<string>\",\n    \"role\": \"<string>\",\n    \"department\": \"<string>\",\n    \"local\": \"<string>\",\n    \"school\": \"<string>\",\n    \"className\": \"<string>\",\n    \"name\": \"<string>\",\n    \"isReviewer\": \"<boolean>\"\n  }\n}",
+              "cookie": [],
+              "_postman_previewlanguage": "text"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_card\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_card\", json.data.card);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": {
+            "disableBodyPruning": true
+          }
+        },
+        {
+          "id": "2a9c1a1e-d2cf-43b5-a6c4-ac5488fbbbab",
+          "name": "create Random",
+          "request": {
+            "name": "create Random",
+            "description": {},
+            "url": {
+              "path": [
+                "api",
+                "candidate",
+                "generateRandomId"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "*/*"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"test3@gmail.com.tw\",\n  \"card\": \"{{candidate_card}}\",\n  \"kind\": \"\",\n  \"name\": \"黃小芳\",\n  \"school\": \"淡水國小\",\n  \"grade\": \"\",\n  \"classes\": \"1\",\n  \"role\": \"老師\",\n  \"department\": \"\",\n  \"local\": \"台北市\"\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            },
+            "auth": null
+          },
+          "response": [
+            {
+              "id": "9c643f5f-7ae3-4b1d-93ac-126d87b87822",
+              "name": "OK",
+              "originalRequest": {
+                "url": {
+                  "path": [
+                    "api",
+                    "candidate",
+                    "generateRandomId"
+                  ],
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "query": [],
+                  "variable": []
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "*/*"
+                  }
+                ],
+                "method": "POST",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"school\": \"<string>\",\n  \"year\": \"<string>\",\n  \"grade\": \"<string>\",\n  \"classes\": \"<string>\",\n  \"kind\": \"<string>\",\n  \"name\": \"<string>\",\n  \"email\": \"<string>\",\n  \"card\": \"<string>\"\n}",
+                  "options": {
+                    "raw": {
+                      "headerFamily": "json",
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "*/*"
+                }
+              ],
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"randomId\": \"<string>\",\n    \"result\": \"<string>\"\n  }\n}",
+              "cookie": [],
+              "_postman_previewlanguage": "text"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture generated_candidate_random_id\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"generated_candidate_random_id\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_random_id_for_voice\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_random_id_for_voice\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_random_id_for_voice_post\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_random_id_for_voice_post\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_random_id_for_image\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_random_id_for_image\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_random_id_for_exam_search\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_random_id_for_exam_search\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_random_id_for_answer_search\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_random_id_for_answer_search\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"capture candidate_random_id_for_answer_save\", function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.environment.set(\"candidate_random_id_for_answer_save\", json.data.randomId);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": {
+            "disableBodyPruning": true
+          }
+        },
+        {
+          "id": "5876f093-fbf7-41e2-946f-30c27b92d511",
+          "name": "search",
+          "request": {
+            "name": "search",
+            "description": {},
+            "url": {
+              "path": [
+                "api",
+                "exam",
+                "search"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "*/*"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"card\": \"\",\n  \"classes\": \"\",\n  \"grade\": \"\",\n  \"kind\": \"\",\n  \"status\": \"\",\n  \"year\": \"113\",\n  \"randomId\": \"{{candidate_random_id_for_exam_search}}\"\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            },
+            "auth": null
+          },
+          "response": [
+            {
+              "id": "3c25b900-6dc4-4192-981d-f040845a8dd4",
+              "name": "OK",
+              "originalRequest": {
+                "url": {
+                  "path": [
+                    "api",
+                    "exam",
+                    "search"
+                  ],
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "query": [],
+                  "variable": []
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "*/*"
+                  }
+                ],
+                "method": "POST",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"year\": \"<string>\",\n  \"grade\": \"<string>\",\n  \"classes\": \"<string>\",\n  \"kind\": \"<string>\",\n  \"card\": \"<string>\",\n  \"status\": \"<string>\",\n  \"randomId\": \"<string>\"\n}",
+                  "options": {
+                    "raw": {
+                      "headerFamily": "json",
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "*/*"
+                }
+              ],
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"exam\": [\n      {\n        \"id\": \"<long>\",\n        \"created\": \"<dateTime>\",\n        \"updated\": \"<dateTime>\",\n        \"school\": \"<string>\",\n        \"year\": \"<string>\",\n        \"grade\": \"<string>\",\n        \"className\": \"<string>\",\n        \"status\": \"<string>\",\n        \"userName\": \"<string>\",\n        \"card\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"randomId\": \"<string>\",\n        \"finishTime\": \"<string>\",\n        \"score\": \"<string>\",\n        \"comment\": \"<string>\",\n        \"email\": \"<string>\",\n        \"registrationDate\": \"<date>\",\n        \"registrationSession\": \"<string>\",\n        \"cellPhone\": \"<string>\",\n        \"department\": \"<string>\",\n        \"role\": \"<string>\",\n        \"local\": \"<string>\",\n        \"gtptPassed\": \"<boolean>\",\n        \"gtptCertificate\": \"<string>\",\n        \"questionRelated\": \"<string>\",\n        \"isReviewer\": \"<boolean>\",\n        \"testNumber\": \"<string>\"\n      },\n      {\n        \"id\": \"<long>\",\n        \"created\": \"<dateTime>\",\n        \"updated\": \"<dateTime>\",\n        \"school\": \"<string>\",\n        \"year\": \"<string>\",\n        \"grade\": \"<string>\",\n        \"className\": \"<string>\",\n        \"status\": \"<string>\",\n        \"userName\": \"<string>\",\n        \"card\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"randomId\": \"<string>\",\n        \"finishTime\": \"<string>\",\n        \"score\": \"<string>\",\n        \"comment\": \"<string>\",\n        \"email\": \"<string>\",\n        \"registrationDate\": \"<date>\",\n        \"registrationSession\": \"<string>\",\n        \"cellPhone\": \"<string>\",\n        \"department\": \"<string>\",\n        \"role\": \"<string>\",\n        \"local\": \"<string>\",\n        \"gtptPassed\": \"<boolean>\",\n        \"gtptCertificate\": \"<string>\",\n        \"questionRelated\": \"<string>\",\n        \"isReviewer\": \"<boolean>\",\n        \"testNumber\": \"<string>\"\n      }\n    ],\n    \"result\": \"<string>\"\n  }\n}",
+              "cookie": [],
+              "_postman_previewlanguage": "text"
+            }
+          ],
+          "event": [],
+          "protocolProfileBehavior": {
+            "disableBodyPruning": true
+          }
+        },
+        {
+          "id": "cbc83696-a0dc-4c21-b441-87560c0ec4e8",
           "name": "search Answer",
           "request": {
             "name": "search Answer",
@@ -463,7 +646,7 @@
           },
           "response": [
             {
-              "id": "053f31f3-3d5f-4643-b9d8-11ea98388feb",
+              "id": "e8d55483-781f-4f5f-b4d7-ea93913db0c4",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -520,7 +703,7 @@
           }
         },
         {
-          "id": "3d17cd7d-3827-46f0-883a-a4dc295076b5",
+          "id": "3da059ae-a9ab-4193-9bbf-2f54f697ab90",
           "name": "save Answer",
           "request": {
             "name": "save Answer",
@@ -563,7 +746,7 @@
           },
           "response": [
             {
-              "id": "4516fdcc-7a1d-4934-a387-4e2871def613",
+              "id": "85aaadec-c30c-4cdf-bfbb-62b995257eae",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -620,7 +803,7 @@
           }
         },
         {
-          "id": "ec882ee9-0510-4e11-bb86-0e6edcc7e09c",
+          "id": "3434bbed-bcb9-4eb7-b9e1-c3c3543a43cd",
           "name": "grade",
           "request": {
             "name": "grade",
@@ -650,7 +833,7 @@
             "method": "POST",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"randomId\": \"{{candidate_random_id_for_grade}}\",\n  \"kind\": \"2025/macuhau/TAA\",\n  \"comment\": \"\"\n}",
+              "raw": "{\n  \"randomId\": \"{{generated_candidate_random_id}}\",\n  \"kind\": \"2025/macuhau/TAA\",\n  \"comment\": \"\"\n}",
               "options": {
                 "raw": {
                   "headerFamily": "json",
@@ -662,7 +845,7 @@
           },
           "response": [
             {
-              "id": "bff5d7c1-88f6-4aa8-a19a-e4f16399e796",
+              "id": "afb6f295-1331-4345-ba4c-c5b2861d5422",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -718,7 +901,7 @@
           }
         },
         {
-          "id": "9c8a8ed5-480b-46dc-8c7c-e08556faf80d",
+          "id": "048f1584-2d25-48f0-b923-4fe5d513733a",
           "name": "voice",
           "request": {
             "name": "voice",
@@ -749,7 +932,7 @@
                     "type": "text/plain"
                   },
                   "key": "randomId",
-                  "value": "{{candidate_random_id_for_voice_upload}}"
+                  "value": "{{candidate_random_id_for_voice_post}}"
                 },
                 {
                   "disabled": false,
@@ -801,7 +984,7 @@
           },
           "response": [
             {
-              "id": "2b9ef71b-5258-4041-ae86-d2394e86dcca",
+              "id": "e04df60e-289f-4eba-96af-50231be5f197",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -897,7 +1080,7 @@
           }
         },
         {
-          "id": "7b30eaaf-5dd6-46a5-9a1c-84b167431375",
+          "id": "6b6cb45b-74ed-4050-9a5b-ca09c60cac16",
           "name": "voice 1（鏈式依賴驗證）",
           "request": {
             "name": "voice 1",
@@ -928,7 +1111,7 @@
                     "type": "text/plain"
                   },
                   "key": "randomId",
-                  "value": "{{candidate_random_id}}"
+                  "value": "{{candidate_random_id_for_voice}}"
                 },
                 {
                   "disabled": false,
@@ -963,7 +1146,7 @@
           },
           "response": [
             {
-              "id": "e1495739-c6b1-45f1-8f4a-f05b70096930",
+              "id": "cf680e7a-511e-4c1f-b08c-36e6143b0d2b",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1043,7 +1226,7 @@
           }
         },
         {
-          "id": "a9324aca-3664-47b5-ae0a-6b232a59f2b5",
+          "id": "e29d3ead-5d58-4e13-a503-3b630d52ce68",
           "name": "image 1（鏈式依賴驗證）",
           "request": {
             "name": "image 1",
@@ -1100,7 +1283,7 @@
           },
           "response": [
             {
-              "id": "ff999208-1544-41be-853b-128b50456399",
+              "id": "ee5c0acc-96e2-4036-accb-6a4450e3d639",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1176,7 +1359,7 @@
       "name": "score_analyze_flow",
       "item": [
         {
-          "id": "08ba920c-5f6d-4d00-830c-13ed3bc0c295",
+          "id": "183fd427-ab3c-42fd-b054-b605e84efcb6",
           "name": "analyze",
           "request": {
             "name": "analyze",
@@ -1218,7 +1401,7 @@
           },
           "response": [
             {
-              "id": "4c0a6797-01b1-4cc3-90e2-dafc10660f52",
+              "id": "ef4d690a-b063-47b8-9f6c-dbb1cfddb614",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1263,7 +1446,7 @@
                   "value": "*/*"
                 }
               ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"status\": \"<string>\",\n    \"studentCount\": \"<long>\",\n    \"questionResults\": [\n      {\n        \"id\": \"<long>\",\n        \"typeNumber\": \"<string>\",\n        \"partNumber\": \"<string>\",\n        \"questionNumber\": \"<string>\",\n        \"correctAnswer\": \"<string>\",\n        \"correctRate\": \"<string>\",\n        \"correctCount\": \"<double>\",\n        \"mostChosenWrongAnswer\": \"<string>\",\n        \"mostChosenWrongCount\": \"<long>\",\n        \"a\": \"<string>\",\n        \"b\": \"<string>\",\n        \"c\": \"<string>\",\n        \"crate\": \"<string>\",\n        \"d\": \"<string>\",\n        \"drate\": \"<string>\",\n        \"noCount\": \"<long>\",\n        \"noRate\": \"<string>\",\n        \"question\": \"<string>\",\n        \"voice\": \"<string>\",\n        \"picture\": \"<string>\",\n        \"answer\": \"<string>\",\n        \"score\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"acount\": \"<long>\",\n        \"arate\": \"<string>\",\n        \"bcount\": \"<long>\",\n        \"brate\": \"<string>\",\n        \"dcount\": \"<long>\",\n        \"ccount\": \"<long>\"\n      },\n      {\n        \"id\": \"<long>\",\n        \"typeNumber\": \"<string>\",\n        \"partNumber\": \"<string>\",\n        \"questionNumber\": \"<string>\",\n        \"correctAnswer\": \"<string>\",\n        \"correctRate\": \"<string>\",\n        \"correctCount\": \"<double>\",\n        \"mostChosenWrongAnswer\": \"<string>\",\n        \"mostChosenWrongCount\": \"<long>\",\n        \"a\": \"<string>\",\n        \"b\": \"<string>\",\n        \"c\": \"<string>\",\n        \"crate\": \"<string>\",\n        \"d\": \"<string>\",\n        \"drate\": \"<string>\",\n        \"noCount\": \"<long>\",\n        \"noRate\": \"<string>\",\n        \"question\": \"<string>\",\n        \"voice\": \"<string>\",\n        \"picture\": \"<string>\",\n        \"answer\": \"<string>\",\n        \"score\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"acount\": \"<long>\",\n        \"arate\": \"<string>\",\n        \"bcount\": \"<long>\",\n        \"brate\": \"<string>\",\n        \"dcount\": \"<long>\",\n        \"ccount\": \"<long>\"\n      }\n    ],\n    \"studentScores\": [\n      {\n        \"randomId\": \"<string>\",\n        \"score\": \"<string>\"\n      },\n      {\n        \"randomId\": \"<string>\",\n        \"score\": \"<string>\"\n      }\n    ]\n  }\n}",
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"status\": \"<string>\",\n    \"studentCount\": \"<long>\",\n    \"questionResults\": [\n      {\n        \"id\": \"<long>\",\n        \"typeNumber\": \"<string>\",\n        \"partNumber\": \"<string>\",\n        \"questionNumber\": \"<string>\",\n        \"correctAnswer\": \"<string>\",\n        \"correctRate\": \"<string>\",\n        \"correctCount\": \"<double>\",\n        \"mostChosenWrongAnswer\": \"<string>\",\n        \"mostChosenWrongCount\": \"<long>\",\n        \"a\": \"<string>\",\n        \"b\": \"<string>\",\n        \"c\": \"<string>\",\n        \"crate\": \"<string>\",\n        \"d\": \"<string>\",\n        \"drate\": \"<string>\",\n        \"noCount\": \"<long>\",\n        \"noRate\": \"<string>\",\n        \"question\": \"<string>\",\n        \"voice\": \"<string>\",\n        \"picture\": \"<string>\",\n        \"answer\": \"<string>\",\n        \"score\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"acount\": \"<long>\",\n        \"bcount\": \"<long>\",\n        \"brate\": \"<string>\",\n        \"dcount\": \"<long>\",\n        \"arate\": \"<string>\",\n        \"ccount\": \"<long>\"\n      },\n      {\n        \"id\": \"<long>\",\n        \"typeNumber\": \"<string>\",\n        \"partNumber\": \"<string>\",\n        \"questionNumber\": \"<string>\",\n        \"correctAnswer\": \"<string>\",\n        \"correctRate\": \"<string>\",\n        \"correctCount\": \"<double>\",\n        \"mostChosenWrongAnswer\": \"<string>\",\n        \"mostChosenWrongCount\": \"<long>\",\n        \"a\": \"<string>\",\n        \"b\": \"<string>\",\n        \"c\": \"<string>\",\n        \"crate\": \"<string>\",\n        \"d\": \"<string>\",\n        \"drate\": \"<string>\",\n        \"noCount\": \"<long>\",\n        \"noRate\": \"<string>\",\n        \"question\": \"<string>\",\n        \"voice\": \"<string>\",\n        \"picture\": \"<string>\",\n        \"answer\": \"<string>\",\n        \"score\": \"<string>\",\n        \"kind\": \"<string>\",\n        \"acount\": \"<long>\",\n        \"bcount\": \"<long>\",\n        \"brate\": \"<string>\",\n        \"dcount\": \"<long>\",\n        \"arate\": \"<string>\",\n        \"ccount\": \"<long>\"\n      }\n    ],\n    \"studentScores\": [\n      {\n        \"randomId\": \"<string>\",\n        \"score\": \"<string>\"\n      },\n      {\n        \"randomId\": \"<string>\",\n        \"score\": \"<string>\"\n      }\n    ]\n  }\n}",
               "cookie": [],
               "_postman_previewlanguage": "text"
             }
@@ -1287,7 +1470,7 @@
           }
         },
         {
-          "id": "22ad885c-2579-4556-8cab-2477412ae6b6",
+          "id": "2868ab35-547b-4985-ab85-3b0043d67078",
           "name": "score",
           "request": {
             "name": "score",
@@ -1329,7 +1512,7 @@
           },
           "response": [
             {
-              "id": "58a33fc7-fcda-4251-89ad-969a2edb4864",
+              "id": "6a24dff3-a7e4-4bdf-9f74-2f4db36395a7",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1390,7 +1573,7 @@
       "name": "exam_management",
       "item": [
         {
-          "id": "3dfac321-9c01-4d82-be2c-f895449632bf",
+          "id": "17be4543-6427-43a8-8003-7ba2f9b5ac7f",
           "name": "get All",
           "request": {
             "name": "get All",
@@ -1419,7 +1602,7 @@
           },
           "response": [
             {
-              "id": "cbd63ec1-ad8c-4183-8fda-e8361aec6d58",
+              "id": "9af7d523-5000-4972-98cb-b7975383b322",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1451,79 +1634,7 @@
                   "value": "*/*"
                 }
               ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"allExams\": {\n      \"key_0\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ],\n      \"key_1\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ],\n      \"key_2\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ]\n    }\n  }\n}",
-              "cookie": [],
-              "_postman_previewlanguage": "text"
-            }
-          ],
-          "event": [],
-          "protocolProfileBehavior": {
-            "disableBodyPruning": true
-          }
-        },
-        {
-          "id": "e0f3a262-382e-47b0-ac33-25eb25fae017",
-          "name": "get All Exam Kind",
-          "request": {
-            "name": "get All Exam Kind",
-            "description": {},
-            "url": {
-              "path": [
-                "api",
-                "exam",
-                "getAllExamKind"
-              ],
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "header": [
-              {
-                "key": "Accept",
-                "value": "*/*"
-              }
-            ],
-            "method": "POST",
-            "body": {},
-            "auth": null
-          },
-          "response": [
-            {
-              "id": "2d477d43-a2a3-4b07-93d9-d5bb119c229e",
-              "name": "OK",
-              "originalRequest": {
-                "url": {
-                  "path": [
-                    "api",
-                    "exam",
-                    "getAllExamKind"
-                  ],
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "query": [],
-                  "variable": []
-                },
-                "header": [
-                  {
-                    "key": "Accept",
-                    "value": "*/*"
-                  }
-                ],
-                "method": "POST",
-                "body": {}
-              },
-              "status": "OK",
-              "code": 200,
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "*/*"
-                }
-              ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"kinds\": [\n      \"<string>\",\n      \"<string>\"\n    ]\n  }\n}",
+              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"allExams\": {\n      \"key_0\": [\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        },\n        {\n          \"id\": \"<long>\",\n          \"created\": \"<dateTime>\",\n          \"updated\": \"<dateTime>\",\n          \"typeNumber\": \"<string>\",\n          \"type\": \"<string>\",\n          \"partNumber\": \"<string>\",\n          \"part\": \"<string>\",\n          \"questionNumber\": \"<string>\",\n          \"a\": \"<string>\",\n          \"b\": \"<string>\",\n          \"c\": \"<string>\",\n          \"d\": \"<string>\",\n          \"longQuestion\": \"<string>\",\n          \"question\": \"<string>\",\n          \"voice\": \"<string>\",\n          \"picture\": \"<string>\",\n          \"answer\": \"<string>\",\n          \"score\": \"<string>\",\n          \"kind\": \"<string>\",\n          \"text\": \"<string>\"\n        }\n      ]\n    }\n  }\n}",
               "cookie": [],
               "_postman_previewlanguage": "text"
             }
@@ -1539,7 +1650,7 @@
       "name": "grading",
       "item": [
         {
-          "id": "d275d9d9-14f1-4a39-8d65-8050c75a55f5",
+          "id": "37a5cf77-86c5-433f-b415-fa28803e60f4",
           "name": "login",
           "request": {
             "name": "login",
@@ -1581,7 +1692,7 @@
           },
           "response": [
             {
-              "id": "da6e61d1-236f-4445-9652-a33086a35976",
+              "id": "e9c30b1b-b4f1-4eec-a9bd-223fd3ecf2e8",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1642,7 +1753,7 @@
       "name": "general_schools",
       "item": [
         {
-          "id": "0cb3aa96-ac45-47c3-9ac3-6b0f59ac9aba",
+          "id": "282bc91e-397a-47b9-8f69-5ff62bbaf4c1",
           "name": "schools",
           "request": {
             "name": "schools",
@@ -1684,7 +1795,7 @@
           },
           "response": [
             {
-              "id": "8ce3898d-413f-4da0-8b76-1af2760323eb",
+              "id": "ce4891d2-e09f-4602-b3fb-8ac39ea56fc3",
               "name": "OK",
               "originalRequest": {
                 "url": {
@@ -1740,109 +1851,6 @@
           }
         }
       ]
-    },
-    {
-      "name": "candidate_search",
-      "item": [
-        {
-          "id": "43a326dc-9fb7-4cdc-b67e-b20cbebbdfa6",
-          "name": "get Candidate",
-          "request": {
-            "name": "get Candidate",
-            "description": {},
-            "url": {
-              "path": [
-                "api",
-                "candidate",
-                "search"
-              ],
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Accept",
-                "value": "*/*"
-              }
-            ],
-            "method": "POST",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"card\": \"26MA-A-0504I\"\n}",
-              "options": {
-                "raw": {
-                  "headerFamily": "json",
-                  "language": "json"
-                }
-              }
-            },
-            "auth": null
-          },
-          "response": [
-            {
-              "id": "e30e0e9a-ea06-4d32-911a-03d05701d9b9",
-              "name": "OK",
-              "originalRequest": {
-                "url": {
-                  "path": [
-                    "api",
-                    "candidate",
-                    "search"
-                  ],
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "query": [],
-                  "variable": []
-                },
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  },
-                  {
-                    "key": "Accept",
-                    "value": "*/*"
-                  }
-                ],
-                "method": "POST",
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"card\": \"<string>\"\n}",
-                  "options": {
-                    "raw": {
-                      "headerFamily": "json",
-                      "language": "json"
-                    }
-                  }
-                }
-              },
-              "status": "OK",
-              "code": 200,
-              "header": [
-                {
-                  "key": "Content-Type",
-                  "value": "*/*"
-                }
-              ],
-              "body": "{\n  \"code\": \"<integer>\",\n  \"msg\": \"<string>\",\n  \"data\": {\n    \"email\": \"<string>\",\n    \"card\": \"<string>\",\n    \"randomId\": \"<string>\",\n    \"kind\": \"<string>\",\n    \"role\": \"<string>\",\n    \"department\": \"<string>\",\n    \"local\": \"<string>\",\n    \"school\": \"<string>\",\n    \"className\": \"<string>\",\n    \"name\": \"<string>\",\n    \"isReviewer\": \"<boolean>\"\n  }\n}",
-              "cookie": [],
-              "_postman_previewlanguage": "text"
-            }
-          ],
-          "event": [],
-          "protocolProfileBehavior": {
-            "disableBodyPruning": true
-          }
-        }
-      ]
     }
   ],
   "event": [],
@@ -1853,7 +1861,7 @@
     }
   ],
   "info": {
-    "_postman_id": "3deedd88-3c84-4900-91fd-b9a2de6ba0e3",
+    "_postman_id": "945990b4-4590-4a7d-82ee-3f0c3de27ba4",
     "name": "OpenAPI definition-mutation",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "description": {

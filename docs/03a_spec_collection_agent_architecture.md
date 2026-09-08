@@ -201,7 +201,7 @@ npx openapi-to-postmanv2 -s <openapi.json 路徑> -o <輸出路徑> -p
 
 情境二、三本質是同一種結果——都是「這一輪還不能用，但修正後重跑就會好」，統稱 **retry**，不能沿用 `skip` 這個字（`skip` 專指人工的編輯決定，兩者語意不同、後續動作也不同：`skip` 不會因為任何後續動作變回來，`retry` 的目標就是被修正掉）。`postman/unfilled_endpoints.json`（見「產出與交接」）與 `manual_fill.py` 的內部判斷都依這個兩層分類組織，不是三個獨立字串。
 
-**`Decision.SKIP` 的語意**：**不是**「填不出值、放棄」，是人工主動判斷「這個 endpoint 不該走一般重構驗證流程」的編輯決定——例如依賴 OCR、語音辨識這類需要真實內容才有意義的處理，本階段暫不自動化測試。標記後：不進人工填值套用邏輯、不進鏈式依賴偵測候選分析、不進最終 Collection，只記錄進 `postman/unfilled_endpoints.json`（`category="skip"`）。
+**`Decision.SKIP` 的語意**：使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」——不是「填不出值、放棄」這種消極結果，是主動的編輯決定，例如依賴 OCR、語音辨識這類需要真實內容才有意義的處理，這個功能目前沒有要使用，整段排除。標記後：不進人工填值套用邏輯、不進鏈式依賴偵測候選分析、不進最終 Collection，也不進 ①③ 的翻譯流程（見 `docs/04a_parse_agent_architecture.md`「skip 呼叫鏈排除」、`docs/05a_design_agent_architecture.md`「skip 排除的多載不產生 InterfaceSpec」）——只記錄進 `postman/unfilled_endpoints.json`（`category="skip"`）。
 
 **套用失敗的重填機制（retry 分類之一）**：套用失敗跟 `Decision.SKIP` 不同——套用失敗是系統發現「填的值套進 Postman item 時對不上結構」（例如巢狀路徑衝突），只有實際套用才會知道，不代表人工想放棄這個 endpoint，跟「尚未填值」一樣歸在 retry。
 

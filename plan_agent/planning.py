@@ -1,295 +1,259 @@
 # plan_agent/planning.py
-"""[P] Plan Agent 核心邏輯：四章 module 歸屬判定（委派給
-`module_index.classify()`）、五章 LLM 呼叫（依 module 平行，不需要
-拓樸分波）、六章 `depends_on` 組裝、七章 `target_files` 組裝、八章
-`task_list` 組裝與涵蓋率驗證。
+"""[P] Plan Agent 核心邏輯：四章 module／layer 歸屬判定（委派給
+`module_index.classify()`）、五章 `phase`／`translator_backend`／
+`description`／`context` 機械組裝（純機械，不呼叫 Claude API，見 06a 五章
+「為什麼這裡不再是 LLM 設計階段」）、六章呼叫鏈範圍查找
+（`reference_targets` 組裝）、七章 `depends_on` 組裝、八章 `target_files`
+組裝、九章 `task_list` 組裝與涵蓋率驗證。
 """
 from __future__ import annotations
 
-import concurrent.futures
-import json
-import logging
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from common.concurrency import default_concurrency
-from common.llm_client import LlmJsonError, call_claude_for_json
-from graph.state import InterfaceSpec, ModuleInfo, PythonStructure, ReferencedFunctionRef, TaskSpec
-from plan_agent import module_index
-from plan_agent.exceptions import PlanAgentCoverageError, PlanAgentModuleError
-from plan_agent.llm import DEFAULT_MODEL, PLAN_AGENT_MAX_TOKENS
-from plan_agent.prompts import PLAN_OUTPUT_SCHEMA, PLAN_SYSTEM_PROMPT
+from graph.state import InterfaceSpec, JavaIndexEntry, ModuleInfo, PythonStructure, ReferenceTarget, TaskSpec
+from parse_agent.call_graph import parse_java_project
+from plan_agent import call_chain, module_index
+from plan_agent.exceptions import PlanAgentCoverageError
 
-logger = logging.getLogger(__name__)
+# 06a 五章「translator_backend：依 layer 機械決定」——只有 repository
+# 交給 qwen，其餘一律 claude（entity/dto 不產生 InterfaceSpec，不會走到
+# 這條分派規則，見三章「全域基礎設施檔案與資料類別排除」）。
+_QWEN_LAYER = "repositories"
 
-# 併發數＝可用核心數 - 1，跟 design_agent/design.py、parse_agent/summarize.py
-# 共用同一份 common/concurrency.py 實作，不各自重新推導（見 00 六章）。
-_MAX_WORKERS = default_concurrency()
-# 06a 五章「失敗處理」：比照 05a 六章，待重試清單、5 分鐘後統一重試一次。
-_RETRY_WAIT_SECONDS = 300.0
+_RESERVED_MODULES = frozenset({module_index.UTILS_MODULE_NAME, module_index.GLOBAL_MODULE_NAME})
 
 
-@dataclass
+@dataclass(frozen=True)
 class _TaskDraft:
-    """單一 `InterfaceSpec` 對應的五章 LLM 輸出（尚未組裝 `depends_on`／
-    `target_files`／`id`），`planning.py` 內部使用，不跨模組交接。"""
+    """單一 `InterfaceSpec` 對應的組裝草稿（尚未算 `depends_on`／`id`），
+    `planning.py` 內部使用，不跨模組交接。"""
 
     file_path: str
     class_name: str | None
     function_name: str
     module: str
     layer: str
+    phase: int
+    translator_backend: str
+    java_method_id: str
     description: str
     context: str
-    referenced_interfaces: list[str] = field(default_factory=list)  # interface_id 清單，已過濾非法引用與自我引用
+    reference_targets: list[ReferenceTarget]
+    reference_targets_truncated: bool
+    return_type: str
 
 
-def plan_all_modules(module_list: list[ModuleInfo], python_structure: PythonStructure) -> list[TaskSpec]:
-    """對外入口，對應 06a 全文。輸出直接對應 `RefactorState.task_list`
-    （見 06a 八章）。
+def plan_all_modules(
+    module_list: list[ModuleInfo], python_structure: PythonStructure, java_project_path: str
+) -> tuple[list[TaskSpec], list[ModuleInfo]]:
+    """對外入口，對應 06a 全文。第一個回傳值直接對應
+    `RefactorState.task_list`（見 06a 九章）。[P] 不呼叫 Claude API，
+    整個函式是同步、快速完成的機械組裝，不需要重試佇列（見 06a 十一章
+    「執行特性的變化」）。
+
+    `java_project_path`：六章「呼叫鏈範圍查找」需要重用①既有的
+    `parse_agent.call_graph.parse_java_project()` 取得呼叫圖（純函式，
+    當場對 `java_project_path` 重新算一次，見 06a 二章）。
+
+    **第二個回傳值：補回 `_utils` 保留 module 之後的 `module_list`**——
+    真實環境發現 `graph/scheduler.py::ModuleScheduler` 用呼叫端傳入的
+    `module_list` 建構自己追蹤的 module 集合，`_utils` 這個保留 module
+    （見 `module_index.classify()`）只存在於 task 的 `module` 欄位上，
+    ①的 `module_list` 從來沒有對應條目——`ModuleScheduler.get_ready_
+    tasks()` 因此永遠不會走訪到 `_utils`，這個 module 底下的 task 永遠
+    排不進就緒佇列（已用真實資料證實：12 個 `_utils` task，
+    `get_ready_tasks()` 從頭到尾不回傳任何一筆）。`_global` 沒有這個
+    問題——①（`parse_agent/summarize.py::_assemble_global_advice_
+    draft()`）本來就會機械組一筆真正的 `ModuleInfo` 塞進 `module_list`；
+    `_utils` 沒有對應的①端機制，因為它是這次 call-chain-implement 重構
+    才新增的 [P] 端保留 module 概念，見 `_build_utils_module_entry()`。
     """
     module_names = frozenset(m["module"] for m in module_list)
-    module_rank = {m["module"]: i for i, m in enumerate(module_list)}
-
-    # 四章：module／layer 歸屬判定（機械，見 module_index.classify()）
-    interfaces_by_module: dict[str, list[InterfaceSpec]] = {name: [] for name in module_names}
-    layer_by_id: dict[str, str] = {}
-    module_by_id: dict[str, str] = {}
-    for iface in python_structure["interfaces"]:
-        module, layer = module_index.classify(iface["file_path"], module_names)
-        interfaces_by_module[module].append(iface)
-        iid = module_index.interface_id(iface["file_path"], iface["class_name"], iface["function_name"])
-        layer_by_id[iid] = layer
-        module_by_id[iid] = module
-
-    # 五章：依 module 平行處理，不需要拓樸分波（跟③刻意不同，見 06a 五章
-    # 「處理單位：依 module 平行處理，不需要拓樸分波」）。
-    drafts_by_id = _plan_all_with_retry(module_list, interfaces_by_module, layer_by_id, module_by_id)
-
-    # 八章「涵蓋率驗證」提前到組裝 task 之前做：後面的排序／depends_on／
-    # target_files 組裝都假設 drafts_by_id 跟 python_structure.interfaces
-    # 是同一個集合，提前驗證失敗可以更快中止，不用先做完組裝才發現。
-    _validate_coverage(drafts_by_id, python_structure["interfaces"])
-
-    # 六／七／八章：機械組裝 task_list
-    modules_with_schema_file = _modules_with_schema_file(python_structure["directory_tree"], module_names)
+    module_rank = _build_module_rank(module_list)
     config_field_mappings = python_structure.get("config_field_mappings", {})
-    return _assemble_task_list(
-        module_rank, layer_by_id, module_by_id, drafts_by_id, modules_with_schema_file, config_field_mappings
+    modules_with_schema_file = _modules_with_schema_file(python_structure["directory_tree"], module_names)
+
+    # 六章：呼叫鏈範圍查找需要的兩份共用資料——①的呼叫圖只重新算一次，
+    # 所有 task 共用，不逐 task 重算；module 依賴閉包同理。
+    call_graph = parse_java_project(java_project_path).call_graph
+    java_index = python_structure.get("java_index", {})
+    module_closures = call_chain.build_module_closures(module_list)
+
+    # 四章／五章／六章：對每一個 InterfaceSpec 產生恰好一個草稿——這個
+    # 1:1 list comprehension 本身就是三章「涵蓋率規則」與五章「不再是
+    # LLM 設計階段」兩件事共同的直接後果，沒有 LLM 回應可能漏答，涵蓋率
+    # 因結構保證成立，見 `_validate_coverage()`。
+    drafts = [
+        _build_draft(iface, module_names, config_field_mappings, call_graph, java_index, module_closures)
+        for iface in python_structure["interfaces"]
+    ]
+
+    _validate_coverage(drafts, python_structure["interfaces"])
+
+    task_list = _assemble_task_list(drafts, module_rank, modules_with_schema_file)
+    utils_entry = _build_utils_module_entry(drafts)
+    resolved_module_list = module_list + ([utils_entry] if utils_entry else [])
+    return task_list, resolved_module_list
+
+
+def _build_utils_module_entry(drafts: list[_TaskDraft]) -> ModuleInfo | None:
+    """補回 `plan_all_modules()` docstring「第二個回傳值」描述的缺口。
+    只在真的有 task 落在 `_utils` module 時才產生（沒有 utils 類別的
+    目標專案不需要這筆，維持 `module_list` 乾淨）；`depends_on` 固定為
+    空，比照 `_global` 既有先例（`summarize.py::_assemble_global_advice_
+    draft()`）——utils 是最基礎的層，不依賴任何業務模組完成才能開始
+    實作，也不該讓 `ModuleScheduler._module_deps_satisfied()` 誤判成有
+    依賴關係卡住它。`java_files` 從落在這個 module 的 task 的
+    `java_method_id`（"{file_path}::{class_name}::{method_name}"）反推
+    第一段還原，只是給人工事後核對用的輔助資訊，不影響排程行為。
+    `methods` 留空——`ModuleInfo.methods` 是③設計介面邊界時參考的業務
+    語境（04a），這個階段（[P] 之後）不會再有任何下游讀這個欄位。
+    """
+    utils_drafts = [d for d in drafts if d.module == module_index.UTILS_MODULE_NAME]
+    if not utils_drafts:
+        return None
+    java_files = sorted({d.java_method_id.split("::", 1)[0] for d in utils_drafts})
+    return ModuleInfo(
+        module=module_index.UTILS_MODULE_NAME,
+        summary="跨業務 module 共用的工具類別（app/utils/ 保留 module，見 06a 四章特例一）",
+        java_files=java_files,
+        depends_on=[],
+        methods=[],
+    )
+
+
+def _build_module_rank(module_list: list[ModuleInfo]) -> dict[str, int]:
+    """對應 06a 八章「id 產生規則」：`module_list` 原始順序當基礎排序，
+    `_utils`／`_global` 這兩個不在 `module_list` 裡的保留 module（見 06a
+    四章特例一／二）固定排在所有業務 module 之後。
+    """
+    rank = {m["module"]: i for i, m in enumerate(module_list)}
+    rank[module_index.UTILS_MODULE_NAME] = len(module_list)
+    rank[module_index.GLOBAL_MODULE_NAME] = len(module_list) + 1
+    return rank
+
+
+# --------------------------------------------------------------------------
+# 四章、五章：module／layer 歸屬判定 + phase／translator_backend／
+# description／context 機械組裝
+# --------------------------------------------------------------------------
+
+
+def _build_draft(
+    iface: InterfaceSpec,
+    module_names: frozenset[str],
+    config_field_mappings: dict[str, dict[str, str]],
+    call_graph: dict[str, list[str]],
+    java_index: dict[str, JavaIndexEntry],
+    module_closures: dict[str, set[str]],
+) -> _TaskDraft:
+    module, layer = module_index.classify(iface["file_path"], module_names)
+    # 06a 六章「呼叫鏈範圍查找」——同樣不重新判斷、不需要 fallback，
+    # ③保證每一筆 InterfaceSpec 都會設定 java_method_id，理由同 phase。
+    reference_targets, truncated = call_chain.build_reference_targets(
+        seed_java_method_id=iface["java_method_id"],
+        seed_module=module,
+        seed_layer=layer,
+        call_graph=call_graph,
+        java_index=java_index,
+        module_names=module_names,
+        module_closures=module_closures,
+    )
+    return _TaskDraft(
+        file_path=iface["file_path"],
+        class_name=iface["class_name"],
+        function_name=iface["function_name"],
+        module=module,
+        layer=layer,
+        # 06a 五章「phase：直接複製 InterfaceSpec.phase」——不重新判斷、
+        # 不需要 fallback，③保證每一筆 design_agent 產出的 InterfaceSpec
+        # 都會設定這個欄位；缺席代表③違反自己的輸出契約，直接讓
+        # KeyError 往上拋，不嘗試靜默補值掩蓋上游問題。
+        phase=iface["phase"],
+        translator_backend="qwen" if layer == _QWEN_LAYER else "claude",
+        java_method_id=iface["java_method_id"],
+        description=_mechanical_description(iface["file_path"], iface["class_name"], iface["function_name"]),
+        context=_config_hint(iface["file_path"], config_field_mappings),
+        reference_targets=reference_targets,
+        reference_targets_truncated=truncated,
+        # 對應 docs/refactor_bug_trace.md #46：直接複製 InterfaceSpec.
+        # return_type，不重新判斷——理由同 phase：③保證每一筆
+        # InterfaceSpec 都會設定這個欄位。
+        return_type=iface["return_type"],
+    )
+
+
+def _mechanical_description(file_path: str, class_name: str | None, function_name: str) -> str:
+    """對應 06a 五章「description：改為機械模板字串」——只用
+    `InterfaceSpec` 本身的欄位，不含 Java 方法名稱（①的 `MethodInfo.
+    java_method` 跟③的 `InterfaceSpec.function_name` 之間沒有形式化的
+    對應欄位，見二章、三章），純供 log／除錯追蹤用，不是餵給 ⑤ 的語意
+    輸入。
+    """
+    target = f"{class_name}.{function_name}()" if class_name else f"{function_name}()"
+    return f"填入 {file_path} 的 {target}"
+
+
+def _config_hint(file_path: str, config_field_mappings: dict[str, dict[str, str]]) -> str:
+    """對應 06a 五章「`config_field_mappings` 折進 `context`」——`context`
+    唯一已知的內容來源，純機械字串附加，不呼叫 LLM（對應
+    `docs/09b_bug_trace.md` #45／#58）。沒有對應項目時回傳空字串，
+    `context` 不強行塞入內容（見五章「未來若出現其他...沒有這類事實的
+    task，context 維持空字串」）。
+
+    提示文字明講 `app/core/config.py` 只有裸模組層級常數、沒有 `settings`
+    物件包裝——⑤過去曾連續三次把點記法（`app.core.config.LANGUAGE_CODE`）
+    誤讀成物件屬性存取、幻覺出從未存在的 `settings` 物件（#58 真實案例），
+    因此直接把最常見的錯誤點名禁止，不只是給參照路徑。
+    """
+    field_map = config_field_mappings.get(file_path)
+    if not field_map:
+        return ""
+    field_hints = "；".join(
+        f"`{java_field}` 欄位改成 `from app.core.config import {python_ref.rsplit('.', 1)[-1]}` "
+        f"後直接使用 `{python_ref.rsplit('.', 1)[-1]}`"
+        for java_field, python_ref in field_map.items()
+    )
+    return (
+        f"這個類別有 Spring @Value 屬性注入欄位：{field_hints}"
+        "（環境變數注入，已由 ④ 生成，見 app/core/config.py）。"
+        "app/core/config.py 裡只有裸模組層級常數（例如 "
+        '`LANGUAGE_CODE = os.environ["LANGUAGE_CODE"]`），'
+        "沒有 settings 物件、沒有任何 class 包裝——絕對不要寫成 "
+        "`settings.LANGUAGE_CODE` 這種物件屬性存取，也不要臆測其他來源（如框架 bean）。"
     )
 
 
 # --------------------------------------------------------------------------
-# 五章：LLM 呼叫與重試佇列（比照 05a 六章、04a 四章的既有先例）
+# 八章：涵蓋率驗證（機械，收尾步驟）
 # --------------------------------------------------------------------------
 
 
-def _plan_all_with_retry(
-    module_list: list[ModuleInfo],
-    interfaces_by_module: dict[str, list[InterfaceSpec]],
-    layer_by_id: dict[str, str],
-    module_by_id: dict[str, str],
-) -> dict[str, _TaskDraft]:
-    """對所有 module 一次性平行呼叫 Claude（不像③依 `depends_on` 分波，
-    見 06a 五章關鍵差異），失敗的 module 列入待重試清單，等待
-    `_RETRY_WAIT_SECONDS` 秒後統一重試一次；重試仍失敗則中止整條 plan
-    run（見 06a 五章「失敗處理」：`task_list` 是⑤唯一輸入，任一 module
-    的 task 缺失會讓涵蓋率保證失效，風險遠高於重新執行一次）。
-
-    沒有任何 interfaces 的 module（理論上不該發生，見 05a 七章涵蓋率
-    規則——但空 module 本身不違反這條規則，只是沒有東西可拆）不需要
-    呼叫 LLM，直接跳過。
+def _validate_coverage(drafts: list[_TaskDraft], interfaces: list[InterfaceSpec]) -> None:
+    """對應 06a 八章「涵蓋率驗證」。`drafts` 是對 `interfaces` 做 1:1
+    list comprehension 的直接結果，長度天生相等，理論上不會觸發——這裡
+    是最後一道 defense-in-depth，專門攔截 `interfaces` 本身就存在重複
+    `(file_path, class_name, function_name)` 三元組的情況（③輸出的
+    正確性缺陷，理論上不該發生），不是需要人工判斷的模糊情況。
     """
-    pending = [m for m in module_list if interfaces_by_module[m["module"]]]
-
-    drafts, failed = _run_batch(pending, interfaces_by_module, layer_by_id, module_by_id)
-    if not failed:
-        return drafts
-
-    logger.warning(
-        "%d 個 module 的五章 LLM 呼叫失敗，等待 %.0f 秒後統一重試一次: %s",
-        len(failed),
-        _RETRY_WAIT_SECONDS,
-        [m["module"] for m in failed],
-    )
-    time.sleep(_RETRY_WAIT_SECONDS)
-
-    retry_drafts, still_failed = _run_batch(failed, interfaces_by_module, layer_by_id, module_by_id)
-    drafts.update(retry_drafts)
-
-    if still_failed:
-        raise PlanAgentModuleError(
-            f"{len(still_failed)} 個 module 的五章 LLM 呼叫重試後仍失敗，中止整個 plan run"
-            f"（06a 五章的保守預設，見本函式 docstring）: {[m['module'] for m in still_failed]}"
-        )
-    return drafts
-
-
-def _run_batch(
-    modules: list[ModuleInfo],
-    interfaces_by_module: dict[str, list[InterfaceSpec]],
-    layer_by_id: dict[str, str],
-    module_by_id: dict[str, str],
-) -> tuple[dict[str, _TaskDraft], list[ModuleInfo]]:
-    """平行處理一批 module，回傳 `(interface_id -> _TaskDraft, 失敗待
-    重試的 ModuleInfo 清單)`。每個 module 的失敗互相隔離，不取消其他
-    module（module 間彼此本來就互不依賴，見 06a 五章）。
-    """
-    if not modules:
-        return {}, []
-
-    drafts: dict[str, _TaskDraft] = {}
-    failed: list[ModuleInfo] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(modules))) as pool:
-        futures = {
-            pool.submit(_plan_module, m, interfaces_by_module, layer_by_id, module_by_id): m for m in modules
-        }
-        for future in concurrent.futures.as_completed(futures):
-            module = futures[future]
-            try:
-                for d in future.result():
-                    iid = module_index.interface_id(d.file_path, d.class_name, d.function_name)
-                    drafts[iid] = d
-            except LlmJsonError as exc:
-                logger.warning("module %s 的五章 LLM 呼叫失敗，列入待重試清單: %s", module["module"], exc)
-                failed.append(module)
-    return drafts, failed
-
-
-def _iface_payload(iface: InterfaceSpec) -> dict:
-    return {
-        "interface_id": module_index.interface_id(iface["file_path"], iface["class_name"], iface["function_name"]),
-        "file_path": iface["file_path"],
-        "class_name": iface["class_name"],
-        "function_name": iface["function_name"],
-        "params": iface["params"],
-        "return_type": iface["return_type"],
-    }
-
-
-def _plan_module(
-    module: ModuleInfo,
-    interfaces_by_module: dict[str, list[InterfaceSpec]],
-    layer_by_id: dict[str, str],
-    module_by_id: dict[str, str],
-) -> list[_TaskDraft]:
-    """對應 06a 五章「單一 module 呼叫內容」全表格：組出這個 module 的
-    payload、呼叫一次 Claude、核對回應涵蓋率、過濾非法的
-    `referenced_interfaces`，回傳這個 module 的 `_TaskDraft` 清單。
-    """
-    own_interfaces = interfaces_by_module[module["module"]]
-    upstream_interfaces = [iface for dep in module["depends_on"] for iface in interfaces_by_module.get(dep, [])]
-
-    own_ids = {
-        module_index.interface_id(i["file_path"], i["class_name"], i["function_name"]): i for i in own_interfaces
-    }
-    visible_ids = set(own_ids) | {
-        module_index.interface_id(i["file_path"], i["class_name"], i["function_name"]) for i in upstream_interfaces
-    }
-
-    payload = {
-        "module": {"module": module["module"], "summary": module["summary"]},
-        "java_methods": [
-            {
-                "class_name": m["class_name"],
-                "java_method": m["java_method"],
-                "description": m["description"],
-                "complexity": m["complexity"],
-            }
-            for m in module["methods"]
-        ],
-        "interfaces": [_iface_payload(i) for i in own_interfaces],
-        "upstream_interfaces": [_iface_payload(i) for i in upstream_interfaces],
-    }
-    user_prompt = json.dumps(payload, ensure_ascii=False)
-
-    result = call_claude_for_json(
-        system_prompt=PLAN_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        schema=PLAN_OUTPUT_SCHEMA,
-        model=DEFAULT_MODEL,
-        max_tokens=PLAN_AGENT_MAX_TOKENS,
-    )
-
-    # 06a 五章「核對規則」：回應的三元組（這裡用 interface_id 編碼）集合
-    # 必須涵蓋輸入的 interfaces 集合，缺漏視同呼叫失敗，交給上層重試佇列。
-    returned_ids = {entry["interface_id"] for entry in result["tasks"]}
-    missing = set(own_ids) - returned_ids
-    if missing:
-        raise LlmJsonError(f"module {module['module']} 的回應遺漏了 interfaces（視同呼叫失敗）: {sorted(missing)}")
-
-    drafts: list[_TaskDraft] = []
-    for entry in result["tasks"]:
-        iid = entry["interface_id"]
-        iface = own_ids.get(iid)
-        if iface is None:
-            # LLM 對不屬於這次 own_ids 的 interface_id 也生成了一筆（幻覺／
-            # 拼錯，或誤把 upstream_interfaces 也當成要輸出的對象）——
-            # missing 檢查只保證 own_ids 都有出現，不保證沒有多餘項目，
-            # 這裡略過，不計入這個 module 的 task 清單。
-            logger.warning("module %s 的五章回應包含非本模組 interface_id，略過: %s", module["module"], iid)
-            continue
-
-        referenced = [rid for rid in entry["referenced_interfaces"] if rid in visible_ids and rid != iid]
-        invalid = [rid for rid in entry["referenced_interfaces"] if rid not in visible_ids]
-        if invalid:
-            logger.warning(
-                "module %s 的 %s 引用了不存在的 referenced_interfaces，已過濾（見 06a 五章核對規則）: %s",
-                module["module"],
-                iid,
-                invalid,
-            )
-
-        drafts.append(
-            _TaskDraft(
-                file_path=iface["file_path"],
-                class_name=iface["class_name"],
-                function_name=iface["function_name"],
-                module=module["module"],
-                layer=layer_by_id[iid],
-                description=entry["description"],
-                context=entry["context"],
-                referenced_interfaces=referenced,
-            )
-        )
-    return drafts
-
-
-# --------------------------------------------------------------------------
-# 八章：涵蓋率驗證（機械，收尾步驟，提前到組裝前執行）
-# --------------------------------------------------------------------------
-
-
-def _validate_coverage(drafts_by_id: dict[str, _TaskDraft], interfaces: list[InterfaceSpec]) -> None:
-    """對應 06a 八章「涵蓋率驗證」：驗證每個 `InterfaceSpec` 都被恰好
-    一個 task 認領。正常執行路徑下不會觸發——五章對每個 module 的回應
-    已經核對過涵蓋率（見 `_plan_module()`），這裡是最後一道
-    defense-in-depth（見 `PlanAgentCoverageError` docstring），不是用來
-    擋一個已知會發生的情況。
-    """
-    expected_ids = {
-        module_index.interface_id(i["file_path"], i["class_name"], i["function_name"]) for i in interfaces
-    }
-    actual_ids = set(drafts_by_id)
-    if expected_ids != actual_ids:
-        missing = sorted(expected_ids - actual_ids)
-        extra = sorted(actual_ids - expected_ids)
-        raise PlanAgentCoverageError(
-            f"task_list 涵蓋率驗證失敗（見 06a 八章，代表 [P] 自己組裝邏輯有 bug）："
-            f"缺漏 {missing}，多餘 {extra}"
-        )
-    if len(interfaces) != len(expected_ids):
-        # python_structure.interfaces 本身就有重複的三元組——③輸出的
-        # 正確性缺陷，理論上不該發生（05a 四章已明訂多載消歧規則），
-        # 見 06a 十二章「06b 仍值得保留一道機械檢查當 defense-in-depth」。
+    ids = [(d.file_path, d.class_name, d.function_name) for d in drafts]
+    if len(ids) != len(set(ids)):
         raise PlanAgentCoverageError(
             "python_structure.interfaces 存在重複的 (file_path, class_name, function_name) 三元組"
-            "（見 06a 十二章 defense-in-depth 說明），無法保證 1:1 涵蓋"
+            "（見 06a 八章 defense-in-depth 說明），無法保證 1:1 涵蓋"
+        )
+    if len(drafts) != len(interfaces):
+        # 理論上不可能發生（drafts 直接由 interfaces 做 1:1 list
+        # comprehension 產生），防禦性保留，真的觸發代表 _build_draft()
+        # 內部邏輯有 bug（如中途過濾掉了某些項目）。
+        raise PlanAgentCoverageError(
+            f"drafts 數量（{len(drafts)}）與 interfaces 數量（{len(interfaces)}）不一致"
+            "（見 06a 八章 defense-in-depth 說明），代表 planning.py 組裝邏輯本身有 bug"
         )
 
 
 # --------------------------------------------------------------------------
-# 七章：本／跨 module 的 schemas／models 判定
+# 七章：本 module 的 schemas／models 判定、target_files 組裝
 # --------------------------------------------------------------------------
 
 
@@ -298,191 +262,122 @@ def _modules_with_schema_file(directory_tree: str, module_names: frozenset[str])
     `schemas/{module}.py`」的欄位（design_agent 內部算過一次，但沒有
     落地進 `python_structure`，見 05a 九章「不重新定義結構」），這裡
     改用機械文字比對重建同一個判斷：directory_tree 的 Schema 定義段
-    固定用 `### {file_path}` 起頭（05a 三章「格式慣例」第 2 點），檢查
-    這個字串是否出現在 directory_tree 裡即可，不需要解析完整的
-    Markdown 結構（見 06a 七章「本 module 的 schemas/{module}.py（若
-    存在）」判定方式）。
+    固定用 `### {file_path}` 起頭（05a 三章「格式慣例」），檢查這個
+    字串是否出現在 directory_tree 裡即可，不需要解析完整的 Markdown
+    結構（見 06a 七章「本 module 的 schemas/{module}.py（若存在）」
+    判定方式）。
     """
     return {m for m in module_names if f"### {module_index.schema_file_path(m)}" in directory_tree}
 
 
-def _build_target_files(
-    draft: _TaskDraft,
-    module_by_id: dict[str, str],
-    layer_by_id: dict[str, str],
-    modules_with_schema_file: set[str],
-) -> list[str]:
-    """對應 06a 七章全表格：`target_files[0]` 固定是自己的 `file_path`；
-    依序加入 `referenced_interfaces` 對應的 `file_path`（同／跨 module
-    皆可，機械查表，不重新判斷要不要納入）、本 module 的
-    schemas／models（依層級判定）、跨 module `referenced_interfaces`
-    所屬外部 module 的 schemas／models（依外部介面自身層級判定，同一
-    套規則套用在外部 module 身上，見七章新增列）。
+def _build_target_files(draft: _TaskDraft, modules_with_schema_file: set[str]) -> list[str]:
+    """對應 06a 七章全表格：自己的 `file_path` 固定放
+    `target_files[0]`；`routers`／`services` 層且該 module 真的產出
+    `schemas/{module}.py` 才加入 schema 檔案；`services`／`repositories`
+    層無條件加入 model 檔案。
+
+    `utils`／`_global` 層不需要額外特殊判斷就會被這兩條規則自然排除
+    （見 06a 七章「utils／_global 層」）：utils 的 `layer == "utils"`
+    不落在 `("routers", "services")` 或 `("services", "repositories")`
+    任一集合裡；`_global` 的 `layer == "routers"` 雖然落在 schema 檢查
+    的集合裡，但 `_global` 這個 module 名稱從不會出現在
+    `modules_with_schema_file`（③從不為它產生 `schemas/_global.py`），
+    第二個條件天然擋下。
     """
     files = [draft.file_path]
-    seen = {draft.file_path}
-
-    def _add(path: str) -> None:
-        if path not in seen:
-            seen.add(path)
-            files.append(path)
-
-    for ref_id in draft.referenced_interfaces:
-        _add(module_index.file_path_of(ref_id))
-
-    # 本 module 的 schemas／models
     if draft.layer in ("routers", "services") and draft.module in modules_with_schema_file:
-        _add(module_index.schema_file_path(draft.module))
+        files.append(module_index.schema_file_path(draft.module))
     if draft.layer in ("services", "repositories"):
-        _add(module_index.model_file_path(draft.module))
-
-    # 跨 module referenced_interfaces 所屬外部 module 的 schemas／models
-    # ——依外部介面自身所在層級判定，同一套規則套用在外部 module 身上
-    # （見 06a 七章新增列）。
-    for ref_id in draft.referenced_interfaces:
-        ref_module = module_by_id.get(ref_id)
-        if ref_module is None or ref_module == draft.module:
-            continue  # 同 module 已由上面「本 module」規則涵蓋
-        ref_layer = layer_by_id.get(ref_id)
-        if ref_layer in ("routers", "services") and ref_module in modules_with_schema_file:
-            _add(module_index.schema_file_path(ref_module))
-        if ref_layer in ("services", "repositories"):
-            _add(module_index.model_file_path(ref_module))
-
+        files.append(module_index.model_file_path(draft.module))
     return files
 
 
-def _build_referenced_functions(draft: _TaskDraft) -> list[ReferencedFunctionRef]:
-    """對應 06a 七章新設計「`referenced_interfaces` 函式層級抽取」：把
-    `draft.referenced_interfaces` 逐一反解成 `(file_path, class_name,
-    function_name)`，供 `translator_cli` 只抽取被引用到的那個函式，不是
-    整份檔案帶入（見 `docs/09b_bug_trace.md` #37 根因）。
-
-    **同檔案引用（`file_path == draft.file_path`）刻意排除**：這種情況
-    指向的是這個 task 自己的檔案，`target_files[0]` 本來就整份帶入（見
-    七章表格第一列），不需要、也不能對它做函式層級抽取——`_read_context_files()`
-    若對 `context_files[0]`（＝`target_files[0]`）套用這份清單，會把
-    「這次要填的目標函式本身」也一併篩掉（因為目標函式不在
-    `referenced_interfaces` 裡，那是「這個函式引用別人」的清單，不包含
-    自己），等於損毀目標檔案的 context。
-    """
-    result: list[ReferencedFunctionRef] = []
-    for ref_id in draft.referenced_interfaces:
-        file_path, class_name, function_name = module_index.parse_interface_id(ref_id)
-        if file_path == draft.file_path:
-            continue
-        result.append({"file_path": file_path, "class_name": class_name, "function_name": function_name})
-    return result
-
-
 # --------------------------------------------------------------------------
-# 六／八章：depends_on 組裝、task id 全序編號、最終組裝
+# 六章、八章：depends_on 組裝、task id 全序編號、最終組裝
 # --------------------------------------------------------------------------
 
 
-def _build_depends_on(draft: _TaskDraft, own_id: str, module_by_id: dict[str, str], order_index: dict[str, int]) -> list[str]:
-    """對應 06a 六章：只保留同 module 的 `referenced_interfaces`（跨
-    module 的部分只用於七章 `target_files`，不進 `depends_on`），且
-    只保留「被依賴 task 的全序索引 < 依賴方 task 的全序索引」的邊——
-    索引相等或反向的邊直接捨棄並記 log（多半是同層函式互相引用，或
-    LLM 誤判方向，見六章「防環規則」）。這個規則保證最終的
-    `depends_on` 圖必為全序的子集，結構上不可能出現環，不需要另外跑
-    拓樸排序／環偵測演算法驗證。
+def _build_depends_on_map(ordered_drafts: list[_TaskDraft], task_ids: list[str]) -> dict[str, list[str]]:
+    """對應 06a 六章「機械規則」：同 module 內、且**同一個
+    `translator_backend`** 的 task 依全序（`layer` → `function_name` →
+    `class_name`）串成一條鏈，每個 task 的 `depends_on` 只放全序中緊接
+    在前一名的 task id；module 邊界（跟前一名不同 module）、後端邊界
+    （跟前一名不同 `translator_backend`）都沒有同 module 前一名，
+    `depends_on` 留空。`_utils`／`_global` 這兩個保留 module 內部沒有
+    排程順序要求（見六章），固定留空，即使它們在全序裡確實彼此相鄰。
+
+    **後端邊界檢查對應 docs/refactor_bug_trace.md：真實環境重現過這條
+    鏈跨後端造成的連坐**——序列鏈原始理由（qwen 併發數鎖死為 1，見
+    `graph/scheduler.py::_backfill_missing_task_deps()` 同一段理由）只
+    對 qwen 成立；repository 層（qwen）跟 services／routers 層（Claude）
+    在全序裡恰好相鄰（`LAYER_RANK`：repositories < services < routers），
+    若不分後端一律串鏈，一個孤立的 qwen 格式錯誤／逾時失敗會讓同 module
+    底下毫無關聯、原本可以正常跑的 Claude service／router task 全部卡
+    死等一個永遠不會完成的上游——這是這份 `depends_on` 真正被消費的
+    地方（`graph/scheduler.py::_task_deps_satisfied()` 只認 `task_done`
+    不認終態），比 `graph/scheduler.py` 那邊的同名防禦更早、更根本：
+    [P] 這裡本來就無條件幫每個 module 排出一條完整全序鏈，
+    `_backfill_missing_task_deps()` 只補「沒有 depends_on」的殘餘情況，
+    實務上幾乎不會觸發，真正吃到全序鏈的正是這裡。
+
+    `ordered_drafts`／`task_ids` 必須是同一個全序、逐一對應的兩個清單
+    （見呼叫端 `_assemble_task_list()`）。
     """
-    own_rank = order_index[own_id]
-    depends_on: list[str] = []
-    for ref_id in draft.referenced_interfaces:
-        if module_by_id.get(ref_id) != draft.module:
-            continue
-        ref_rank = order_index.get(ref_id)
-        if ref_rank is None or ref_rank >= own_rank:
-            logger.info(
-                "module %s 的 %s 對 %s 的依賴邊被防環規則捨棄（見 06a 六章）", draft.module, own_id, ref_id
-            )
-            continue
-        depends_on.append(f"task_{ref_rank:03d}")
+    depends_on: dict[str, list[str]] = {task_ids[0]: []} if ordered_drafts else {}
+    for i in range(1, len(ordered_drafts)):
+        cur, prev = ordered_drafts[i], ordered_drafts[i - 1]
+        if (
+            cur.module != prev.module
+            or cur.module in _RESERVED_MODULES
+            or cur.translator_backend != prev.translator_backend
+        ):
+            depends_on[task_ids[i]] = []
+        else:
+            depends_on[task_ids[i]] = [task_ids[i - 1]]
     return depends_on
 
 
-def _augment_context_with_config_hint(
-    context: str, file_path: str, config_field_mappings: dict[str, dict[str, str]]
-) -> str:
-    """對應 docs/09b_bug_trace.md #45 修法：`python_structure.
-    config_field_mappings`（③ design_agent.global_infra 機械組出，見
-    graph/state.py 該欄位 docstring）記錄了「這個 Java 檔案的哪些欄位是
-    Spring `@Value("${key}")` 注入、對應 Python 端哪個環境變數常數」。
-    這個 task 若剛好要填的函式所在檔案有對應項目，機械附加一段提示到
-    `context` 尾端——⑤ 翻譯到原本讀取 `this.xxx`（`@Value` 欄位）的
-    程式碼時，才有明確依據可用，不會像 #45 實際案例那樣把它跟同一個
-    class 裡其他無關的框架物件（如 `BuildProperties`）混為一談、幻覺出
-    從未存在的型別。純機械字串附加，不呼叫 LLM——property key 到常數
-    名稱的對應是決定性事實，沒有語意判斷空間（見 global_infra.py）。
-
-    對應 docs/09b_bug_trace.md #58：舊版提示只給 `app.core.config.
-    LANGUAGE_CODE` 這種點記法，⑤ 連續三次真實 pipeline run 都把它誤讀
-    成「有一個物件、屬性名稱是 LANGUAGE_CODE」，幻覺出從未存在的
-    `settings` 物件（`from app.core.config import settings;
-    settings.LANGUAGE_CODE`）——即使提示已經明講「不要臆測其他來源」，
-    物件屬性存取仍是它的預設直覺。現在直接把完整 import 陳述式和裸
-    用法拼進提示，並明講 config.py「沒有 settings 物件、沒有 class
-    包裝」，把最常見的錯誤直接點名禁止。
-    """
-    field_map = config_field_mappings.get(file_path)
-    if not field_map:
-        return context
-    field_hints = "；".join(
-        f"`{java_field}` 欄位改成 `from app.core.config import {python_ref.rsplit('.', 1)[-1]}` "
-        f"後直接使用 `{python_ref.rsplit('.', 1)[-1]}`"
-        for java_field, python_ref in field_map.items()
-    )
-    hint = (
-        f"這個類別有 Spring @Value 屬性注入欄位：{field_hints}"
-        "（環境變數注入，已由 ④ 生成，見 app/core/config.py）。"
-        "app/core/config.py 裡只有裸模組層級常數（例如 "
-        '`LANGUAGE_CODE = os.environ["LANGUAGE_CODE"]`），'
-        "沒有 settings 物件、沒有任何 class 包裝——絕對不要寫成 "
-        "`settings.LANGUAGE_CODE` 這種物件屬性存取，也不要臆測其他來源（如框架 bean）。"
-    )
-    return f"{context}\n\n{hint}" if context else hint
-
-
 def _assemble_task_list(
-    module_rank: dict[str, int],
-    layer_by_id: dict[str, str],
-    module_by_id: dict[str, str],
-    drafts_by_id: dict[str, _TaskDraft],
-    modules_with_schema_file: set[str],
-    config_field_mappings: dict[str, dict[str, str]],
+    drafts: list[_TaskDraft], module_rank: dict[str, int], modules_with_schema_file: set[str]
 ) -> list[TaskSpec]:
-    """對應 06a 八章「id 產生規則」：全部 task 依「module（依
-    `module_list` 原始順序）→ 層級 → `function_name` 字母序（
-    `class_name` 為 tie-break）」的固定全序依序編號 `task_{:03d}`——
-    沿用六章防環規則用的同一套全序（見 `module_index.full_order_key()`），
-    編號穩定、可重現。
+    """對應 06a 九章「id 產生規則」：全部 task 依固定全序（見
+    `module_index.full_order_key()`）依序編號 `task_{:03d}`，編號穩定、
+    可重現；同一趟排序結果也拿去算七章的 `depends_on`（見
+    `_build_depends_on_map()`），兩者共用同一份全序，不重複排序。
+
+    `referenced_functions` 刻意不設值（`TaskSpec` 這個欄位仍是
+    `NotRequired`，見 06a 九章「暫時保留在 TypedDict 定義裡」的說明）——
+    這個舊機制的功能已被 `reference_targets`（六章）取代，[P] 不再產生
+    `referenced_functions` 這份資料，07a／09a 既有程式碼讀不到這個 key
+    時已有安全的預設行為（`task.get("referenced_functions", [])`）。
     """
-    ordered_ids = sorted(
-        drafts_by_id,
-        key=lambda iid: module_index.full_order_key(
-            module_rank, drafts_by_id[iid].module, drafts_by_id[iid].layer,
-            drafts_by_id[iid].function_name, drafts_by_id[iid].class_name,
-        ),
+    ordered = sorted(
+        drafts,
+        key=lambda d: module_index.full_order_key(module_rank, d.module, d.layer, d.function_name, d.class_name),
     )
-    order_index = {iid: i for i, iid in enumerate(ordered_ids)}
+    task_ids = [f"task_{i:03d}" for i in range(len(ordered))]
+    depends_on_map = _build_depends_on_map(ordered, task_ids)
 
     tasks: list[TaskSpec] = []
-    for iid in ordered_ids:
-        draft = drafts_by_id[iid]
-        tasks.append(
-            TaskSpec(
-                id=f"task_{order_index[iid]:03d}",
-                module=draft.module,
-                class_name=draft.class_name,
-                function_name=draft.function_name,
-                description=draft.description,
-                target_files=_build_target_files(draft, module_by_id, layer_by_id, modules_with_schema_file),
-                context=_augment_context_with_config_hint(draft.context, draft.file_path, config_field_mappings),
-                depends_on=_build_depends_on(draft, iid, module_by_id, order_index),
-                referenced_functions=_build_referenced_functions(draft),
-            )
+    for task_id, draft in zip(task_ids, ordered):
+        task = TaskSpec(
+            id=task_id,
+            module=draft.module,
+            phase=draft.phase,
+            translator_backend=draft.translator_backend,
+            java_method_id=draft.java_method_id,
+            class_name=draft.class_name,
+            function_name=draft.function_name,
+            description=draft.description,
+            target_files=_build_target_files(draft, modules_with_schema_file),
+            reference_targets=draft.reference_targets,
+            context=draft.context,
+            depends_on=depends_on_map[task_id],
+            return_type=draft.return_type,
         )
+        # 06a 六章「截斷可見化」：只有真的被截斷才設這個 key，缺席即代表
+        # 「沒有這回事」，不留一個永遠是 False 的多餘欄位。
+        if draft.reference_targets_truncated:
+            task["reference_targets_truncated"] = True
+        tasks.append(task)
     return tasks

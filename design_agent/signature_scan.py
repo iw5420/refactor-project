@@ -33,6 +33,7 @@ import javalang
 import javalang.tree
 
 from common.java_type_mapping import type_str as _type_str
+from common.jpa_base_repository import detect_jpa_base_entity
 from design_agent.types import JavaClassSignature, JavaField, JavaMethodSignature, JavaParam
 
 _STEREOTYPES = {"RestController", "Controller", "Service", "Component", "Repository"}
@@ -71,14 +72,31 @@ def scan_java_files(java_files: list[str], project_root: str) -> dict[str, JavaC
     for rel_path in java_files:
         source = Path(project_root, rel_path).read_text(encoding="utf-8")
         tree = javalang.parse.parse(source)  # JavaSyntaxError 原樣往上拋
+        # `tree.package` 是 None 的情況是 default package（沒有 package
+        # 宣告），Java 專案裡極罕見，`JavaClassSignature.package` 保留
+        # None，layout.is_utils_package() 對 None 一律回傳 False。
+        package_name = tree.package.name if tree.package is not None else None
         for decl in tree.types:
             if not isinstance(decl, (javalang.tree.ClassDeclaration, javalang.tree.InterfaceDeclaration)):
                 continue
             is_class_decl = isinstance(decl, javalang.tree.ClassDeclaration)
+            # `ClassDeclaration.extends` 是單一 ReferenceType | None（Java
+            # 單一繼承）；`InterfaceDeclaration.extends` 是 list（Java
+            # 介面可以同時繼承多個介面）——detect_jpa_base_entity() 統一
+            # 吃 list，這裡先正規化成同一種形狀。Spring Data Repository
+            # 慣例上一律是 interface，ClassDeclaration 這條分支實務上不會
+            # 命中，但不假設它一定是 None，保守處理。
+            extends_list = (
+                decl.extends
+                if not is_class_decl
+                else ([decl.extends] if decl.extends is not None else [])
+            )
             result[decl.name] = JavaClassSignature(
                 file_path=rel_path,
                 class_name=decl.name,
                 stereotype=_stereotype_of(decl.annotations),
+                package=package_name,
+                jpa_base_entity=detect_jpa_base_entity(extends_list),
                 methods=[_method_signature(decl.name, m) for m in decl.methods],
                 # 只有 ClassDeclaration 有建構子，InterfaceDeclaration 沒有
                 # `.constructors` 屬性可讀（見 JavaClassSignature.constructors

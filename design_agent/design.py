@@ -14,7 +14,7 @@ import concurrent.futures
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import javalang
@@ -22,6 +22,13 @@ import javalang.tree
 
 from common.concurrency import default_concurrency
 from common.java_annotations import DATA_CLASS_ANNOTATIONS, JPA_ENTITY_ANNOTATIONS
+from common.jpa_base_repository import (
+    BASE_REPOSITORY_CLASS,
+    BASE_REPOSITORY_CONTENT,
+    BASE_REPOSITORY_FILE,
+    JPA_BASE_METHOD_NAME_MAP,
+    synthetic_java_method_id,
+)
 from common.llm_client import LlmJsonError, call_claude_for_json
 from design_agent import global_infra, layout, signature_scan, type_mapping
 from design_agent.exceptions import DesignAgentCoverageError, DesignAgentModuleError
@@ -52,6 +59,7 @@ class _MethodContext:
     class_name: str
     complexity: str
     function_name: str  # 已套用 camelCase→snake_case 與私有方法底線前綴（05a 七章）
+    java_method_id: str  # 逐字沿用①既有的 method_id() 格式，見下方建構處說明
     layer: str | None  # None 代表機械規則判斷不了，等 LLM 的 class_layers 決定
     params: list[ParamSpec]  # 已知的業務參數，不含 LLM 決定的框架注入/db session 參數
     return_type: str
@@ -67,11 +75,14 @@ def design_all_modules(
     api_to_python_target: list[ApiMapping],
     openapi_spec: dict,
     java_project_path: str,
-) -> tuple[list[InterfaceSpec], str, set[str], dict[str, dict[str, str]], list[dict[str, str]]]:
+    skip_excluded_overloads: list[tuple[str, str, str]],
+) -> tuple[
+    list[InterfaceSpec], str, set[str], dict[str, dict[str, str]], list[dict[str, str]], dict[str, dict]
+]:
     """對外入口，對應 05a 六章全節。回傳
     `(全部 module 攤平的 InterfaceSpec 清單, 組裝完成的 directory_tree 字串,
     實際產出過 schemas/{module}.py 的 module 名稱集合,
-    config_field_mappings, config_env_vars)`。
+    config_field_mappings, config_env_vars, java_index)`。
 
     第三個回傳值供 `route_mapping.build_route_mappings()` 判斷
     `related_files` 該不該納入 schema 檔案——不能只憑「這個 module 有沒有
@@ -86,6 +97,12 @@ def design_all_modules(
     `docs/09b_bug_trace.md` #45／#46——都由
     `global_infra.scan_value_injected_fields()`／`render_config_py()`
     同一次呼叫機械組出，跟六章逐 module 的 LLM 呼叫無關。
+
+    第六個回傳值 `java_index`（`java_method_id → {file_path, class_name,
+    function_name, phase}`）見 `graph/state.py PythonStructure.java_index`
+    docstring、`06a_plan_agent_architecture.md` 六章——對 `all_interfaces`
+    做一次收尾投影即可，每一筆 `InterfaceSpec` 都已經帶著自己的
+    `java_method_id`（見下方各建構處），不需要另外重新計算。
     """
     waves = layout.build_waves(module_list)
     boundary_index = _build_boundary_index(api_to_python_target)
@@ -96,7 +113,9 @@ def design_all_modules(
     interfaces_by_module: dict[str, list[InterfaceSpec]] = {}
 
     for wave in waves:
-        wave_results = _design_wave_with_retry(wave, boundary_index, openapi_spec, java_project_path, interfaces_by_module)
+        wave_results = _design_wave_with_retry(
+            wave, boundary_index, openapi_spec, java_project_path, interfaces_by_module, skip_excluded_overloads,
+        )
         for result in wave_results:
             interfaces_by_module[result.module] = result.interfaces  # type: ignore[assignment]
             all_interfaces.extend(result.interfaces)  # type: ignore[arg-type]
@@ -127,9 +146,48 @@ def design_all_modules(
     for file_path, python_source in global_infra.design_enum_backed_interfaces(enum_backed_interfaces):
         infra_sections.append(layout.render_code_section(file_path, python_source))
 
+    # 對應 docs/refactor_bug_trace.md #10／#16：只要有任一 InterfaceSpec
+    # 帶 jpa_base_entity（代表這個專案至少一個 repository 需要繼承
+    # BaseRepository），才輸出 app/core/base_repository.py——沒有任何
+    # Spring Data repository 的專案不需要這個檔案，比照 config.py「只在
+    # 有需要時才輸出」的既有先例（見上方 config_py_content 判斷）。
+    needs_base_repository = any(iface.get("jpa_base_entity") for iface in all_interfaces)
+    if needs_base_repository:
+        infra_sections.append(layout.render_code_section(BASE_REPOSITORY_FILE, BASE_REPOSITORY_CONTENT))
+
     directory_tree = layout.render_directory_tree(directory_lines, schema_fragments, infra_sections)
 
-    return all_interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars
+    java_index = {
+        iface["java_method_id"]: {
+            "file_path": iface["file_path"],
+            "class_name": iface["class_name"],
+            "function_name": iface["function_name"],
+            "phase": iface["phase"],
+        }
+        for iface in all_interfaces
+    }
+    if needs_base_repository:
+        # BaseRepository 的內建方法只實作一份、被所有 repository 繼承
+        # （見 common/jpa_base_repository.py），不像一般 InterfaceSpec
+        # 一一對應一個 Python 檔案位置——這裡固定指向同一個
+        # BASE_REPOSITORY_FILE／BASE_REPOSITORY_CLASS，供 parse_agent/
+        # call_graph.py::_yield_call() 合成的 synthetic_java_method_id()
+        # 反查（見該函式對應處），讓 [P] 六章「呼叫鏈範圍查找」／
+        # reference_targets 解析能找到這批繼承而來的方法的 Python 定義
+        # 位置，即使它們從未各自產生過 InterfaceSpec。
+        java_index.update(
+            {
+                synthetic_java_method_id(java_name): {
+                    "file_path": BASE_REPOSITORY_FILE,
+                    "class_name": BASE_REPOSITORY_CLASS,
+                    "function_name": python_name,
+                    "phase": 1,
+                }
+                for java_name, python_name in JPA_BASE_METHOD_NAME_MAP.items()
+            }
+        )
+
+    return all_interfaces, directory_tree, modules_with_schema_file, config_field_mappings, config_env_vars, java_index
 
 
 def _render_directory_lines(
@@ -162,6 +220,7 @@ def _design_wave_with_retry(
     openapi_spec: dict,
     java_project_path: str,
     interfaces_by_module: dict[str, list[InterfaceSpec]],
+    skip_excluded_overloads: list[tuple[str, str, str]],
 ) -> list[ModuleDesignResult]:
     """對一整波（同一波內彼此不依賴）module 平行呼叫 Claude，失敗的
     module 列入待重試清單，這一波其餘 module 跑完後等待
@@ -169,7 +228,9 @@ def _design_wave_with_retry(
     design run（見 05a 六章：`python_structure` 是 [P]／④ 唯一的權威
     規格，任何一個 module 的介面缺失風險遠高於重新執行一次）。
     """
-    results, failed = _run_wave_batch(wave, boundary_index, openapi_spec, java_project_path, interfaces_by_module)
+    results, failed = _run_wave_batch(
+        wave, boundary_index, openapi_spec, java_project_path, interfaces_by_module, skip_excluded_overloads,
+    )
     if not failed:
         return results
 
@@ -181,7 +242,9 @@ def _design_wave_with_retry(
     )
     time.sleep(_RETRY_WAIT_SECONDS)
 
-    retry_results, still_failed = _run_wave_batch(failed, boundary_index, openapi_spec, java_project_path, interfaces_by_module)
+    retry_results, still_failed = _run_wave_batch(
+        failed, boundary_index, openapi_spec, java_project_path, interfaces_by_module, skip_excluded_overloads,
+    )
     results.extend(retry_results)
 
     if still_failed:
@@ -198,6 +261,7 @@ def _run_wave_batch(
     openapi_spec: dict,
     java_project_path: str,
     interfaces_by_module: dict[str, list[InterfaceSpec]],
+    skip_excluded_overloads: list[tuple[str, str, str]],
 ) -> tuple[list[ModuleDesignResult], list[ModuleInfo]]:
     """平行處理一批 module（同一波內），回傳
     (成功結果清單, 失敗待重試的 ModuleInfo 清單)。每個 module 的失敗
@@ -207,7 +271,10 @@ def _run_wave_batch(
     failed: list[ModuleInfo] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(_MAX_WAVE_WORKERS, len(modules))) as pool:
         futures = {
-            pool.submit(_design_module, m, boundary_index, openapi_spec, java_project_path, interfaces_by_module): m
+            pool.submit(
+                _design_module, m, boundary_index, openapi_spec, java_project_path,
+                interfaces_by_module, skip_excluded_overloads,
+            ): m
             for m in modules
         }
         for future in concurrent.futures.as_completed(futures):
@@ -323,7 +390,7 @@ def _build_method_contexts(
                 f"（見 DesignAgentCoverageError docstring）"
             )
 
-        layer = layout.layer_for_stereotype(class_sig.stereotype)
+        layer = layout.layer_for_class(class_sig.stereotype, class_sig.package)
 
         # 多載消歧（05a 四章「多載方法的處理」）：同一組 overloads 的
         # sig.method_name 相同，_python_function_name() 對每個 sig 都會
@@ -390,6 +457,11 @@ def _build_method_contexts(
                     class_name=class_sig.class_name,
                     complexity=method_info["complexity"],
                     function_name=function_name,
+                    # 逐字沿用①既有的 parse_agent/types.py::method_id() 格式
+                    # （"{file_path}::{class_name}::{method_name}"，不含參數
+                    # 型別），供 [P] 六章「呼叫鏈範圍查找」直接查①的呼叫圖，
+                    # 見 05a_design_agent_architecture.md 對應章節。
+                    java_method_id=f"{class_sig.file_path}::{class_sig.class_name}::{sig.method_name}",
                     layer=layer,
                     params=params,
                     return_type=return_type,
@@ -447,26 +519,35 @@ def _reorder_params_defaults_last(params: list[ParamSpec]) -> list[ParamSpec]:
 _GLOBAL_MODULE_NAME = "_global"
 
 
-def _exception_handler_targets(java_files: list[str], java_project_path: str) -> dict[str, str]:
+def _exception_handler_targets(
+    java_files: list[str], java_project_path: str
+) -> tuple[dict[str, str], dict[str, str]]:
     """重新掃 `_global` module 的 `java_files`，逐 method 找
     `@ExceptionHandler(X.class)` 的目標例外類別名稱，回傳
-    `{method_name: exception_class_name}`。**只收「單一 class-literal」
-    形式**（javalang 把 `X.class`解析成 `ClassReference(type=
-    ReferenceType(name="X"))`）——`@ExceptionHandler({A.class, B.class})`
-    這種陣列形式的 `element` 不是 `ClassReference`，不會被收進這份
-    對照表，呼叫端（`_design_global_advice_module()`）對查不到的方法
-    一律記警告略過，不嘗試處理（見 09b_bug_trace.md #11/#12「範圍刻意
-    收斂」）。這是獨立於 `signature_scan.scan_java_files()` 之外的小型
-    專用掃描——一般業務 module 不需要 annotation 的字面值，只有這個
-    特殊模組需要，不值得為了這一種用途替 `JavaMethodSignature` 加欄位。
+    `({method_name: exception_class_name}, {class_name: file_path})`。
+    **只收「單一 class-literal」形式**（javalang 把 `X.class`解析成
+    `ClassReference(type=ReferenceType(name="X"))`）——
+    `@ExceptionHandler({A.class, B.class})` 這種陣列形式的 `element`
+    不是 `ClassReference`，不會被收進這份對照表，呼叫端
+    （`_design_global_advice_module()`）對查不到的方法一律記警告略過，
+    不嘗試處理（見 09b_bug_trace.md #11/#12「範圍刻意收斂」）。這是獨立
+    於 `signature_scan.scan_java_files()` 之外的小型專用掃描——一般業務
+    module 不需要 annotation 的字面值，只有這個特殊模組需要，不值得為了
+    這一種用途替 `JavaMethodSignature` 加欄位。
+
+    第二個回傳值（`class_name → file_path`）在同一次掃描順手收集，供
+    `_design_global_advice_module()` 組 `java_method_id` 用，不需要
+    另外再掃一次同一批檔案。
     """
     targets: dict[str, str] = {}
+    class_file_paths: dict[str, str] = {}
     for rel_path in java_files:
         source = Path(java_project_path, rel_path).read_text(encoding="utf-8")
         tree = javalang.parse.parse(source)
         for decl in tree.types:
             if not isinstance(decl, javalang.tree.ClassDeclaration):
                 continue
+            class_file_paths[decl.name] = rel_path
             for method_decl in decl.methods:
                 for ann in method_decl.annotations:
                     if ann.name != "ExceptionHandler":
@@ -474,7 +555,7 @@ def _exception_handler_targets(java_files: list[str], java_project_path: str) ->
                     element = ann.element
                     if isinstance(element, javalang.tree.ClassReference):
                         targets[method_decl.name] = element.type.name
-    return targets
+    return targets, class_file_paths
 
 
 def _design_global_advice_module(module: ModuleInfo, java_project_path: str) -> ModuleDesignResult:
@@ -499,7 +580,7 @@ def _design_global_advice_module(module: ModuleInfo, java_project_path: str) -> 
     `fill_function()` 流程翻譯 Java handler 方法本體，見
     `09b_bug_trace.md` #11/#12「① 已完成的前置修正」。
     """
-    targets = _exception_handler_targets(module["java_files"], java_project_path)
+    targets, class_file_paths = _exception_handler_targets(module["java_files"], java_project_path)
 
     interfaces: list[InterfaceSpec] = []
     for method_info in module["methods"]:
@@ -522,10 +603,155 @@ def _design_global_advice_module(module: ModuleInfo, java_project_path: str) -> 
                 return_type="Response",
                 http_method=None,
                 route_path=None,
+                # 全域例外處理由框架直接呼叫，語意上跟 routers 層同屬
+                # Phase 2（見 refactor_plan.md 二章：不套用 _STEREOTYPE_LAYER
+                # 也不是 utils／repository，機械歸為 Phase 2）。
+                phase=2,
+                java_method_id=f"{class_file_paths[method_info['class_name']]}::"
+                                f"{method_info['class_name']}::{java_method}",
             )
         )
 
     return ModuleDesignResult(module=module["module"], interfaces=interfaces, directory_tree_fragment=None)
+
+
+def _filter_skip_excluded_overloads(
+    class_signatures: dict[str, JavaClassSignature],
+    skip_excluded_overloads: list[tuple[str, str, str]],
+) -> dict[str, JavaClassSignature]:
+    """使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」，
+    不只是跳過自動化測試（見
+    `docs/03a_spec_collection_agent_architecture.md`「Decision.SKIP 的
+    語意」）。這裡在 `signature_scan.scan_java_files()` 重新掃描出**每個
+    物理多載各自的 `http_method`** 之後，立刻用 ①
+    `skip_filter.compute_skip_excluded_overloads()` 算出的 HTTP method
+    精確排除清單，把該排除的多載從 `class_sig.methods` 濾掉，產生一份
+    新的、乾淨的資料——`_build_method_contexts()` 後續展開 overloads／
+    生成骨架的既有邏輯完全不用改，因為它讀到的資料本來就不會再包含
+    這個多載了（見 `docs/refactor_bug_trace.md` #8 的討論）。
+
+    只比對 `(class_name, method_name, http_method)`：`skip_excluded_
+    overloads` 沒有帶檔案路徑那一段，同一次呼叫裡 `class_signatures`
+    是逐檔案分開存的 dict（key 是 class 名稱），同一個 class_name 不會
+    跨檔案重複出現在同一個 `_design_module()` 呼叫裡，不需要檔案路徑
+    也能唯一定位。`JavaClassSignature` 是 frozen dataclass，過濾後的
+    `methods` 用 `dataclasses.replace()` 產生新實例，不原地修改。
+    """
+    if not skip_excluded_overloads:
+        return class_signatures
+    excluded = set(skip_excluded_overloads)
+    return {
+        class_name: replace(
+            sig,
+            methods=[
+                m for m in sig.methods
+                if (class_name, m.method_name, m.http_method) not in excluded
+            ],
+        )
+        for class_name, sig in class_signatures.items()
+    }
+
+
+# Spring Data JpaRepository/CrudRepository 內建的無過濾查詢方法，Java 原始碼
+# 裡從不會顯式宣告（見 `_synthesize_inherited_repository_reads()` docstring），
+# 目前只合成這一個、最常見也最安全的預設值，刻意不擴大到 save／findById／
+# deleteById 等其他內建方法——那些方法的參數／回傳型別需要更多假設（如
+# 主鍵型別），真的遇到再視真實案例擴充，不預先猜測。
+_INHERITED_REPOSITORY_READ_METHOD = "findAll"
+
+
+def _synthesize_inherited_repository_reads(
+    class_signatures: dict[str, JavaClassSignature],
+    module: ModuleInfo,
+    layer_by_class: dict[str, str],
+    covered_class_names: set[str],
+    known_classes: frozenset[str],
+) -> list[InterfaceSpec]:
+    """對應 docs/refactor_bug_trace.md 真實案例：`QuestionRepository` 唯一
+    顯式宣告的方法 `findByTypeAndPart()` 因為只被一個使用者標記 skip 的
+    endpoint 呼叫（`GradingController.getRandomQuestions()`），被①的呼叫鏈
+    排除機制正確地從 `module["methods"]` 移除；但另一個沒有被 skip 的方法
+    `QuestionService.getList()` 仍然呼叫 `questionRepository.findAll()`——
+    `findAll()` 繼承自 `JpaRepository`，Java 原始碼裡從來沒有顯式宣告，
+    `signature_scan.scan_java_files()` 天生看不到它。
+
+    `_design_module()` 既有的孤兒類別判斷（見該函式下方迴圈）以
+    `sig.methods`（③對原始檔案的重新掃描，不受①的呼叫鏈排除影響）是否
+    非空來判斷「這個類別是不是已經被某個 InterfaceSpec 涵蓋」——但
+    `QuestionRepository.methods` 因為 `findByTypeAndPart` 還在（③沒有跟著
+    ①排除），永遠是非空，導致這個類別被誤判成「已處理」而整個跳過孤兒
+    判斷，連一行警告都不會留下：不是「產生了但缺方法」，是完全沒有任何
+    痕跡。
+
+    這裡在孤兒判斷之前先跑一輪：找出「③認為有方法、但一個方法都沒被
+    `_build_method_contexts()` 實際收錄」的類別（`sig.methods` 非空、
+    `name not in covered_class_names`），且這個類別仍被同模組另一個
+    「存活」（有被收錄的方法）類別以欄位方式引用——這代表它不是真的沒人
+    用，只是唯一的顯式方法被上游排除掉。若這個類別的層級解析為
+    `repositories`，且 `sig.jpa_base_entity` 有值（見 `signature_scan.
+    scan_java_files()`，直接從 `extends JpaRepository<Entity, Id>` 讀出，
+    不是猜測），合成一筆 `find_all()` 的 InterfaceSpec，讓下游呼叫它的
+    函式有真正的目標可以呼叫——其餘情況（層級不是 repositories，或這個
+    interface 沒有繼承 Spring Data 基底介面）只記警告，不合成（無法確定
+    安全預設值，見 `_INHERITED_REPOSITORY_READ_METHOD` docstring「刻意
+    窄範圍」）。合成的 InterfaceSpec 帶上同一個 `jpa_base_entity`，供
+    `translator_cli/scaffold.py` 渲染 `class X(BaseRepository[Entity])`
+    繼承宣告用（對應 docs/refactor_bug_trace.md #10／#16 的統一修法）。
+
+    刻意只在這裡新增警告訊息，不去更動既有孤兒判斷迴圈本身的邏輯（它對
+    `sig.methods` 真的是空清單的案例運作正確，不需要跟著改)。
+    """
+    synthesized: list[InterfaceSpec] = []
+    for name, sig in class_signatures.items():
+        if not sig.methods or name in covered_class_names:
+            continue
+        still_referenced = any(
+            f.java_type == name
+            for other_name, other_sig in class_signatures.items()
+            if other_name in covered_class_names
+            for f in other_sig.fields
+        )
+        if not still_referenced:
+            continue
+        resolved_layer = layout.layer_for_class(sig.stereotype, sig.package) or layer_by_class.get(name)
+        if resolved_layer != "repositories":
+            logger.warning(
+                "module %s 的類別 %s 的方法全部被上游排除（如呼叫鏈排除），"
+                "但仍被其他存活類別以欄位方式引用，且不是 repositories 層，"
+                "無法套用內建 CRUD 方法的安全預設值，需要人工檢查是否有下游"
+                "呼叫會找不到目標",
+                module["module"], name,
+            )
+            continue
+        entity_type = sig.jpa_base_entity
+        if entity_type is None:
+            logger.warning(
+                "module %s 的 repository 類別 %s 的方法全部被上游排除，"
+                "但仍被其他存活類別以欄位方式引用，且這個 interface 沒有"
+                "繼承 JpaRepository/CrudRepository/PagingAndSortingRepository，"
+                "無法合成 %s()，需要人工檢查",
+                module["module"], name, _INHERITED_REPOSITORY_READ_METHOD,
+            )
+            continue
+        logger.warning(
+            "module %s 的 repository 類別 %s 的方法全部因呼叫鏈排除被移除，"
+            "但仍被其他存活類別依賴其繼承自 JpaRepository/CrudRepository 的"
+            "內建方法，合成一個 find_all() 佔位介面",
+            module["module"], name,
+        )
+        synthesized.append(
+            InterfaceSpec(
+                file_path=layout.file_path_for_layer(module["module"], "repositories"),
+                class_name=sig.class_name,
+                function_name="find_all",
+                params=[ParamSpec(name="db", type="Session")],
+                return_type=type_mapping.map_java_type(f"List<{entity_type}>", known_classes),
+                phase=layout.phase_for_layer("repositories"),
+                java_method_id=f"{sig.file_path}::{sig.class_name}::{_INHERITED_REPOSITORY_READ_METHOD}",
+                jpa_base_entity=entity_type,
+            )
+        )
+    return synthesized
 
 
 def _design_module(
@@ -534,6 +760,7 @@ def _design_module(
     openapi_spec: dict,
     java_project_path: str,
     interfaces_by_module: dict[str, list[InterfaceSpec]],
+    skip_excluded_overloads: list[tuple[str, str, str]],
 ) -> ModuleDesignResult:
     """對應 05a 六章「單一 module 的 Claude 呼叫內容」全表格：組出這個
     module 的 `_MethodContext` 清單、決定這次呼叫真正需要 LLM 回答的
@@ -549,15 +776,22 @@ def _design_module(
         return _design_global_advice_module(module, java_project_path)
 
     class_signatures = signature_scan.scan_java_files(module["java_files"], java_project_path)
+    class_signatures = _filter_skip_excluded_overloads(class_signatures, skip_excluded_overloads)
     contexts = _build_method_contexts(module, class_signatures, boundary_index, openapi_spec)
 
-    # 只問「有一般方法」的無 stereotype 類別要歸哪一層：一個 class 若
+    # 只問「有一般方法」、機械規則判斷不了層級的類別：一個 class 若
     # `methods` 是空清單（常見情況：只有建構子的自訂例外類別，見
     # JavaClassSignature.constructors docstring），永遠不會有任何
     # _MethodContext 引用到它（overloads 永遠篩不到東西），LLM 回答的
     # 層級因此永遠用不到——這批 class 改走下方 orphan class 處理，不需要
-    # 也不該浪費一次 LLM 問答在一個沒有答案會被使用的問題上。
-    classes_needing_layer = [c for c in class_signatures.values() if c.stereotype is None and c.methods]
+    # 也不該浪費一次 LLM 問答在一個沒有答案會被使用的問題上。**落在
+    # utils package 下的類別也排除**：`layer_for_class()` 已經機械判定
+    # 出 "utils"（不是 None），不屬於「機械規則判斷不了」的情況，見
+    # `layout.is_utils_package()`、05a 三章「Utils 特例」。
+    classes_needing_layer = [
+        c for c in class_signatures.values()
+        if c.stereotype is None and c.methods and not layout.is_utils_package(c.package)
+    ]
     methods_needing_decision = [c for c in contexts if c.uncovered_params or c.needs_db_session_decision]
 
     if classes_needing_layer or methods_needing_decision:
@@ -596,15 +830,27 @@ def _design_module(
             params.append(ParamSpec(name="db", type=db_type))
         params = _reorder_params_defaults_last(params)
 
+        # utils 不套用 {module}_{layer}.py 規則、不分 module，見
+        # layout.file_path_for_utils() docstring、05a 三章「Utils 特例」；
+        # class_name 比照 routers 層既有慣例設 None（Java @UtilityClass
+        # 靜態方法，翻譯慣例上是模組層級函式，不是類別方法）。
+        file_path = (
+            layout.file_path_for_utils(ctx.class_name)
+            if layer == "utils"
+            else layout.file_path_for_layer(module["module"], layer)
+        )
         interfaces.append(
             InterfaceSpec(
-                file_path=layout.file_path_for_layer(module["module"], layer),
-                class_name=None if layer == "routers" else ctx.class_name,
+                file_path=file_path,
+                class_name=None if layer in ("routers", "utils") else ctx.class_name,
                 function_name=ctx.function_name,
                 params=params,
                 return_type=ctx.return_type,
                 http_method=ctx.http_method,
                 route_path=ctx.route_path,
+                phase=layout.phase_for_layer(layer),
+                java_method_id=ctx.java_method_id,
+                jpa_base_entity=class_signatures[ctx.class_name].jpa_base_entity if ctx.class_name in class_signatures else None,
             )
         )
 
@@ -617,9 +863,11 @@ def _design_module(
     # orphan class：class_signatures 裡沒有任何 InterfaceSpec 的 class_name
     # 指向它——這批 class 完全不會被 contexts 迴圈碰到（見上面
     # classes_needing_layer 的說明），若不另外處理，在 python_structure
-    # 裡會完全沒有任何痕跡。依機械事實分五種情況處理（見 05a 三章「孤兒
+    # 裡會完全沒有任何痕跡。依機械事實分六種情況處理（見 05a 三章「孤兒
     # 類別／資料容器占位」判斷優先序，理由見 common/java_annotations.py
     # docstring）：
+    #   0. 這個類別名稱已經是 openapi_spec 裡的具名 schema（見下方
+    #      globally_named_schemas）→ 跳過，不渲染任何東西，見下方詳述
     #   1. @Entity（含 @Embeddable/@MappedSuperclass）→ 跳過，DB schema
     #      欄位規格是④的職責（05a 九章），不是③要處理的範圍
     #   2. 有 Lombok/JPA 資料標記 → 渲染 dataclass（欄位為主，高信心）
@@ -627,10 +875,35 @@ def _design_module(
     #      建構子占位
     #   4. 有欄位、無標記（低信心推斷）→ 渲染 dataclass
     #   5. 什麼都沒有 → 只記警告，不渲染空段落
-    # 已經出現在 seen_schema_names（API 邊界 openapi 展開產出的 schema
-    # 名稱）的 class 一併排除，避免同一個型別被兩種機制各渲染一次。
+    # 已經出現在 seen_schema_names（這個模組自己的 API 邊界 openapi 展開
+    # 產出的 schema 名稱）的 class 一併排除，避免同一個型別被兩種機制
+    # 各渲染一次。
+    #
+    # **第 0 種情況對應 docs/refactor_bug_trace.md #25**：`openapi_spec
+    # ['components']['schemas']` 是全專案唯一一份、04a 就已經產生好的
+    # 具名 schema 字典——一個類別名稱若已經在裡面，代表它有一份「已經翻
+    # 好、放進生成專案」的正確定義，只是可能是被**另一個**模組的 API
+    # 邊界方法透過 `ctx.boundary_schemas`（見上面迴圈）登記進去的，不是
+    # 這個模組自己的端點。修好之前，這裡完全沒有查過 openapi_spec，只憑
+    # Java AST 上的 Lombok／建構子／欄位事實猜測，對這種「不是我的端點、
+    # 但剛好是別人已經翻好的具名 schema」的類別一律誤判成孤兒、另外渲染
+    # 一份 dataclass——真實案例：`CreaterandomRs` 同時被 `candidate` 模組
+    # （openapi 具名 schema，正確渲染成 Pydantic BaseModel）跟 `exam`
+    # 模組（誤判成孤兒，渲染成不相容的 dataclass）各自定義一份，兩者是
+    # 不同的 class 物件，`candidate_router.py` 收到 `exam` 那份時 Pydantic
+    # 直接判定驗證失敗。**只把「渲染」關掉，不需要另外處理 import**：
+    # 這個類別不在這個模組渲染之後，`translator_cli/scaffold.py` 既有的
+    # 全域 `custom_type_index`（#8／#17 已經建好的機制）會自動解析到唯一
+    # 定義它的那個模組，不需要新增任何 import 解析邏輯——這正是「只翻譯
+    # 一次、其他地方直接沿用同一份範本」該有的樣子。
+    globally_named_schemas = frozenset((openapi_spec.get("components") or {}).get("schemas") or {})
     known_classes = frozenset(class_signatures)
     covered_class_names = {iface["class_name"] for iface in interfaces if iface["class_name"]}
+    inherited_repository_reads = _synthesize_inherited_repository_reads(
+        class_signatures, module, layer_by_class, covered_class_names, known_classes
+    )
+    interfaces.extend(inherited_repository_reads)
+    covered_class_names |= {iface["class_name"] for iface in inherited_repository_reads if iface["class_name"]}
     orphan_classes: list[tuple[str, str, list[list[tuple[str, str]]]]] = []
     data_carrier_classes: list[tuple[str, str, bool, list[tuple[str, str]], str]] = []
 
@@ -651,6 +924,15 @@ def _design_module(
         # 沒有 constructor／field 的無狀態 Controller）會被誤判成孤兒
         # 類別，嚴重時甚至把它渲染成錯誤的 dataclass 段落。
         if sig.methods or name in covered_class_names or name in seen_schema_names:
+            continue
+        if name in globally_named_schemas:
+            logger.warning(
+                "module %s 的類別 %s 不是這個模組自己的 API 邊界方法用到的 schema，"
+                "但已經是 openapi_spec 裡的具名 schema（另一個模組的端點登記的），"
+                "略過本模組的孤兒類別渲染，交由那個模組的定義作為唯一來源"
+                "（見 docs/refactor_bug_trace.md #25）",
+                module["module"], name,
+            )
             continue
         annotation_set = set(sig.annotations)
         if annotation_set & JPA_ENTITY_ANNOTATIONS:

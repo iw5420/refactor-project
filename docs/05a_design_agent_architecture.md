@@ -43,7 +43,7 @@
 
 00 三章已定案技術棧（FastAPI + SQLAlchemy），③ 不重新判斷框架選型，只決定**分層與檔案配置**。
 
-**三層架構**，每個 module 在每一層各自一個檔案；另有**全域層級**的基礎設施檔案（不屬於任何 module，見本章末「全域基礎設施檔案」）：
+**三層架構**（router／service／repository）**+ utils**，前者每個 module 在每一層各自一個檔案，utils 直接複製 Java package 結構、不分 module（見下方「Utils 特例」）；另有**全域層級**的基礎設施檔案（不屬於任何 module，見本章末「全域基礎設施檔案」）：
 
 ```
 app/
@@ -54,13 +54,23 @@ app/
 ├── services/{module}_service.py      # 業務邏輯層，@Service/@Component 方法
 ├── repositories/{module}_repository.py  # 資料存取層，@Repository 方法
 ├── schemas/{module}.py               # Pydantic request/response model（見五章，僅文字描述，不產生 InterfaceSpec）
-└── models/{module}.py                # SQLAlchemy ORM model（佔位，欄位內容由④生成，見九章）
+├── models/{module}.py                # SQLAlchemy ORM model（佔位，欄位內容由④生成，見九章）
+└── utils/{java_class_name_snake}.py  # 對應 xxx.utils package 下的 Java class，一個 class 一個檔案，不分 module（見下方「Utils 特例」）
 ```
 
-- **檔名規則**：`{module}_{layer_singular}.py`（`module` 沿用 `ModuleInfo.module`，已是 snake_case 慣例字串，不需要③額外轉換大小寫）
-- **層級判定（機械，非 LLM）**：Java class 的 stereotype 決定歸屬層級——`@RestController`／`@Controller` → `routers`；`@Service`／`@Component` → `services`；`@Repository` → `repositories`。這個 stereotype 資訊 `module_list` 沒有帶（同二章原因），由四章的輕量再掃描一併取得。
-- **無 stereotype 的類別**（純工具類、無 annotation 的 helper）：不是機械規則能決定的情況，這部分**保留給六章的 LLM 設計階段判斷**歸屬哪一層（多半併入 `services`，但實際歸屬可能因業務語意而異），呼應 04a 四章「機械規則判斷不了時交給 LLM」的同一種分工原則。
-- **共用類別（04a 定義的 in-degree ≥ 2 類別）**：04a 的 Reduce 階段已經把每個共用類別指派到唯一一個 `module`（見 04a 四章），③ 直接信任這個歸屬，不重新判斷——一個 Java class 對應的 Python 檔案只會出現在它所屬 `module` 的那一層檔案裡，不會跨 module 重複產生。跨 module 呼叫共用類別，就是正常的 Python import，不需要特殊處理。
+- **檔名規則**：`{module}_{layer_singular}.py`（`module` 沿用 `ModuleInfo.module`，已是 snake_case 慣例字串，不需要③額外轉換大小寫）——**utils 層例外，見下方**
+- **層級判定（機械，非 LLM）**：優先判斷 Java class 是否落在 `xxx.utils` package 下（任何專案慣例上的 utils package，見下方「Utils 特例」），是的話直接歸 `utils` 層，不再看 stereotype；否則依 stereotype 決定——`@RestController`／`@Controller` → `routers`；`@Service`／`@Component` → `services`；`@Repository` → `repositories`。這個 stereotype 資訊 `module_list` 沒有帶（同二章原因），由四章的輕量再掃描一併取得，四章的輕量再掃描同時也要取得 package 路徑供這裡判斷。
+- **無 stereotype、也不在 utils package 的類別**（純工具類但沒放進 utils package、無 annotation 的 helper）：這才是真正機械規則判斷不了的情況，**保留給六章的 LLM 設計階段判斷**歸屬哪一層（多半併入 `services`）——這條路徑因為新增了 utils package 判斷而大幅收斂，只剩極少數邊界情況會走到，呼應 04a 四章「機械規則判斷不了時交給 LLM」的同一種分工原則。
+- **共用類別（04a 定義的 in-degree ≥ 2 類別）**：04a 的 Reduce 階段已經把每個共用類別指派到唯一一個 `module`（見 04a 四章），③ 直接信任這個歸屬，不重新判斷——一個 Java class 對應的 Python 檔案只會出現在它所屬 `module` 的那一層檔案裡，不會跨 module 重複產生。跨 module 呼叫共用類別，就是正常的 Python import，不需要特殊處理。**utils 層不適用這條**：utils 本來就不分 module，`in-degree ≥ 2`（被多個 module 使用）是 utils 的常態，不是需要判斷歸屬的特殊情況。
+
+### Utils 特例：不套用 `{module}_{layer}.py`，直接複製 Java package 結構
+
+utils 橫跨多個 module（如 `ValidationUtil` 同時被多個 controller 使用），套用 `{module}_utils.py` 會出現「這個 util 該算哪個 module」的假問題，因此不適用上面的檔名規則，改成：
+
+- **偵測**：Java class 的 package 路徑是否為 `xxx.utils`（幾乎所有 Java 專案都遵守這個慣例，實測對 `com.teachLanguage.utils` 下的 `ValidationUtil`／`CollectionUtil`／`CodeUtil`／`ConvertUtil`／`ExamCardUtils` 皆準確判定，見 `refactor_plan.md` 二章、五章 5.4）。純字串比對，不需要 LLM。
+- **檔案結構**：一個 Java class 對一個 Python 檔案，`app/utils/{java_class_name 轉 snake_case}.py`，不分 module、不合併——`com.teachLanguage.utils.ValidationUtil` → `app/utils/validation_util.py`。
+- **`InterfaceSpec` 產出**：跟其他三層一樣正常產出 `InterfaceSpec`（`file_path`／`class_name`／`function_name`／`params`／`return_type`），只是 `file_path` 的組法不同（不含 `module` 前綴），`class_name` 通常是 `None`（Java `@UtilityClass` 的靜態方法，翻譯慣例上是模組層級函式，不是類別方法，同 `routers` 層 `class_name` 一律 `None` 的既有慣例，見七章）。
+- **`phase` 欄位**：utils 一律 `phase=1`（見九章）。
 
 **`directory_tree` 的定位**：`PythonStructure.directory_tree` 型別是 `str`（見 `graph/state.py`），是一段**文字**而非結構化資料。除了上面的目錄/檔案清單，③ 也把 `schemas/{module}.py` 底下**應包含哪些 Pydantic 類別與欄位**用文字列出（見五章、九章）——因為 `InterfaceSpec` 只能表達函式簽名，資料類別的欄位定義沒有對應的結構化欄位可放，只能靠這段文字傳遞給④的骨架生成呼叫（`generate_scaffold(python_project_path, python_structure, db_models=None)`，見九章、`07a_translator_cli_architecture.md` 四章）當作依據。`models/{module}.py`（SQLAlchemy ORM）不在這裡產出欄位內容——九章已明訂 DB schema 的欄位層級規格由④直接取得，不是③的職責，避免這裡跟九章各說各話。
 
@@ -161,6 +171,8 @@ app/
 > **多載（overload）方法的處理**：延續 04a 三章「決策」的既有限制——`module_list.methods` 本身在多載情況下已有精準度限制（04a 五章也提過同樣的限制）。③ 再掃描時若遇到同名多載方法，比照④/⑤ 消費 `module_list` 時的既有認知：分別以各自完整簽名（含參數型別）建立獨立的 `InterfaceSpec`，不因為同名而合併——這裡③是直接讀完整 AST 節點（含參數型別），不像 04a 的 `method_id` 只用方法名不含簽名，掃描與比對階段不會有多載碰撞問題。
 >
 > **`function_name` 消歧**：`InterfaceSpec.function_name` 單純用 camelCase→snake_case 轉換（見七章）時，同一組多載會算出相同名稱——Python 不支援多載，會讓④的骨架生成撞名。③對同一組多載依 javalang 掃描到的宣告順序消歧：第一個保留原始轉換名稱，其餘依序加上數字後綴 `_2`、`_3`……，比照 04a 三章已引用的 springdoc 前例（`voice`／`voice_1`）。實作見 `05b_design_agent_code.md` 七章 `_build_method_contexts()`。
+>
+> **skip 排除的多載不產生 InterfaceSpec（對應 `docs/refactor_bug_trace.md` #8）**：使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」（見 03a「Decision.SKIP 的語意」）。同名不同 HTTP method 的多載（如 `FileController` 的 `voice`／`image`，一個 `@PostMapping`、一個 `@GetMapping`）在 04a 的 `method_id` 層級共用同一個 id，只標記其中一個 skip 時，`module_list`／`api_to_python_target` 那層排除機制沒辦法只排除單一個多載（見 04a 五章）。③ 這裡用 javalang 重新掃描出**每個物理多載各自的 `http_method`** 之後，立刻用 `RefactorState.skip_excluded_overloads`（① `compute_skip_excluded_overloads()` 算出的 `(class_name, method_name, http_method)` 三元組）把該排除的多載從 `class_sig.methods` 濾掉，產生一份新的、乾淨的資料——本節與七章既有的「多載消歧」「`_build_method_contexts()` overloads 展開」邏輯完全不用改，因為它們讀到的資料本來就不會再包含被 skip 的多載了。實作見 `05b_design_agent_code.md` 四章 `_filter_skip_excluded_overloads()`。
 
 **掃描失敗的處理**：比照 04a 九章，Java 原始碼若有 javalang 無法解析的語法，直接往上拋，整條 LangGraph run 中止——這是輸入端問題，不是可以重試化解的暫時性錯誤。
 
@@ -349,11 +361,34 @@ class InterfaceSpec(TypedDict):
     return_type: str
     http_method: NotRequired[str | None]  # 僅 routers 層 API 邊界方法非 None，見五章
     route_path: NotRequired[str | None]   # 僅 routers 層 API 邊界方法非 None，見五章
+    phase: Literal[1, 2]                  # 新增，見下方「phase 欄位」
+    java_method_id: str                   # 新增，見下方「java_method_id 欄位」
+
+class JavaIndexEntry(TypedDict):
+    file_path: str
+    class_name: str | None
+    function_name: str
+    phase: Literal[1, 2]
 
 class PythonStructure(TypedDict):
     directory_tree: str
     interfaces: list[InterfaceSpec]
+    java_index: dict[str, JavaIndexEntry]  # 新增，見下方「java_index：Java method_id → Python 對照表」
 ```
+
+> `phase`／`java_method_id`／`java_index` 是承接 `refactor_call_chain_implement_prompt.md`／`refactor_plan.md`「呼叫鏈 + 完整原始碼」新設計新增的欄位，`graph/state.py` 的權威定義**待同步更新**（目前只有本文件反映新方向）。
+
+**`phase` 欄位**：標記這個 interface 屬於 Phase 1（entity/dto/repository/utils）還是 Phase 2（controller/service），供 `[P]` 排程與 ⑤ 判斷「呼叫鏈遇到這個 callee 該讀 Java 還是讀已翻譯的 Python」使用。計算規則機械化、不需要 LLM：
+- `@Repository`（含衍生查詢介面）或 package 為 `xxx.utils`（見三章「Utils 特例」）→ `phase=1`
+- entity／dto → `phase=1`（既有機制已處理這兩類，不產生一般 `InterfaceSpec`，此處僅為完整性說明）
+- `@Service`／`@RestController` → `phase=2`
+- 極少數無 stereotype、又不在 utils package 的邊界情況，沿用三章「無 stereotype、也不在 utils package 的類別」既有的 LLM fallback 判斷後，依判定結果落的層級決定 `phase`（router/service → 2，其餘 → 1）
+
+**`java_method_id` 欄位（新增）**：這個 interface 對應的 Java 方法識別碼，格式逐字沿用①既有的 `parse_agent/types.py::method_id()`（`"{java_file_path}::{class_name}::{method_name}"`，不含參數型別——跟①的呼叫圖同一種 key 格式，才能直接查表，不需要轉換）。`_build_method_contexts()` 組出每一個 `_MethodContext` 時本來就已經知道對應的 `class_sig.file_path`／`class_sig.class_name`／`sig.method_name`，這裡只是把這個既有事實原樣寫出，不是新的判斷。
+
+**多載共用同一個 `java_method_id` 是既有限制的延伸，不是新問題**：①的呼叫圖本來就「不做 overload resolution，多載方法共用同一個 method_id」（見 `parse_agent/types.py` 說明），這裡直接沿用同一個格式、同一個限制——一個 Java 方法被③拆成多筆 `InterfaceSpec`（如 `voice`／`voice_2`）時，兩筆的 `java_method_id` 會相同。下游（[P] 的呼叫鏈查找，見 `06a_plan_agent_architecture.md`）查到的直接呼叫對象因此可能包含「實際上屬於另一個多載」的候選，屬於呼叫圖本身「多連、少排除」既有精神下可接受的精準度取捨，不因為這裡新增消費端而變得更嚴重。
+
+**`java_index`：Java method_id → Python 對照表（新增）**：`python_structure` 新增的頂層欄位，`design_all_modules()` 對每一筆 `InterfaceSpec` 順手多輸出一筆 `{java_method_id: {file_path, class_name, function_name, phase}}`（Python 側事實，逐一對應同一筆 `InterfaceSpec` 的欄位，不是新的計算）。這是把 `_build_method_contexts()` 內部本來就算過、但跑完即丟的「Java 方法 ↔ Python 函式」對照關係正式落地保留——`[P]` 做呼叫鏈查找時，需要把①呼叫圖裡查到的「某個 callee 的 Java method_id」轉回「它在 Python 端是哪個檔案的哪個函式、屬於 Phase 1 還是 Phase 2」，這份對照表在③這一端只需要算一次，不需要 `[P]`／⑤ 各自重新實作一次③內部的 camelCase／多載消歧邏輯（重複維護兩份同語意程式碼的風險，見 `refactor_plan.md` 六章）。`_global`／utils 產生的 `InterfaceSpec` 同樣有真實對應的 Java 方法，一併寫進 `java_index`，不特殊排除。
 
 `route_to_file_mapping: dict` 產出後直接寫入 `config/harness.yaml` 的 `route_to_file_mapping` 段（見 `00_refactor_architecture.md` 八章、`02a_harness_architecture.md` 十一章），不需人工填寫。`route_to_module_mapping`（見八章）與它在同一次呼叫中一併產出、寫進 `config/harness.yaml` 的另一個段落，但**不是** `RefactorState` 欄位（理由見八章「只寫入 config/harness.yaml，不進 RefactorState」）。
 
@@ -415,6 +450,7 @@ refactor-project/
 - [ ] 無 stereotype 類別的層級歸屬（三章）、框架注入物件轉換（五章）、框架慣例參數注入（七章）這三處「LLM 判斷」的實際 prompt 設計與品質，待接上真實專案輸出後校準
 - [ ] `directory_tree` 的 Schema 定義段／基礎設施段／孤兒類別與資料容器占位段（三章）固定格式在 08a 設計 `generate_scaffold()` 實際解析方式時，需要反向確認本地模型（qwen2.5-coder:32b）對這個格式的辨識穩定度是否足夠，必要時調整 fenced code block 的標記慣例
 - [ ] 孤兒類別／資料容器占位判斷優先序（三章）的第 4 分支（無 Lombok 標記、純欄位低信心推斷）尚未有真實案例觸發過——目前接上的 `lang-exam-api-refactor` 專案資料容器類別都有標註 Lombok annotation，仍待遇到真的沒標註的專案才能驗證這條路徑
+- [ ] `[P] Plan Agent`／⑤功能改寫 Agent／`graph/scheduler.py` 尚未依 Phase 1/2 全域關卡設計更新（`InterfaceSpec.phase`、Utils 特例本身已落地進 `graph/state.py`／`design_agent/`／`05b_design_agent_code.md`，823 個測試通過）——見 `refactor_plan.md` 二章
 
 ---
 

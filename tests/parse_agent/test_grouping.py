@@ -10,7 +10,7 @@ import json
 
 from parse_agent import summarize
 from parse_agent.call_graph import parse_java_project
-from parse_agent.grouping import build_global_advice_units, collect_global_advice_classes
+from parse_agent.grouping import build_global_advice_units, collect_global_advice_classes, load_force_include_classes
 from parse_agent.prompts import MAP_SYSTEM_PROMPT, REDUCE_SYSTEM_PROMPT
 
 
@@ -108,6 +108,80 @@ def test_build_global_advice_units_batches_requested_classes(tmp_path):
     assert len(units) == 1
     assert [c.class_name for c in units[0].classes] == ["GlobalExceptionHandler"]
     assert units[0].label.startswith("4c:global_advice_batch_")
+
+
+# --------------------------------------------------------------------------
+# load_force_include_classes()：對應 04a 四章「人工強制納入清單」
+# --------------------------------------------------------------------------
+
+
+def _write_util_class(tmp_path, name="OrphanUtil"):
+    (tmp_path / f"{name}.java").write_text(
+        f"""
+        package com.example.utils;
+        public class {name} {{
+            public static String helper() {{ return "ok"; }}
+        }}
+        """,
+        encoding="utf-8",
+    )
+
+
+def test_missing_config_file_returns_empty_set(tmp_path):
+    project = parse_java_project(str(tmp_path))
+    assert load_force_include_classes(project, tmp_path / "force_include_classes.json") == set()
+
+
+def test_listed_file_resolves_to_class_name(tmp_path):
+    _write_util_class(tmp_path, "OrphanUtil")
+    config_path = tmp_path / "force_include_classes.json"
+    config_path.write_text(json.dumps(["OrphanUtil.java"]), encoding="utf-8")
+
+    project = parse_java_project(str(tmp_path))
+    assert load_force_include_classes(project, config_path) == {"OrphanUtil"}
+
+
+def test_unresolvable_path_is_skipped_with_warning(tmp_path, caplog):
+    config_path = tmp_path / "force_include_classes.json"
+    config_path.write_text(json.dumps(["src/main/java/DoesNotExist.java"]), encoding="utf-8")
+
+    project = parse_java_project(str(tmp_path))
+    with caplog.at_level("WARNING"):
+        result = load_force_include_classes(project, config_path)
+
+    assert result == set()
+    assert any("DoesNotExist.java" in record.message for record in caplog.records)
+
+
+def test_multiple_top_level_classes_in_one_file_all_included(tmp_path):
+    (tmp_path / "Multi.java").write_text(
+        """
+        package com.example.utils;
+        public class Multi {
+            public static String a() { return "a"; }
+        }
+        class MultiHelper {
+            static String b() { return "b"; }
+        }
+        """,
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "force_include_classes.json"
+    config_path.write_text(json.dumps(["Multi.java"]), encoding="utf-8")
+
+    project = parse_java_project(str(tmp_path))
+    assert load_force_include_classes(project, config_path) == {"Multi", "MultiHelper"}
+
+
+def test_mix_of_resolvable_and_unresolvable_paths(tmp_path):
+    _write_util_class(tmp_path, "OrphanUtil")
+    config_path = tmp_path / "force_include_classes.json"
+    config_path.write_text(
+        json.dumps(["OrphanUtil.java", "Typo.java"]), encoding="utf-8"
+    )
+
+    project = parse_java_project(str(tmp_path))
+    assert load_force_include_classes(project, config_path) == {"OrphanUtil"}
 
 
 # --------------------------------------------------------------------------
@@ -221,6 +295,108 @@ def test_run_map_reduce_no_global_module_when_no_advice_class_present(tmp_path, 
 
     assert {d.module for d in drafts} == {"widget"}
     assert "GlobalExceptionHandler" not in class_to_module
+
+
+# --------------------------------------------------------------------------
+# run_map_reduce(force_include_class_names=...)：對應 04a 四章「人工強制
+# 納入清單」——完全不被任何 Controller 依賴到的類別，聯集進
+# force_include_class_names 後仍要能走完 Map/Reduce、出現在最終 drafts。
+# --------------------------------------------------------------------------
+
+
+def _fake_call_claude_for_json_force_include(*, system_prompt, user_prompt, schema, model, max_tokens=4096):
+    payload = json.loads(user_prompt)
+    if system_prompt == MAP_SYSTEM_PROMPT:
+        known_methods = {
+            "WidgetController": ["list"],
+            "OrphanUtil": ["helper"],
+        }
+        return {
+            "classes": [
+                {
+                    "class_name": c["class_name"],
+                    "summary": f"{c['class_name']} 的摘要",
+                    "methods": [
+                        {"method_name": m, "description": f"{m} 做的事", "complexity": "low"}
+                        for m in known_methods[c["class_name"]]
+                    ],
+                    "cross_group_dependency_hints": [],
+                }
+                for c in payload["classes"]
+            ]
+        }
+    if system_prompt == REDUCE_SYSTEM_PROMPT:
+        # OrphanUtil 完全不在任何 Controller 的依賴閉包裡，但仍要出現在
+        # Reduce 看得到的候選集合裡——這是本測試要驗證的重點。
+        reduce_classes = {c["class_name"] for c in payload["classes"]}
+        assert reduce_classes == {"WidgetController", "OrphanUtil"}, (
+            f"force_include_class_names 應該讓 OrphanUtil 也送進 Reduce，實際收到: {reduce_classes}"
+        )
+        return {
+            "modules": [
+                {
+                    "module": "widget",
+                    "summary": "widget 業務模組（含強制納入的 OrphanUtil）",
+                    "java_classes": ["WidgetController", "OrphanUtil"],
+                    "depends_on": [],
+                }
+            ]
+        }
+    raise AssertionError(f"未預期的 system_prompt: {system_prompt!r}")
+
+
+def test_force_include_class_reaches_module_list_despite_unreachable(tmp_path, monkeypatch):
+    (tmp_path / "WidgetController.java").write_text(
+        """
+        package com.example;
+        import org.springframework.web.bind.annotation.RestController;
+        @RestController
+        public class WidgetController {
+            public String list() { return "ok"; }
+        }
+        """,
+        encoding="utf-8",
+    )
+    # OrphanUtil 沒有被 WidgetController（或任何其他類別）引用，正常情況下
+    # 不會出現在任何 Controller 的依賴閉包裡，也不是共用類別。
+    _write_util_class(tmp_path, "OrphanUtil")
+    project = parse_java_project(str(tmp_path))
+
+    monkeypatch.setattr(summarize, "call_claude_for_json", _fake_call_claude_for_json_force_include)
+
+    drafts, class_to_module = summarize.run_map_reduce(project, force_include_class_names={"OrphanUtil"})
+
+    assert class_to_module == {"WidgetController": "widget", "OrphanUtil": "widget"}
+    widget_draft = next(d for d in drafts if d.module == "widget")
+    assert {dm.method["java_method"] for dm in widget_draft.methods} == {"list", "helper"}
+    assert "OrphanUtil.java" in widget_draft.java_files
+
+
+def test_run_map_reduce_without_force_include_omits_unreachable_class(tmp_path, monkeypatch):
+    """對照組：不傳 force_include_class_names（沿用預設空集合）時，完全
+    不可達的類別不會出現在 Map 候選裡，也不會被送進 Reduce——確認新參數
+    是「額外納入」，不是意外改變既有的預設行為。
+    """
+    (tmp_path / "WidgetController.java").write_text(
+        """
+        package com.example;
+        import org.springframework.web.bind.annotation.RestController;
+        @RestController
+        public class WidgetController {
+            public String list() { return "ok"; }
+        }
+        """,
+        encoding="utf-8",
+    )
+    _write_util_class(tmp_path, "OrphanUtil")
+    project = parse_java_project(str(tmp_path))
+
+    monkeypatch.setattr(summarize, "call_claude_for_json", _fake_call_claude_for_json)
+
+    drafts, class_to_module = summarize.run_map_reduce(project)
+
+    assert "OrphanUtil" not in class_to_module
+    assert {d.module for d in drafts} == {"widget"}
 
 
 # --------------------------------------------------------------------------

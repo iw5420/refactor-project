@@ -8,6 +8,7 @@ from translator_cli.scaffold import (
     _build_custom_type_index,
     _extract_code_blocks,
     _merge_schema_blocks,
+    _module_for_file_path,
     _normalize_type,
     _render_function_snippet,
     _resolve_imports,
@@ -105,6 +106,22 @@ def test_resolve_imports_response_keyword():
     assert "from fastapi import Response" in lines
 
 
+def test_resolve_imports_column_element_keyword():
+    # Specification<T> 型別對應（common/java_type_mapping.py）用
+    # "ColumnElement | None" 當 return_type，見
+    # docs/refactor_bug_trace.md #14。
+    lines = _resolve_imports(["ColumnElement | None"], {})
+    assert "from sqlalchemy.sql.elements import ColumnElement" in lines
+
+
+def test_resolve_imports_form_keyword():
+    # 對應 docs/refactor_bug_trace.md #20：MultipartFile 端點的其餘
+    # @RequestParam 欄位型別字串帶 "= Form(...)"，見
+    # design_agent/type_mapping.py::_classify_params() 新增分支。
+    lines = _resolve_imports(["str = Form(...)"], {})
+    assert "from fastapi import Form" in lines
+
+
 def test_resolve_imports_custom_type_via_ast():
     lines = _resolve_imports(["ResponseResult[User]"], {"User": "app/models/user.py", "ResponseResult": "app/services/common_service.py"})
     assert "from app.models.user import User" in lines
@@ -133,6 +150,90 @@ def test_resolve_imports_excludes_same_file_class_names():
         same_file_class_names=frozenset({"ErrorCode", "ResponseResult"}),
     )
     assert lines == ["from app.models.user import User"]
+
+
+def test_module_for_file_path_extracts_module_for_all_three_layers():
+    assert _module_for_file_path("app/routers/file_router.py") == "file"
+    assert _module_for_file_path("app/services/exam_service.py") == "exam"
+    assert _module_for_file_path("app/repositories/user_repository.py") == "user"
+
+
+def test_module_for_file_path_returns_none_for_utils_and_global_advice():
+    # utils 橫跨多個 module（見 file_path_for_utils()），_global 保留
+    # 模組是固定單一檔案——兩者都沒有 module 概念。
+    assert _module_for_file_path("app/utils/validation_util.py") is None
+    assert _module_for_file_path("app/core/exception_handlers.py") is None
+
+
+def test_resolve_imports_prefers_own_module_schema_over_global_index():
+    # 對應 docs/refactor_bug_trace.md #8：同名的具名回應包裝 class（如
+    # ResponseResultString）被兩個模組各自獨立定義一份時，全域
+    # custom_type_index 只留得住其中一個（這裡故意讓它指向 exam，模擬
+    # 覆寫後的結果）——own_module="file" 且 file 自己的 schema 檔案也
+    # 定義了同名 class 時，該優先用 file 自己的，不查全域索引。
+    custom_type_index = {"ResponseResultString": "app/schemas/exam.py"}
+    schema_classes_by_module = {
+        "exam": frozenset({"ResponseResultString"}),
+        "file": frozenset({"ResponseResultString"}),
+    }
+    lines = _resolve_imports(
+        ["ResponseResultString"],
+        custom_type_index,
+        schema_classes_by_module=schema_classes_by_module,
+        own_module="file",
+    )
+    assert lines == ["from app.schemas.file import ResponseResultString"]
+
+
+def test_resolve_imports_falls_back_to_global_index_when_own_module_lacks_the_class():
+    # own_module 存在、但自己的模組沒有定義這個 class 名稱時，退回既有
+    # 的全域索引行為——不因為新增 own_module 判斷就影響既有的跨模組
+    # 引用案例。
+    custom_type_index = {"SharedDto": "app/schemas/common.py"}
+    lines = _resolve_imports(
+        ["SharedDto"],
+        custom_type_index,
+        schema_classes_by_module={"file": frozenset({"ResponseResultString"})},
+        own_module="file",
+    )
+    assert lines == ["from app.schemas.common import SharedDto"]
+
+
+def test_resolve_imports_repository_layer_ignores_own_module_schema_priority():
+    # 對應 docs/refactor_bug_trace.md #17 真實案例：exam 模組的
+    # ExamkindEntity 同時被 app/schemas/exam.py（Pydantic DTO）跟
+    # app/models/exam.py（SQLAlchemy ORM）定義——own_module="exam" 且
+    # exam 自己的 schema 檔案剛好也定義了同名 class 時，#8 的既有優先序
+    # 會讓 repositories 層的檔案錯誤選到 schema，把 Pydantic BaseModel
+    # 子類別傳給 SQLAlchemy 查詢。is_repository_layer=True 時要完全跳過
+    # 這條「優先查同模組 schema」的規則，改用全域 custom_type_index——
+    # 這裡模擬 _build_custom_type_index() 的既有寫入順序（db_models 最後
+    # 寫入覆蓋掉同名的 schema 條目），custom_type_index 已經是「同名時
+    # model 贏」。
+    custom_type_index = {"ExamkindEntity": "app/models/exam.py"}
+    schema_classes_by_module = {"exam": frozenset({"ExamkindEntity"})}
+    lines = _resolve_imports(
+        ["ExamkindEntity"],
+        custom_type_index,
+        schema_classes_by_module=schema_classes_by_module,
+        own_module="exam",
+        is_repository_layer=True,
+    )
+    assert lines == ["from app.models.exam import ExamkindEntity"]
+
+
+def test_resolve_imports_non_repository_layer_still_prefers_own_module_schema():
+    # 對照組：is_repository_layer 預設 False，其餘層級（routers／
+    # services／utils）不受這次修正影響，#8 的既有行為維持不變。
+    custom_type_index = {"ExamkindEntity": "app/models/exam.py"}
+    schema_classes_by_module = {"exam": frozenset({"ExamkindEntity"})}
+    lines = _resolve_imports(
+        ["ExamkindEntity"],
+        custom_type_index,
+        schema_classes_by_module=schema_classes_by_module,
+        own_module="exam",
+    )
+    assert lines == ["from app.schemas.exam import ExamkindEntity"]
 
 
 def test_resolve_imports_custom_type_containing_keyword_substring_not_falsely_matched():
@@ -331,6 +432,91 @@ def test_build_files_same_file_class_signature_reference_not_self_imported():
     assert "class ErrorCode:" in source
 
 
+def test_build_files_same_named_schema_class_in_two_modules_each_import_their_own(tmp_path):
+    # 對應 docs/refactor_bug_trace.md #8 真實案例：exam-platform-api 的
+    # ResponseResultString 同時被 exam／file 兩個模組各自獨立定義一份
+    # （③ 逐模組產生 schema，模組之間不知道彼此定義了同名的東西）。
+    # 修好之前，_build_custom_type_index() 的全域扁平索引會被其中一個
+    # 模組覆寫，導致另一個模組的 router 明明自己也定義了同名 class，
+    # import 卻指向了別的模組（真實案例：file_router.py 匯入
+    # `from app.schemas.exam import ResponseResultString`）。
+    structure = {
+        "directory_tree": (
+            "app/\n  app/routers/exam_router.py\n  app/routers/file_router.py\n"
+            "  app/schemas/exam.py\n  app/schemas/file.py\n\n"
+            "### app/schemas/exam.py\n```python\nfrom pydantic import BaseModel\n\n"
+            "class ResponseResultString(BaseModel):\n    code: int\n    data: str\n```\n\n"
+            "### app/schemas/file.py\n```python\nfrom pydantic import BaseModel\n\n"
+            "class ResponseResultString(BaseModel):\n    code: int\n    data: str\n```\n"
+        ),
+        "interfaces": [
+            {
+                "file_path": "app/routers/exam_router.py",
+                "class_name": None,
+                "function_name": "search",
+                "params": [],
+                "return_type": "ResponseResultString",
+                "http_method": "GET",
+                "route_path": "/api/exam/search",
+            },
+            {
+                "file_path": "app/routers/file_router.py",
+                "class_name": None,
+                "function_name": "voice",
+                "params": [],
+                "return_type": "ResponseResultString",
+                "http_method": "POST",
+                "route_path": "/api/file/voice",
+            },
+        ],
+    }
+    files, skipped_interfaces, _ = build_files(structure, {})
+
+    assert skipped_interfaces == []
+    assert "from app.schemas.exam import ResponseResultString" in files["app/routers/exam_router.py"]
+    assert "from app.schemas.file import ResponseResultString" in files["app/routers/file_router.py"]
+    # 兩邊都不該指向對方的模組。
+    assert "app.schemas.file" not in files["app/routers/exam_router.py"]
+    assert "app.schemas.exam" not in files["app/routers/file_router.py"]
+
+
+def test_build_files_repository_layer_prefers_model_over_same_named_schema_class():
+    # 對應 docs/refactor_bug_trace.md #17 真實案例：exam 模組的
+    # ExamkindEntity 同時被 app/schemas/exam.py（Pydantic DTO，openapi
+    # 展開產出）跟 app/models/exam.py（SQLAlchemy ORM，④ 掃 entity 產出）
+    # 定義一份——修好之前，repositories 層的檔案會被 #8 的既有優先序
+    # 誤導成優先選 schema，導致 `db.query(ExamkindEntity)...` 在真正查詢
+    # 時把 Pydantic BaseModel 子類別傳給 SQLAlchemy，丟出
+    # sqlalchemy.exc.ArgumentError（本體程式碼本身完全正確，純粹被錯誤
+    # 的 import 拖累）。
+    structure = {
+        "directory_tree": (
+            "app/\n  app/repositories/exam_repository.py\n  app/schemas/exam.py\n"
+            "  app/models/exam.py\n\n"
+            "### app/schemas/exam.py\n```python\nfrom pydantic import BaseModel\n\n"
+            "class ExamkindEntity(BaseModel):\n    kind: str\n```\n"
+        ),
+        "interfaces": [
+            {
+                "file_path": "app/repositories/exam_repository.py",
+                "class_name": "ExamkindRepository",
+                "function_name": "find_by_kind",
+                "params": [{"name": "kind", "type": "str"}, {"name": "db", "type": "Session"}],
+                "return_type": "list[ExamkindEntity]",
+            },
+        ],
+    }
+    db_models = {
+        "app/models/exam.py": "class ExamkindEntity:\n    kind: str\n",
+    }
+    files, skipped_interfaces, _ = build_files(structure, db_models)
+
+    assert skipped_interfaces == []
+    source = files["app/repositories/exam_repository.py"]
+    assert "from app.models.exam import ExamkindEntity" in source
+    assert "app.schemas.exam" not in source
+
+
 def test_build_files_isolates_invalid_interface(tmp_path):
     structure = _minimal_python_structure()
     # 注入一個型別字串仍殘留非法字元的介面（見 07a 四章「已知殘留限制」：萬用字元泛型）
@@ -352,13 +538,13 @@ def test_build_files_isolates_invalid_interface(tmp_path):
 
 def test_build_files_records_skipped_interface_for_unknown_layer(tmp_path):
     # 按 05a／07a 契約，interfaces 的 file_path 只會落在 routers／
-    # services／repositories 三層，理論上不會觸發——但這裡驗證萬一
-    # 上游出現非預期 file_path，不會被靜默丟棄，而是記進
+    # services／repositories／utils 目錄底下，理論上不會觸發——但這裡
+    # 驗證萬一上游出現非預期 file_path，不會被靜默丟棄，而是記進
     # skipped_interfaces（比照語法錯誤等其餘失敗路徑的一貫處理風格）。
     structure = _minimal_python_structure()
     structure["interfaces"].append(
         {
-            "file_path": "app/utils/helper.py",  # 不在三層目錄底下
+            "file_path": "app/unknown/helper.py",  # 不在任何已知目錄底下
             "class_name": None,
             "function_name": "unexpected",
             "params": [],
@@ -366,10 +552,39 @@ def test_build_files_records_skipped_interface_for_unknown_layer(tmp_path):
         }
     )
     files, skipped_interfaces, _ = build_files(structure, {})
-    assert "app/utils/helper.py" not in files
+    assert "app/unknown/helper.py" not in files
     assert len(skipped_interfaces) == 1
     assert skipped_interfaces[0]["function_name"] == "unexpected"
     assert "unknown layer" in skipped_interfaces[0]["error"]
+    # 其餘介面不受影響，正常產出
+    assert "app/routers/user_router.py" in files
+
+
+def test_build_files_renders_utils_file_as_free_functions(tmp_path):
+    # 對應真實 04->08 端對端驗證發現的缺口：app/utils/ 底下的 interface
+    # 原本會被判定成 unknown layer 整個跳過（見上一個測試修正前的舊
+    # 案例），導致 generate_scaffold() 從未建立任何 app/utils/*.py 檔案，
+    # 12 個 utils 函式全部消失。08a 二章「Utils 檔案結構——已定案」：
+    # Java 靜態工具方法對應 Python module-level 自由函式，不歸屬任何
+    # module，渲染規則跟 routers／global_advice 同一種形狀——不包 class、
+    # 不包 APIRouter 樣板。
+    structure = _minimal_python_structure()
+    structure["interfaces"].append(
+        {
+            "file_path": "app/utils/validation_util.py",
+            "class_name": None,
+            "function_name": "is_null_or_empty",
+            "params": [{"name": "value", "type": "str"}],
+            "return_type": "bool",
+        }
+    )
+    files, skipped_interfaces, _ = build_files(structure, {})
+    assert skipped_interfaces == []
+    source = files["app/utils/validation_util.py"]
+    assert "def is_null_or_empty(value: str) -> bool:" in source
+    assert "APIRouter" not in source
+    assert "router = " not in source
+    assert "class " not in source
     # 其餘介面不受影響，正常產出
     assert "app/routers/user_router.py" in files
 
@@ -409,6 +624,37 @@ def test_build_files_raises_on_broken_schema_pseudocode():
         build_files(structure, {})
 
 
+def test_build_files_repository_with_jpa_base_entity_inherits_base_repository():
+    """對應 docs/refactor_bug_trace.md #10／#16：`InterfaceSpec.
+    jpa_base_entity` 非 None 時，repositories 層的 class 要渲染成繼承
+    `BaseRepository[Entity]`，並注入 `model = Entity`，同時正確 import
+    `BaseRepository` 本身與 entity 型別（來源三：db_models）。
+    """
+    structure = _minimal_python_structure()
+    structure["directory_tree"] += (
+        "\n### app/models/exam.py\n```python\nclass ExamEntity:\n    id: int\n```\n"
+    )
+    structure["interfaces"].append(
+        {
+            "file_path": "app/repositories/exam_repository.py",
+            "class_name": "ExamRepository",
+            "function_name": "find_all",
+            "params": [{"name": "db", "type": "Session"}],
+            "return_type": "list[ExamEntity]",
+            "jpa_base_entity": "ExamEntity",
+        }
+    )
+    files, skipped_interfaces, _ = build_files(structure, {})
+    assert skipped_interfaces == []
+    source = files["app/repositories/exam_repository.py"]
+    assert "class ExamRepository(BaseRepository[ExamEntity]):" in source
+    assert "    model = ExamEntity" in source
+    assert "from app.core.base_repository import BaseRepository" in source
+    assert "from app.models.exam import ExamEntity" in source
+    # 其餘沒有 jpa_base_entity 的既有 repository class 渲染規則不受影響
+    assert "class UserRepository:" in files["app/repositories/user_repository.py"]
+
+
 def test_write_files_creates_directories(tmp_path):
     write_files(str(tmp_path), {"app/routers/user_router.py": "x = 1\n"})
     assert (tmp_path / "app" / "routers" / "user_router.py").read_text(encoding="utf-8") == "x = 1\n"
@@ -424,9 +670,10 @@ def test_scan_project_custom_types_finds_classes_across_layers(tmp_path):
         "class UserResponse:\n    pass\n", encoding="utf-8"
     )
 
-    index = _scan_project_custom_types(str(tmp_path))
+    index, schema_classes_by_module = _scan_project_custom_types(str(tmp_path))
     assert index["UserRepository"] == "app/repositories/user_repository.py"
     assert index["UserResponse"] == "app/schemas/user.py"
+    assert schema_classes_by_module == {"user": frozenset({"UserResponse"})}
 
 
 def test_scan_project_custom_types_skips_unparseable_file(tmp_path):
@@ -434,12 +681,12 @@ def test_scan_project_custom_types_skips_unparseable_file(tmp_path):
     (tmp_path / "app" / "services" / "broken.py").write_text("class (:\n", encoding="utf-8")
     (tmp_path / "app" / "services" / "ok.py").write_text("class OkService:\n    pass\n", encoding="utf-8")
 
-    index = _scan_project_custom_types(str(tmp_path))
+    index, _ = _scan_project_custom_types(str(tmp_path))
     assert index == {"OkService": "app/services/ok.py"}
 
 
 def test_scan_project_custom_types_missing_app_dir_returns_empty(tmp_path):
-    assert _scan_project_custom_types(str(tmp_path)) == {}
+    assert _scan_project_custom_types(str(tmp_path)) == ({}, {})
 
 
 def test_table_assignment_names_finds_bare_call():
@@ -481,7 +728,7 @@ def test_scan_project_custom_types_finds_table_assignment(tmp_path):
         encoding="utf-8",
     )
 
-    index = _scan_project_custom_types(str(tmp_path))
+    index, _ = _scan_project_custom_types(str(tmp_path))
     assert index["user_roles"] == "app/models/user.py"
 
 
@@ -496,7 +743,7 @@ def test_build_custom_type_index_source_three_includes_table_assignment():
             '    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),\n)\n'
         )
     }
-    index = _build_custom_type_index(interfaces=[], schema_trees={}, db_models_valid=db_models_valid)
+    index, _ = _build_custom_type_index(interfaces=[], schema_trees={}, db_models_valid=db_models_valid)
     assert index["user_roles"] == "app/models/order.py"
 
 
@@ -590,6 +837,75 @@ def test_resolve_body_imports_unresolvable_name_not_guessed(tmp_path):
 
     lines = resolve_body_imports(str(tmp_path), tree, body, bound_names=set())
     assert lines == []
+
+
+def test_scan_project_custom_types_groups_schema_classes_by_module(tmp_path):
+    # 對應 docs/refactor_bug_trace.md #45：GetAllGradeRs 同時在
+    # exam.py／school.py 各自定義一份，schema_classes_by_module 要能
+    # 分別記錄兩個模組各自有這個名稱，供 resolve_body_imports() 依模組
+    # 查詢，不能只看扁平索引。
+    (tmp_path / "app" / "schemas").mkdir(parents=True)
+    (tmp_path / "app" / "schemas" / "exam.py").write_text(
+        "class GetAllGradeRs:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "schemas" / "school.py").write_text(
+        "class GetAllGradeRs:\n    pass\n", encoding="utf-8"
+    )
+
+    _, schema_classes_by_module = _scan_project_custom_types(str(tmp_path))
+    assert schema_classes_by_module["exam"] == frozenset({"GetAllGradeRs"})
+    assert schema_classes_by_module["school"] == frozenset({"GetAllGradeRs"})
+
+
+def test_resolve_body_imports_prefers_own_module_schema_over_global_index(tmp_path, caplog):
+    """對應 docs/refactor_bug_trace.md #45 真實案例：`GetAllGradeRs` 同時
+    在 `app/schemas/exam.py`／`app/schemas/school.py` 定義，字母序
+    "school" 排在 "exam" 後面、覆寫掉全域索引裡 "exam" 的條目——
+    `exam_router.py::grades()` 傳入 `own_module="exam"` 時，即使全域
+    索引指向 school.py，也要優先解析成自己模組（exam.py）的定義，並且
+    留下 log 可觀察這個優先序真的生效。"""
+    (tmp_path / "app" / "schemas").mkdir(parents=True)
+    (tmp_path / "app" / "schemas" / "exam.py").write_text(
+        "class GetAllGradeRs:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "schemas" / "school.py").write_text(
+        "class GetAllGradeRs:\n    pass\n", encoding="utf-8"
+    )
+
+    tree = ast.parse("from __future__ import annotations\n")
+    body = ast.parse("data = GetAllGradeRs(grade=grade_list)\n").body
+
+    with caplog.at_level("INFO"):
+        lines = resolve_body_imports(
+            str(tmp_path), tree, body, bound_names={"grade_list"}, own_module="exam"
+        )
+
+    assert lines == ["from app.schemas.exam import GetAllGradeRs"]
+    assert "GetAllGradeRs" in caplog.text
+    assert "#45" in caplog.text
+
+    # 反過來：own_module="school" 時應該解析成 school.py 自己的定義。
+    lines_school = resolve_body_imports(
+        str(tmp_path), tree, body, bound_names={"grade_list"}, own_module="school"
+    )
+    assert lines_school == ["from app.schemas.school import GetAllGradeRs"]
+
+
+def test_resolve_body_imports_falls_back_to_global_index_when_own_module_lacks_class(tmp_path):
+    # own_module 有值，但這個模組自己沒有定義這個名稱時，退回既有的
+    # 全域索引行為，不因為傳了 own_module 就整個失效。
+    (tmp_path / "app" / "repositories").mkdir(parents=True)
+    (tmp_path / "app" / "repositories" / "user_repository.py").write_text(
+        "class UserRepository:\n    pass\n", encoding="utf-8"
+    )
+
+    tree = ast.parse("from __future__ import annotations\n")
+    body = ast.parse("return UserRepository(db).get_by_id(user_id)\n").body
+
+    lines = resolve_body_imports(
+        str(tmp_path), tree, body, bound_names={"db", "user_id"}, own_module="exam"
+    )
+    assert lines == ["from app.repositories.user_repository import UserRepository"]
 
 
 def test_insert_import_lines_after_existing_imports_and_docstring():

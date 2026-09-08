@@ -27,6 +27,7 @@
 | Java 專案原始碼 | `RefactorState.java_project_path` | 全量原始碼；① 是唯一直接讀取 Java 原始碼的 Agent |
 | skip endpoint 清單 | `postman/unfilled_endpoints.json`，固定路徑，直接讀檔案 | 取 `category="skip"` 的項目，作為五章呼叫鏈排除的起點；**不進 State**（這份檔案是「給人看的產出，不影響 pipeline 後續走向」，只有 ① 這個 node 內部需要，不需要跨 Agent 共用） |
 | openapi_spec 的完整 endpoint 清單 | `RefactorState.openapi_spec`，[A] Spec Agent 產出，已在 State 裡，不需額外讀檔 | 只取 `paths` 底下所有 `(path, HTTP method)` 組合，列舉「全部 endpoint」，供五章判定「非-skip 全集」使用；不解析 schema 內容（見下方既有備註），不做其他語意判斷 |
+| 人工強制納入清單 | `config/force_include_classes.json`，固定路徑，**選填**，檔案不存在視為空清單 | Controller 可達性閉包之外，額外強制納入 Map/Reduce 的 Java 檔案清單，見四章「人工強制納入清單」。跟 skip endpoint 清單同一種定位：只有 ① 這個 node 內部需要，**不進 State** |
 
 > 這份輸入依賴 [B] Collection Agent（含人工填值/skip 關卡）先執行完畢，`unfilled_endpoints.json` 才會存在，對應 00 一章流程圖「[A] → [B] → ① → ② → ③」的順序，`01_langgraph_architecture.md`、`graph/builder.py`／`main.py` 均已依這個順序實作（`extract_spec` 為 entry point）。
 
@@ -37,6 +38,8 @@
 ## 三、靜態呼叫圖建構（機械分析，不用 LLM）
 
 依「能用程式判斷的，就不要交給 LLM」原則（00 二），呼叫圖建構是純程式邏輯，不呼叫 Claude API。這份呼叫圖是四、五兩章共用的基礎資料，只建構一次。
+
+> **下游影響（`refactor_plan.md` 一章「新增能力與歸屬」）**：⑤ 功能改寫 Agent 組「呼叫鏈 + 完整原始碼」context 時，需要對 Phase 2 方法做一層呼叫查找，重用的是這裡的產出——但不是直接呼叫內部函式 `_build_call_graph()`（底線開頭，`parse_agent` 套件內部實作），而是呼叫本章步驟 6 之後的對外唯一入口 `parse_agent.call_graph.parse_java_project(java_project_path) -> ParsedProject`，取用 `ParsedProject.call_graph`（連同 `.classes`／`.route_index` 一併算好）。⑤ 對 `java_project_path` 當場重新呼叫這個函式即可（純函式，無副作用），不需要①把呼叫圖另外落成新的 State 欄位往下傳，①的輸出契約因此不變。`method_id` 不區分多載參數簽名（見 `parse_agent/types.py` 說明）這個既有特性原樣延續給這個新消費者：⑤ 查到的「直接呼叫對象」在多載情境下可能包含同名但實際上是另一個多載的目標，屬於「多連、少排除」既有精神下可接受的精準度取捨，不是新引入的問題。
 
 **決策：解析工具採用 `javalang`**（純 Python 套件，語法層級 AST parser，需新增進 `requirements.txt`）。理由：
 - 這裡只需要語法層級資訊（class/method 簽名、field 宣告、annotation、method invocation 運算式），不需要完整語意型別解析（泛型推導、overload resolution 等）
@@ -78,6 +81,18 @@
 > **Import 依賴補充**：欄位依賴與呼叫圖解析（`_walk_and_resolve()`）只認得透過 DI 欄位、或 `this.x.y()` 欄位鏈式呼叫建立的依賴，對靜態方法呼叫（`ClassName.staticMethod()`）、方法參考等不透過欄位建立關係的用法無法解析——這類依賴完全不會進 `controller_dependency_closure()`，對應 class 的業務邏輯會整個從 `module_list` 消失，沒有任何 warning（常見案例：用 `org.springframework.data.jpa.domain.Specification` 組動態查詢條件的 helper class，透過 `ClassName.staticMethod()` 呼叫，從未被注入成欄位）。
 >
 > **不試圖窮舉每一種 Java 呼叫語法去解決**（靜態呼叫只是其中一種，方法參考、反射會是同一類症狀，逐一補呼叫圖分支永遠可能還有下一種沒覆蓋到）；改用更通用、不依賴語法細節的訊號：**只要一個 class 明確 import 了另一個專案內的類別，兩者之間就算一條依賴**，不管這個依賴實際上透過欄位、靜態呼叫、方法參考、還是任何其他方式建立——import 陳述式是編譯期就確定的事實，不需要理解呼叫語法。三章 `_extract_project_imports()` 負責抽取，`controller_dependency_closure()` 的 `_direct_deps()` 在既有的欄位依賴之外多納入這份 import 依賴，只在專案內類別間生效（外部函式庫 import 沒有對應的 `ClassInfo` 可比對，天然被排除），不套用 `@Qualifier`／`@Primary` 那套 DI 消歧邏輯——import 是編譯期就確定的單一目標，沒有 DI 那種「多個實作選一個」的歧義。細節見 `04b_parse_agent_code.md` 三章 `_extract_project_imports()`、四章 `controller_dependency_closure()`。
+
+> **人工強制納入清單**（`config/force_include_classes.json`）：閉包＋import 依賴解決的是「程式碼實際會不會被呼叫到」，但目標專案裡可能存在**production 程式碼完全沒有引用、卻仍想一併搬過去**的類別——常見成因是功能還沒串接完、或呼叫路徑用了 reflection／排程器等三章解析不到的機制、或單純是使用者不希望這次遷移漏掉這段邏輯。這種「要不要納入」是人的判斷，不是可達性分析能決定的事，因此不嘗試在演算法裡猜，改成一份選填的人工清單：
+>
+> ```json
+> ["src/main/java/com/teachLanguage/utils/ExamCardUtils.java"]
+> ```
+>
+> 陣列元素是 Java 檔案相對 `java_project_path` 的路徑（跟 `ModuleInfo.java_files` 同一種路徑慣例，不用 class name——class name 在多檔案重名時不是唯一鍵，見三章步驟 1 對重複類別名稱的既有警告）。檔案不存在（沒建立這份清單）視為空陣列，完全不影響既有行為。
+>
+> **只影響「哪些類別進入 Map/Reduce 的候選集合」這一步，不影響其他任何邏輯**：清單裡的檔案路徑對回 `project.classes`（三章已建好的 `ClassInfo`）找到對應類別後，**無條件併入共用類別集合**（不論實際算出的 in-degree 是多少，強制納入的類別 in-degree 通常是 0，因為定義上就是「沒有 Controller 閉包能到達它」）——跟下面 4a／4b 的既有分工銜接，一起進 4a 共用類別批次，跑同一套 `needs_llm_summary()` 分層判斷、同一套 Map 摘要流程；Reduce 階段一樣用既有的業務關聯判斷幫它決定歸屬哪個 module，不特殊處理。找不到對應類別（路徑打錯字、檔案已被移除）記一筆警告並跳過，不中止整條 `parse` run——這是選填的人工輸入，寫錯不該讓整條 pipeline 掛掉，比照 skip endpoint 清單「多連、少排除」的既有容錯精神。
+>
+> **下游沒有感知**：強制納入的類別進了 `ModuleInfo.java_files`／`methods` 之後，跟自然可達的類別完全無法區分——③／[P]／⑤ 不需要、也不會知道某個類別是被強制拉進來的，這個機制的影響範圍完全收斂在①內部這一步。
 
 - **子階段 4a（共用類別批次，先執行）**：把所有共用類別抽出、獨立成一批（或視數量拆多批，見十章待決定事項），各自摘要一次，跑完才進入下一子階段。共用類別當成 Map 階段的基礎層先建好，不是跟 Controller 分組混在一起搶跑。
 - **子階段 4b（Controller 批次，後執行，組間可平行）**：每個 Controller 分組保留依賴閉包中 in-degree = 1 的專屬依賴（閉包扣掉共用類別後的其餘部分，不是只看 Controller 自己宣告的欄位型別）；分組依賴到的共用類別，直接把 4a 已經產出的候選摘要（一小段文字，不是原始碼）帶進這個分組的 prompt，讓分組摘要能完整交代「呼叫了 XXX，做什麼用」，不需要重新分析共用類別的原始碼。
@@ -159,7 +174,9 @@ Reduce **不**決定方法層級的內容——`MethodInfo`（`java_method`／`c
 
 人工標記 skip 是對**這一個 endpoint** 下的判斷，不該因為底層 `method_id` 剛好被另一個方法共用就被覆蓋。因此 `api_to_python_target` 的組裝多一道**獨立、無條件生效**的關卡：`skip_endpoints` 清單裡的每一個 endpoint_key，不論底層 method_id 判斷結果為何，一律不會出現在 `api_to_python_target`。這道關卡只影響 `api_to_python_target` 這個 endpoint 級輸出，不改變 `module_list` 的排除邏輯——共用 `method_id` 的另一個非-skip 分支的方法描述，仍依「共用方法會被保護」規則正常留在 `module_list`（`module_list` 對這類多載方法本來就有「精準度略降」的既有限制，見三章「決策」）；這種 method_id 碰撞發生時額外記一筆 warning，供人工核對 `module_list` 裡的描述是否混雜了 skip 分支的行為。
 
-排除發生在 Reduce 階段輸出 `module_list`／`api_to_python_target` 之前，被排除的方法從一開始就不會出現在最終輸出裡——③／[P]／④／⑤／⑦ 這些下游 Agent 完全不需要知道 skip 這個概念存在，只會看到已經排除乾淨的模組清單。
+**`compute_skip_excluded_overloads()`：HTTP method 精確的排除清單（對應 `docs/refactor_bug_trace.md` #8）**：使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」（見 03a「Decision.SKIP 的語意」），不是只跳過自動化測試。但上面「method_id 共用」的問題不只影響 `api_to_python_target`——③ 架構設計 Agent 重新掃描 Java 原始碼時，會用 javalang 的方法名稱把 `voice`／`image` 這種同名多載都掃出來，若沒有額外資訊，兩個物理上不同的多載（一個該 skip、一個不該）沒有辦法只排除其中一個。這裡另外算一份「HTTP method 精確」的排除清單：對每一個 skip endpoint（`"{HTTP_METHOD} {path}"`），查 `route_index` 拿到對應的 `method_id`，拆出 `(class_name, method_name)`，配上 endpoint_key 自帶的 HTTP method，組成 `(class_name, method_name, http_method)` 三元組。這份清單存進 `RefactorState.skip_excluded_overloads`，交給 ③（見 `05a_design_agent_architecture.md` 對應章節）在重新掃描出每個多載各自的 `http_method` 之後，把該排除的多載從資料裡濾掉。
+
+`module_list`／`api_to_python_target` 的排除（本章前段）發生在 Reduce 階段輸出之前，被排除的方法從一開始就不會出現在這兩個輸出裡；但同名不同 HTTP method 的多載這個特例，需要靠 `skip_excluded_overloads` 這份額外資料才能在③重新掃描的階段被正確排除——③／[P]／④／⑤／⑦ 因此不是完全不需要知道 skip 這個概念，而是只有③會用到這份「HTTP method 精確排除清單」，[P]／④／⑤／⑦ 讀到的仍是③已經濾乾淨、不含 skip 多載的 `python_structure`，不需要再自己判斷一次。
 
 ---
 
@@ -187,6 +204,8 @@ class ApiMapping(TypedDict):
     java_controller: str
     module: str
 ```
+
+`skip_excluded_overloads: list[tuple[str, str, str]]`：`compute_skip_excluded_overloads()` 的輸出（見上方對應段落），`(class_name, method_name, http_method)` 三元組清單，供 ③ 重新掃描出每個多載各自的 `http_method` 後排除用——`module_list`／`api_to_python_target` 已經是排除乾淨後的結果，這個欄位是唯二例外，因為它服務的是③自己的重新掃描結果，不是①這裡的輸出本身。
 
 **`MethodInfo.class_name`**：所屬 Java class 名稱。同一 module 內常見跨層同名方法（如 `UserService.getById()` 與 `UserRepository.getById()`，service 委派 repository 時命名本來就容易一致）——若沒有這個欄位，③ 架構設計 Agent 重新掃描 `module.java_files` 的簽名時，光憑 `java_method` 字面名稱無法判斷這筆描述原本對應哪個類別，見 `05a_design_agent_architecture.md` 二章、四章。
 

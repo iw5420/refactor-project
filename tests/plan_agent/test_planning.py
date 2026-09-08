@@ -1,30 +1,28 @@
-"""plan_agent/planning.py 的五～八章核心邏輯測試，對應 06a 全文。全部
-用 monkeypatch 換掉 `plan_agent.planning.call_claude_for_json`，不呼叫
-真實 Claude API（比照 tests/design_agent/test_design.py 對 LLM 呼叫點的
-既有 mock 方式）。
-
-06b 五章「已驗證」列出的情境（happy path、涵蓋率 defense-in-depth、
-`module_index.classify()`）先前只用一次性 dry-run 腳本驗證過，沒有留下
-對應的 pytest 檔案（`git log` 上實作 commit `1358ce8` 沒有新增任何
-`tests/plan_agent/*.py`）——本檔案把這些情境落地成可重複執行的迴歸測試，
-同時覆蓋 `07a_translator_cli_architecture.md` 五章新增的
-`class_name`／`function_name` 落地行為。
+"""plan_agent/planning.py 的四～八章核心邏輯測試，對應 06a 全文。[P] 不
+再呼叫 Claude API（見 06a 五章），因此不需要任何 LLM mock——這裡直接
+呼叫 `planning.plan_all_modules()`，驗證純機械組裝的結果。
 """
-import json
-
 import pytest
 
+from graph.scheduler import ModuleScheduler
 from plan_agent import module_index, planning
-from plan_agent.exceptions import PlanAgentCoverageError, PlanAgentModuleError, PlanAgentModuleLookupError
+from plan_agent.exceptions import PlanAgentCoverageError, PlanAgentModuleLookupError
 
 
-def _iface(file_path, class_name, function_name, params=None, return_type="None", **extra):
+def _iface(file_path, class_name, function_name, phase, params=None, return_type="None",
+           java_method_id=None, **extra):
     iface = {
         "file_path": file_path,
         "class_name": class_name,
         "function_name": function_name,
         "params": params or [],
         "return_type": return_type,
+        "phase": phase,
+        # 大部分測試不關心呼叫鏈查找的具體結果（call_chain 有自己專屬的
+        # tests/plan_agent/test_call_chain.py），這裡沒指定時自動生成一個
+        # 佔位識別碼，格式跟真實資料一致但內容任意——反正對應的
+        # java_project_path 底下沒有真實 .java 檔案，呼叫圖天生是空的。
+        "java_method_id": java_method_id or f"{file_path}::{class_name}::{function_name}",
     }
     iface.update(extra)
     return iface
@@ -40,292 +38,208 @@ def _module(name, depends_on=None):
     }
 
 
-# ── happy path 固定資料：user（無 schema 檔）／order（有 schema 檔，依賴 user）──
+# ── 固定資料：user（無 schema 檔）／order（有 schema 檔）／utils／_global ──
 
-USER_REPO = _iface("app/repositories/user_repository.py", "UserRepository", "get_by_id",
+USER_REPO = _iface("app/repositories/user_repository.py", "UserRepository", "get_by_id", phase=1,
                     params=[{"name": "user_id", "type": "int"}], return_type="User | None")
-USER_SERVICE = _iface("app/services/user_service.py", "UserService", "get_user",
+USER_SERVICE = _iface("app/services/user_service.py", "UserService", "get_user", phase=2,
                        params=[{"name": "user_id", "type": "int"}], return_type="User | None")
-ORDER_REPO = _iface("app/repositories/order_repository.py", "OrderRepository", "get_by_id",
+ORDER_REPO = _iface("app/repositories/order_repository.py", "OrderRepository", "get_by_id", phase=1,
                      params=[{"name": "order_id", "type": "int"}], return_type="Order | None")
-ORDER_SERVICE = _iface("app/services/order_service.py", "OrderService", "get_order",
+ORDER_SERVICE = _iface("app/services/order_service.py", "OrderService", "get_order", phase=2,
                         params=[{"name": "order_id", "type": "int"}], return_type="Order | None")
-ORDER_ROUTER = _iface("app/routers/order_router.py", None, "get_order_endpoint",
+ORDER_ROUTER = _iface("app/routers/order_router.py", None, "get_order_endpoint", phase=2,
                        params=[{"name": "order_id", "type": "int"}], return_type="OrderResponse",
                        http_method="GET", route_path="/api/v1/orders/{id}")
-
-_ID = lambda i: module_index.interface_id(i["file_path"], i["class_name"], i["function_name"])  # noqa: E731
+VALIDATION_UTIL = _iface("app/utils/validation_util.py", None, "is_valid_field", phase=1,
+                          params=[{"name": "value", "type": "str"}], return_type="bool")
+GLOBAL_HANDLER = _iface("app/core/exception_handlers.py", None, "handle_all", phase=2,
+                         params=[{"name": "request", "type": "Request"}, {"name": "exc", "type": "Exception"}],
+                         return_type="Response")
 
 
 def _module_list():
     return [_module("user"), _module("order", depends_on=["user"])]
 
 
-def _python_structure():
-    return {
-        # order 有 Schema 定義段，user 沒有——用來驗證 _modules_with_schema_file()
-        # 只依 `### {file_path}` 字面比對（見 06a 七章、planning.py 說明）。
-        "directory_tree": "app/...\n\n### app/schemas/order.py\n```python\nfrom pydantic import BaseModel\n```\n",
-        "interfaces": [USER_REPO, USER_SERVICE, ORDER_REPO, ORDER_SERVICE, ORDER_ROUTER],
-    }
+def _python_structure(interfaces, directory_tree="### app/schemas/order.py\n```python\nfrom pydantic import BaseModel\n```\n"):
+    return {"directory_tree": directory_tree, "interfaces": interfaces}
 
 
-def _happy_responses():
-    """依 module 名稱回傳 tasks 陣列。referenced_interfaces 只包含合法、
-    正向（依 06a 六章固定全序）的引用，用來驗證 `depends_on`／
-    `target_files` 的正常組裝路徑。"""
-    return {
-        "user": [
-            {"interface_id": _ID(USER_REPO), "description": "查詢使用者", "context": "", "referenced_interfaces": []},
-            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "",
-             "referenced_interfaces": [_ID(USER_REPO)]},
-        ],
-        "order": [
-            {"interface_id": _ID(ORDER_REPO), "description": "查詢訂單", "context": "", "referenced_interfaces": []},
-            {"interface_id": _ID(ORDER_SERVICE), "description": "取得訂單（含使用者資訊）", "context": "",
-             "referenced_interfaces": [_ID(ORDER_REPO), _ID(USER_SERVICE)]},
-            {"interface_id": _ID(ORDER_ROUTER), "description": "訂單查詢 API", "context": "",
-             "referenced_interfaces": [_ID(ORDER_SERVICE)]},
-        ],
-    }
-
-
-def _make_fake_call(responses_by_module):
-    """建一個可以直接 monkeypatch 給 `planning.call_claude_for_json` 的
-    假函式：依 user_prompt 裡的 module 名稱回傳對應的 canned tasks，不打
-    真實 API。"""
-
-    def _fake(*, system_prompt, user_prompt, schema, model, max_tokens):
-        payload = json.loads(user_prompt)
-        module_name = payload["module"]["module"]
-        return {"tasks": responses_by_module[module_name]}
-
-    return _fake
-
-
-def test_plan_all_modules_happy_path(monkeypatch):
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(_happy_responses()))
-
-    tasks = planning.plan_all_modules(_module_list(), _python_structure())
+def test_plan_all_modules_happy_path(tmp_path):
+    structure = _python_structure(
+        [USER_REPO, USER_SERVICE, ORDER_REPO, ORDER_SERVICE, ORDER_ROUTER, VALIDATION_UTIL, GLOBAL_HANDLER]
+    )
+    tasks, module_list = planning.plan_all_modules(_module_list(), structure, str(tmp_path))
     by_key = {(t["class_name"], t["function_name"]): t for t in tasks}
 
-    # 涵蓋率：5 個 InterfaceSpec 對應恰好 5 個 task。
-    assert len(tasks) == 5
+    # 涵蓋率：7 個 InterfaceSpec 對應恰好 7 個 task。
+    assert len(tasks) == 7
 
-    # 07a 新增：class_name／function_name 必須落地進最終 TaskSpec，且與
-    # 對應 InterfaceSpec 完全一致（routers 層 class_name 為 None）。
-    assert by_key[("UserRepository", "get_by_id")]["module"] == "user"
-    assert by_key["OrderService", "get_order"]["module"] == "order"
-    router_task = by_key[(None, "get_order_endpoint")]
-    assert router_task["module"] == "order"
+    user_repo_t = by_key[("UserRepository", "get_by_id")]
+    user_service_t = by_key[("UserService", "get_user")]
+    order_repo_t = by_key[("OrderRepository", "get_by_id")]
+    order_service_t = by_key[("OrderService", "get_order")]
+    router_t = by_key[(None, "get_order_endpoint")]
+    utils_t = by_key[(None, "is_valid_field")]
+    global_t = by_key[(None, "handle_all")]
 
-    # id 依固定全序（module_rank → layer → function_name）穩定編號。
-    ids_in_order = [t["id"] for t in tasks]
-    assert ids_in_order == sorted(ids_in_order)
-    assert by_key[("UserRepository", "get_by_id")]["id"] < by_key[("UserService", "get_user")]["id"]
-    assert by_key[("OrderRepository", "get_by_id")]["id"] < by_key[("OrderService", "get_order")]["id"]
-    assert by_key[("OrderService", "get_order")]["id"] < by_key[(None, "get_order_endpoint")]["id"]
+    # java_method_id：這個 task 自己對應的 Java 方法識別碼，逐字等於
+    # InterfaceSpec.java_method_id——⑤抽取「這個函式自己」的 Java 原始碼
+    # 時的座標，跟 reference_targets（呼叫到的其他函式）是互補的兩件事。
+    assert user_repo_t["java_method_id"] == USER_REPO["java_method_id"]
+    assert router_t["java_method_id"] == ORDER_ROUTER["java_method_id"]
 
-    # depends_on：同 module 正向依賴保留；跨 module 的引用不進 depends_on
-    # （見 06a 六章，只影響 target_files）。
-    order_service_task = by_key[("OrderService", "get_order")]
-    order_repo_task = by_key[("OrderRepository", "get_by_id")]
-    user_service_task = by_key[("UserService", "get_user")]
-    assert order_service_task["depends_on"] == [order_repo_task["id"]]
-    assert router_task["depends_on"] == [order_service_task["id"]]
-    assert by_key[("UserRepository", "get_by_id")]["depends_on"] == []
-    assert user_service_task["depends_on"] == [by_key[("UserRepository", "get_by_id")]["id"]]
+    # module／layer 歸屬（四章）。
+    assert user_repo_t["module"] == "user"
+    assert order_service_t["module"] == "order"
+    assert router_t["module"] == "order"
+    assert utils_t["module"] == module_index.UTILS_MODULE_NAME
+    assert global_t["module"] == module_index.GLOBAL_MODULE_NAME
 
-    # target_files：routers 層帶 schema（因為 order 有 schema 檔）、不帶 model；
-    # services 層無條件帶 model，且依 order 是否有 schema 檔決定要不要帶 schema；
-    # repositories 層只帶 model；跨 module 引用依對方層級套用同一套規則。
-    assert router_task["target_files"] == [
-        "app/routers/order_router.py",
-        "app/services/order_service.py",
-        "app/schemas/order.py",
+    # phase：直接複製 InterfaceSpec.phase（五章）。
+    assert user_repo_t["phase"] == 1
+    assert user_service_t["phase"] == 2
+    assert utils_t["phase"] == 1
+    assert global_t["phase"] == 2
+
+    # translator_backend：只有 repositories 層 qwen，其餘 claude（五章）。
+    assert user_repo_t["translator_backend"] == "qwen"
+    assert order_repo_t["translator_backend"] == "qwen"
+    assert user_service_t["translator_backend"] == "claude"
+    assert router_t["translator_backend"] == "claude"
+    assert utils_t["translator_backend"] == "claude"
+    assert global_t["translator_backend"] == "claude"
+
+    # description：純機械模板，不含業務語意（五章）。
+    assert user_repo_t["description"] == "填入 app/repositories/user_repository.py 的 UserRepository.get_by_id()"
+    assert router_t["description"] == "填入 app/routers/order_router.py 的 get_order_endpoint()"
+
+    # context：沒有 config_field_mappings 對應項目時維持空字串（五章）。
+    assert user_repo_t["context"] == ""
+
+    # id 依固定全序（module_rank → layer → function_name）穩定編號，
+    # _utils／_global 排在所有業務 module 之後（八章）。
+    assert user_repo_t["id"] < user_service_t["id"] < order_repo_t["id"]
+    assert order_repo_t["id"] < order_service_t["id"] < router_t["id"]
+    assert router_t["id"] < utils_t["id"] < global_t["id"]
+
+    # depends_on：同 module 內、且同一個 translator_backend 的 task 依
+    # 全序串成一條鏈（六章，不再依賴任何「業務上是否真的呼叫到」的
+    # 判斷）；module 邊界、後端邊界都會重置——repositories（qwen）跟
+    # services／routers（claude）在全序裡相鄰但後端不同，鏈在這裡斷開，
+    # 不會讓一個孤立的 qwen 失敗連坐同 module 的 Claude task（見
+    # docs/refactor_bug_trace.md）；_utils／_global 內部固定留空。
+    assert user_repo_t["depends_on"] == []
+    assert user_service_t["depends_on"] == []  # 後端邊界：user_repo 是 qwen，user_service 是 claude
+    assert order_repo_t["depends_on"] == []  # module 邊界：跟前一名（user_service）不同 module
+    assert order_service_t["depends_on"] == []  # 後端邊界：order_repo 是 qwen，order_service 是 claude
+    assert router_t["depends_on"] == [order_service_t["id"]]  # 同後端（claude）：order_service → router
+    assert utils_t["depends_on"] == []
+    assert global_t["depends_on"] == []
+
+    # target_files（七章）：repositories 只帶 model；services 依 module
+    # 是否有 schema 檔決定要不要帶 schema、無條件帶 model；routers 依
+    # 是否有 schema 檔決定要不要帶 schema，不帶 model；utils／_global
+    # 只有自己的檔案。
+    assert user_repo_t["target_files"] == ["app/repositories/user_repository.py", "app/models/user.py"]
+    assert user_service_t["target_files"] == ["app/services/user_service.py", "app/models/user.py"]  # user 無 schema 檔
+    assert order_repo_t["target_files"] == ["app/repositories/order_repository.py", "app/models/order.py"]
+    assert order_service_t["target_files"] == [
+        "app/services/order_service.py", "app/schemas/order.py", "app/models/order.py",
     ]
-    assert order_service_task["target_files"] == [
-        "app/services/order_service.py",
-        "app/repositories/order_repository.py",
-        "app/services/user_service.py",
-        "app/schemas/order.py",
-        "app/models/order.py",
-        "app/models/user.py",  # user_service 屬 services 層，跨 module 無條件帶 model
-    ]
-    assert order_repo_task["target_files"] == ["app/repositories/order_repository.py", "app/models/order.py"]
-    # user module 沒有 schema 檔，即使 layer 是 services 也不帶 schema。
-    assert user_service_task["target_files"] == [
-        "app/services/user_service.py",
-        "app/repositories/user_repository.py",
-        "app/models/user.py",
-    ]
+    assert router_t["target_files"] == ["app/routers/order_router.py", "app/schemas/order.py"]
+    assert utils_t["target_files"] == ["app/utils/validation_util.py"]
+    assert global_t["target_files"] == ["app/core/exception_handlers.py"]
 
-    # referenced_functions（06a 七章新設計）：只記錄「因引用而拉進來」的
-    # 檔案裡，具體是哪個函式被引用到——不含 schemas／models（這些從來
-    # 不是 referenced_interfaces 的一部分，見三章）。
-    assert user_service_task["referenced_functions"] == [
-        {"file_path": "app/repositories/user_repository.py", "class_name": "UserRepository", "function_name": "get_by_id"},
-    ]
-    assert order_service_task["referenced_functions"] == [
-        {"file_path": "app/repositories/order_repository.py", "class_name": "OrderRepository", "function_name": "get_by_id"},
-        {"file_path": "app/services/user_service.py", "class_name": "UserService", "function_name": "get_user"},
-    ]
-    assert router_task["referenced_functions"] == [
-        {"file_path": "app/services/order_service.py", "class_name": "OrderService", "function_name": "get_order"},
-    ]
-    # 沒有 referenced_interfaces 的 task，referenced_functions 是空清單。
-    assert order_repo_task["referenced_functions"] == []
+    # reference_targets（六章）：java_project_path 底下沒有真實 .java
+    # 檔案，呼叫圖天生是空的，因此每個 task 的呼叫鏈查找都找不到任何
+    # 直接呼叫對象——這裡只驗證欄位存在且為空清單、沒有截斷，具體的
+    # 呼叫鏈判斷邏輯見 test_call_chain.py。
+    for t in tasks:
+        assert t["reference_targets"] == []
+        assert "reference_targets_truncated" not in t
+
+    # module_list 第二回傳值：補回 _utils 保留 module（見
+    # planning.plan_all_modules() docstring「第二個回傳值」）——真實環境
+    # 發現 graph/scheduler.py::ModuleScheduler 用呼叫端傳入的 module_list
+    # 建構自己追蹤的 module 集合，_utils 若沒有對應條目，這個 module 底下
+    # 的 task 永遠排不進 get_ready_tasks()。這裡驗證補回的條目本身。
+    utils_module = next(m for m in module_list if m["module"] == module_index.UTILS_MODULE_NAME)
+    assert utils_module["depends_on"] == []
+    assert utils_module["java_files"] == [VALIDATION_UTIL["java_method_id"].split("::", 1)[0]]
+    # 原始 module_list（user／order）不受影響，只多這一筆。
+    assert {m["module"] for m in module_list} == {"user", "order", module_index.UTILS_MODULE_NAME}
 
 
-def test_referenced_interfaces_invalid_and_self_reference_filtered(monkeypatch, caplog):
-    """06a 五章「核對規則」：`referenced_interfaces` 引用不存在的
-    interface_id 一律過濾並記警告；引用自己也要濾掉（見 planning.py
-    `_plan_module()` 的 `rid != iid` 條件）。"""
-    responses = {
-        "user": [
-            {"interface_id": _ID(USER_REPO), "description": "查詢使用者", "context": "",
-             "referenced_interfaces": [_ID(USER_REPO), "app/does/not/exist.py::Foo::bar"]},
-            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "",
-             "referenced_interfaces": []},
-        ],
-        "order": [
-            {"interface_id": _ID(ORDER_REPO), "description": "查詢訂單", "context": "", "referenced_interfaces": []},
-            {"interface_id": _ID(ORDER_SERVICE), "description": "取得訂單", "context": "",
-             "referenced_interfaces": []},
-            {"interface_id": _ID(ORDER_ROUTER), "description": "訂單查詢 API", "context": "",
-             "referenced_interfaces": []},
-        ],
-    }
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
+def test_utils_module_list_entry_makes_utils_tasks_schedulable(tmp_path):
+    """端對端證實這次修的是什麼：拿 `plan_all_modules()` 回傳的
+    `module_list`（已補回 `_utils`）直接餵給真實 `ModuleScheduler`，
+    utils task 要出現在第一輪 `get_ready_tasks()`——修好之前，用①原始
+    `module_list`（沒有 `_utils` 條目）餵同一份 `task_list`，
+    `get_ready_tasks()` 永遠不會回傳任何 utils task（已用真實
+    `lang-exam-api-refactor` pipeline 資料證實過，見對話紀錄）。
+    """
+    structure = _python_structure([USER_REPO, VALIDATION_UTIL], directory_tree="")
+    tasks, module_list = planning.plan_all_modules([_module("user")], structure, str(tmp_path))
 
-    with caplog.at_level("WARNING"):
-        tasks = planning.plan_all_modules(_module_list(), _python_structure())
-
-    by_key = {(t["class_name"], t["function_name"]): t for t in tasks}
-    # 自我引用與不存在的 interface_id 都被濾掉，depends_on／target_files
-    # 都不應該包含它們。
-    assert by_key[("UserRepository", "get_by_id")]["depends_on"] == []
-    assert by_key[("UserRepository", "get_by_id")]["target_files"] == [
-        "app/repositories/user_repository.py",
-        "app/models/user.py",
-    ]
-    assert any("does/not/exist" in record.message for record in caplog.records)
+    scheduler = ModuleScheduler(module_list, tasks)
+    ready_modules = {t["module"] for t in scheduler.get_ready_tasks()}
+    assert module_index.UTILS_MODULE_NAME in ready_modules
 
 
-def test_depends_on_drops_backward_and_same_rank_edges(monkeypatch, caplog):
-    """06a 六章「防環規則」：只保留「被依賴 task 的全序索引 < 依賴方 task
-    的全序索引」的邊，反向或同層邊直接捨棄並記 log——這裡刻意讓
-    repositories 層的方法反向引用 services 層（違反固定全序），驗證
-    這條邊被捨棄，且不會讓 depends_on 出現環。"""
-    responses = {
-        "user": [
-            # 反向引用：repositories 引用 services（違反 repositories < services 全序）。
-            {"interface_id": _ID(USER_REPO), "description": "查詢使用者", "context": "",
-             "referenced_interfaces": [_ID(USER_SERVICE)]},
-            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "",
-             "referenced_interfaces": []},
-        ],
-        "order": [
-            {"interface_id": _ID(ORDER_REPO), "description": "查詢訂單", "context": "", "referenced_interfaces": []},
-            {"interface_id": _ID(ORDER_SERVICE), "description": "取得訂單", "context": "",
-             "referenced_interfaces": []},
-            {"interface_id": _ID(ORDER_ROUTER), "description": "訂單查詢 API", "context": "",
-             "referenced_interfaces": []},
-        ],
-    }
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
-
-    with caplog.at_level("INFO"):
-        tasks = planning.plan_all_modules(_module_list(), _python_structure())
-
-    by_key = {(t["class_name"], t["function_name"]): t for t in tasks}
-    # 反向邊被捨棄，depends_on 維持空——不是把 user_service 錯誤地排到
-    # user_repository 之前。
-    assert by_key[("UserRepository", "get_by_id")]["depends_on"] == []
-    # 但 target_files 不受方向限制，仍然帶入被引用的檔案（見 06a 七章）。
-    assert "app/services/user_service.py" in by_key[("UserRepository", "get_by_id")]["target_files"]
-    assert any("防環規則捨棄" in record.message for record in caplog.records)
+def test_module_list_unchanged_when_no_utils_tasks(tmp_path):
+    """沒有任何 utils 類別的目標專案，module_list 原封不動傳回，不會
+    無中生有多一筆空的 `_utils` 條目——見 `_build_utils_module_entry()`
+    docstring「只在真的有 task 落在 _utils module 時才產生」。
+    """
+    structure = _python_structure([USER_REPO, USER_SERVICE], directory_tree="")
+    original_module_list = [_module("user")]
+    tasks, module_list = planning.plan_all_modules(original_module_list, structure, str(tmp_path))
+    assert module_list == original_module_list
 
 
-def test_missing_interface_in_response_retries_then_raises(monkeypatch):
-    """06a 五章「失敗處理」：LLM 回應遺漏 interfaces 視同呼叫失敗，列入
-    待重試清單；重試仍失敗則中止整條 plan run。用 monkeypatch 把
-    `_RETRY_WAIT_SECONDS` 歸零，不真的等 5 分鐘。"""
-    monkeypatch.setattr(planning, "_RETRY_WAIT_SECONDS", 0.0)
-
-    incomplete_responses = {
-        "user": [
-            # 故意漏掉 USER_SERVICE，觸發 `_plan_module()` 的 missing 檢查。
-            {"interface_id": _ID(USER_REPO), "description": "查詢使用者", "context": "",
-             "referenced_interfaces": []},
-        ],
-        "order": [
-            {"interface_id": _ID(ORDER_REPO), "description": "查詢訂單", "context": "", "referenced_interfaces": []},
-            {"interface_id": _ID(ORDER_SERVICE), "description": "取得訂單", "context": "",
-             "referenced_interfaces": []},
-            {"interface_id": _ID(ORDER_ROUTER), "description": "訂單查詢 API", "context": "",
-             "referenced_interfaces": []},
-        ],
-    }
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(incomplete_responses))
-
-    with pytest.raises(PlanAgentModuleError):
-        planning.plan_all_modules(_module_list(), _python_structure())
+def test_phase_is_copied_verbatim_not_reinterpreted(tmp_path):
+    structure = _python_structure([USER_REPO, USER_SERVICE], directory_tree="")
+    tasks, module_list = planning.plan_all_modules([_module("user")], structure, str(tmp_path))
+    by_key = {t["function_name"]: t for t in tasks}
+    assert by_key["get_by_id"]["phase"] == 1
+    assert by_key["get_user"]["phase"] == 2
 
 
-def test_duplicate_interfaces_raises_coverage_error(monkeypatch):
-    """06a 十二章 defense-in-depth：`python_structure.interfaces` 本身有
-    重複的三元組（③輸出的正確性缺陷）時，八章涵蓋率驗證要能偵測到，
-    見 06b `PlanAgentCoverageError` docstring「不是用來擋一個已知會發生
-    的情況」。"""
-    duplicated = _python_structure()
-    duplicated["interfaces"] = [USER_REPO, dict(USER_REPO)]  # 同一個三元組出現兩次
-
-    responses = {"user": [
-        {"interface_id": _ID(USER_REPO), "description": "查詢使用者", "context": "", "referenced_interfaces": []},
-    ]}
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
-
-    with pytest.raises(PlanAgentCoverageError):
-        planning.plan_all_modules([_module("user")], duplicated)
+def test_missing_phase_raises_key_error(tmp_path):
+    """06a 五章「不重新判斷、不需要 fallback」：InterfaceSpec 缺少 phase
+    代表③違反自己的輸出契約，直接讓 KeyError 往上拋，不嘗試靜默補值。"""
+    broken = dict(USER_REPO)
+    del broken["phase"]
+    with pytest.raises(KeyError):
+        planning.plan_all_modules([_module("user")], _python_structure([broken], directory_tree=""), str(tmp_path))
 
 
-def test_referenced_functions_excludes_same_file_reference(monkeypatch):
-    """06a 七章新設計：引用同一個檔案裡的另一個函式時，不該出現在
-    `referenced_functions` 裡——那個檔案是 `target_files[0]`，本來就整份
-    帶入，_read_context_files() 若對它套用函式層級抽取會把目標函式本身
-    也濾掉（見 `plan_agent/planning.py::_build_referenced_functions()`
-    docstring）。"""
-    sibling = _iface("app/services/user_service.py", "UserService", "get_user_summary",
-                      params=[{"name": "user_id", "type": "int"}], return_type="str")
-    structure = {
-        "directory_tree": "",
-        "interfaces": [USER_SERVICE, sibling],
-    }
-    responses = {
-        "user": [
-            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "",
-             "referenced_interfaces": [_ID(sibling)]},  # 引用同檔案的另一個函式
-            {"interface_id": _ID(sibling), "description": "取得使用者摘要", "context": "",
-             "referenced_interfaces": []},
-        ],
-    }
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
-
-    tasks = planning.plan_all_modules([_module("user")], structure)
-    by_key = {(t["class_name"], t["function_name"]): t for t in tasks}
-
-    user_service_task = by_key[("UserService", "get_user")]
-    assert user_service_task["referenced_functions"] == []
-    # target_files 仍然只有自己的檔案一份（同檔案引用不會產生重複項目）。
-    assert user_service_task["target_files"] == ["app/services/user_service.py", "app/models/user.py"]
+def test_return_type_is_copied_verbatim_not_reinterpreted(tmp_path):
+    """對應 docs/refactor_bug_trace.md #46：`TaskSpec.return_type` 逐字
+    複製 `InterfaceSpec.return_type`，不重新判斷——`GLOBAL_HANDLER` 的
+    "Response" 是③對 ResponseEntity<...> 簽名機械覆寫出來的結果（見
+    #30），這裡只驗證複製本身正確，判斷邏輯是③的職責，不是 plan_agent
+    的職責。"""
+    structure = _python_structure([USER_REPO, GLOBAL_HANDLER], directory_tree="")
+    tasks, _ = planning.plan_all_modules([_module("user")], structure, str(tmp_path))
+    by_key = {t["function_name"]: t for t in tasks}
+    assert by_key["get_by_id"]["return_type"] == "User | None"
+    assert by_key["handle_all"]["return_type"] == "Response"
 
 
-def test_config_field_mappings_appended_to_matching_task_context(monkeypatch):
+def test_missing_return_type_raises_key_error(tmp_path):
+    broken = dict(USER_REPO)
+    del broken["return_type"]
+    with pytest.raises(KeyError):
+        planning.plan_all_modules([_module("user")], _python_structure([broken], directory_tree=""), str(tmp_path))
+
+
+def test_config_field_mappings_appended_to_matching_task_context(tmp_path):
     """對應 docs/09b_bug_trace.md #45 修法：`python_structure.
-    config_field_mappings`（③ design_agent.global_infra 產出）裡有這個
-    task 對應檔案的項目時，機械附加一段提示進 context 尾端；沒有對應
-    項目的 task（其他 module 的檔案）不受影響，context 維持原樣。"""
+    config_field_mappings` 裡有這個 task 對應檔案的項目時，機械附加
+    一段提示——這是 context 唯一還會被填內容的來源（06a 五章）。"""
     structure = {
         "directory_tree": "",
         "interfaces": [USER_SERVICE],
@@ -333,75 +247,81 @@ def test_config_field_mappings_appended_to_matching_task_context(monkeypatch):
             "app/services/user_service.py": {"code": "app.core.config.LANGUAGE_CODE"},
         },
     }
-    responses = {
-        "user": [
-            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "既有 context 文字",
-             "referenced_interfaces": []},
-        ],
-    }
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
-
-    tasks = planning.plan_all_modules([_module("user")], structure)
-    task = tasks[0]
-    assert "既有 context 文字" in task["context"]
-    assert "`code` 欄位改成 `from app.core.config import LANGUAGE_CODE` 後直接使用 `LANGUAGE_CODE`" in task["context"]
-    assert "app/core/config.py" in task["context"]
-
-
-def test_config_hint_explicitly_forbids_settings_object_pattern(monkeypatch):
-    """對應 docs/09b_bug_trace.md #58：⑤ 連續三次真實 pipeline run 都把
-    舊版的 `app.core.config.LANGUAGE_CODE` 點記法提示誤讀成物件屬性存取，
-    幻覺出從未存在的 `settings` 物件。新提示除了給完整 import 陳述式，
-    還要明講「沒有 settings 物件」，直接點名禁止這個最常見的錯誤。"""
-    structure = {
-        "directory_tree": "",
-        "interfaces": [USER_SERVICE],
-        "config_field_mappings": {
-            "app/services/user_service.py": {"code": "app.core.config.LANGUAGE_CODE"},
-        },
-    }
-    responses = {
-        "user": [
-            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "既有 context 文字",
-             "referenced_interfaces": []},
-        ],
-    }
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
-
-    tasks = planning.plan_all_modules([_module("user")], structure)
+    tasks, module_list = planning.plan_all_modules([_module("user")], structure, str(tmp_path))
     context = tasks[0]["context"]
+    assert "`code` 欄位改成 `from app.core.config import LANGUAGE_CODE` 後直接使用 `LANGUAGE_CODE`" in context
+    assert "app/core/config.py" in context
+    # 對應 #58：明講沒有 settings 物件，避免⑤把點記法誤讀成物件屬性存取。
     assert "沒有 settings 物件" in context
     assert "settings.LANGUAGE_CODE" in context
 
 
-def test_no_config_field_mappings_leaves_context_untouched(monkeypatch):
-    responses = {
-        "user": [
-            {"interface_id": _ID(USER_SERVICE), "description": "取得使用者", "context": "既有 context 文字",
-             "referenced_interfaces": []},
-        ],
-    }
-    monkeypatch.setattr(planning, "call_claude_for_json", _make_fake_call(responses))
-
-    tasks = planning.plan_all_modules([_module("user")], {"directory_tree": "", "interfaces": [USER_SERVICE]})
-    assert tasks[0]["context"] == "既有 context 文字"
+def test_no_config_field_mappings_leaves_context_empty(tmp_path):
+    structure = {"directory_tree": "", "interfaces": [USER_SERVICE]}
+    tasks, module_list = planning.plan_all_modules([_module("user")], structure, str(tmp_path))
+    assert tasks[0]["context"] == ""
 
 
-def test_bad_file_path_raises_module_lookup_error_before_calling_llm(monkeypatch):
-    """06a 四章：`file_path` 不符合 `{module}_{layer}.py` 格式時直接中止
-    ——這一步發生在 `plan_all_modules()` 呼叫 LLM 之前（見 planning.py
-    `plan_all_modules()` 開頭的四章反查迴圈），因此就算把
-    `call_claude_for_json` monkeypatch 成一定會拋錯，也不該被呼叫到。
+def test_utils_and_global_tasks_have_no_referenced_functions_field(tmp_path):
+    """[P] 不再產生 referenced_interfaces／referenced_functions（見 06a
+    七章、八章），TaskSpec 建構時完全不設這個 key——既有消費端
+    （translator_cli／implement_node.py）用 `task.get("referenced_
+    functions", [])` 安全處理缺席，這裡驗證 [P] 真的沒有寫入這個 key。
     """
+    structure = _python_structure([USER_REPO], directory_tree="")
+    tasks, module_list = planning.plan_all_modules([_module("user")], structure, str(tmp_path))
+    assert "referenced_functions" not in tasks[0]
 
-    def _fail_if_called(**kwargs):
-        raise AssertionError("不應該呼叫到 LLM——四章反查應該在呼叫前就先中止")
 
-    monkeypatch.setattr(planning, "call_claude_for_json", _fail_if_called)
+def test_duplicate_interfaces_raises_coverage_error(tmp_path):
+    """06a 八章 defense-in-depth：`python_structure.interfaces` 本身有
+    重複的三元組（③輸出的正確性缺陷）時，涵蓋率驗證要能偵測到。"""
+    duplicated = _python_structure([USER_REPO, dict(USER_REPO)], directory_tree="")
+    with pytest.raises(PlanAgentCoverageError):
+        planning.plan_all_modules([_module("user")], duplicated, str(tmp_path))
 
-    bad_structure = {
-        "directory_tree": "",
-        "interfaces": [_iface("app/schemas/user.py", None, "not_a_valid_layer_file")],
-    }
+
+def test_bad_file_path_raises_module_lookup_error(tmp_path):
+    """06a 四章：`file_path` 不符合 `{module}_{layer}.py` 格式、也不是
+    utils／_global 特例時直接中止。"""
+    bad_structure = _python_structure(
+        [_iface("app/schemas/user.py", None, "not_a_valid_layer_file", phase=2)], directory_tree=""
+    )
     with pytest.raises(PlanAgentModuleLookupError):
-        planning.plan_all_modules([_module("user")], bad_structure)
+        planning.plan_all_modules([_module("user")], bad_structure, str(tmp_path))
+
+
+def test_empty_interfaces_yields_empty_task_list(tmp_path):
+    tasks, module_list = planning.plan_all_modules(_module_list(), _python_structure([], directory_tree=""), str(tmp_path))
+    assert tasks == []
+
+
+def test_depends_on_chain_breaks_at_translator_backend_boundary(tmp_path):
+    """對應 docs/refactor_bug_trace.md：真實環境重現過一個孤立的 qwen
+    repository task 失敗，把同 module 底下毫無關聯的 Claude service／
+    router task 全部拖死——根因是 _build_depends_on_map() 原本不分
+    translator_backend、無條件把同 module 全序串成一條鏈。這裡直接鎖住
+    修正後的行為：repository（qwen）→ service（claude）的鏈在後端邊界
+    斷開；同為 repository（qwen）的兩個 task 之間依然維持自動序列化
+    （qwen 併發數鎖死為 1 的原始理由對這半段仍然成立）。
+    """
+    repo_a = _iface("app/repositories/user_repository.py", "UserRepository", "get_by_id", phase=1,
+                     params=[{"name": "user_id", "type": "int"}], return_type="User | None")
+    repo_b = _iface("app/repositories/user_repository.py", "UserRepository", "get_by_name", phase=1,
+                     params=[{"name": "name", "type": "str"}], return_type="User | None")
+    structure = _python_structure([repo_a, repo_b, USER_SERVICE], directory_tree="")
+    tasks, _ = planning.plan_all_modules([_module("user")], structure, str(tmp_path))
+    by_key = {(t["class_name"], t["function_name"]): t for t in tasks}
+
+    repo_a_t = by_key[("UserRepository", "get_by_id")]
+    repo_b_t = by_key[("UserRepository", "get_by_name")]
+    service_t = by_key[("UserService", "get_user")]
+
+    assert repo_a_t["translator_backend"] == "qwen"
+    assert repo_b_t["translator_backend"] == "qwen"
+    assert service_t["translator_backend"] == "claude"
+
+    # 同為 qwen：維持既有的自動序列化。
+    assert repo_b_t["depends_on"] == [repo_a_t["id"]]
+    # 後端邊界（qwen → claude）：鏈在這裡斷開，不是接在 repo_b 後面。
+    assert service_t["depends_on"] == []

@@ -1,6 +1,6 @@
 # translator-cli 詳細設計
 
-> 本文件承接 `00_refactor_architecture.md` 的整體架構（見七、④骨架實作 Agent／⑤功能改寫 Agent 一節；三章「程式碼執行工具：translator-cli」；六章「Context 控制策略」；十章「待決定事項」），是這個工具的**設計面**文件：決策、契約、資料結構、流程。實際程式碼實作見 `07b_translator_cli_code.md`（待建立）；本文件不出現可執行的實作邏輯，僅在需要精確釘死「格式契約」時才附固定範本（比照 `05a_design_agent_architecture.md` 三章附 `database.py` 固定範本的既有先例）。
+> 本文件承接 `00_refactor_architecture.md` 的整體架構（見七、④骨架實作 Agent／⑤功能改寫 Agent 一節；三章「程式碼執行工具：translator-cli」；六章「Context 控制策略」；十章「待決定事項」），是這個工具的**設計面**文件：決策、契約、資料結構、流程。實際程式碼實作見 `07b_translator_cli_code.md`；本文件不出現可執行的實作邏輯，僅在需要精確釘死「格式契約」時才附固定範本（比照 `05a_design_agent_architecture.md` 三章附 `database.py` 固定範本的既有先例）。
 
 ---
 
@@ -17,7 +17,7 @@
 
 **本文件不涵蓋**：
 - 實際程式碼——見 07b
-- ④／⑤ node 本身怎麼組裝 task／怎麼呼叫排程器——這部分已經是既有實作（`graph/nodes/scaffold_node.py`／`implement_node.py`／`graph/scheduler.py`），07a 只定義 translator-cli 被呼叫端的契約，08a／09a（皆待建立）才是 node 內部邏輯的權威文件
+- ④／⑤ node 本身怎麼組裝 task／怎麼呼叫排程器——這部分已經是既有實作（`graph/nodes/scaffold_node.py`／`implement_node.py`／`graph/scheduler.py`），07a 只定義 translator-cli 被呼叫端的契約，08a／09a 才是 node 內部邏輯的權威文件
 - Harness 的局部驗證／全量驗證——見 02a
 - [P] Plan Agent 如何產生 `task.description`／`task.context` 的業務語意內容——見 06a
 
@@ -29,12 +29,14 @@
 
 | | `generate_scaffold()` | `fill_function()` |
 |---|---|---|
-| 呼叫方 | ④ `scaffold_node.py` | ⑤ `implement_node.py`（`MODEL_SEMAPHORE(1)` 內） |
+| 呼叫方 | ④ `scaffold_node.py` | ⑤ `implement_node.py`（qwen 路徑受 translator-cli 內部的 `OLLAMA_MODEL_SEMAPHORE(1)` 限制，Claude 路徑不受限，見七章） |
 | 呼叫次數 | 整條 pipeline 一次 | 逐 task 呼叫 |
-| 輸入 | `python_project_path`（見下方）＋ `PythonStructure`（整包）＋ `db_models`（④ 自行取得的 DB schema 內容，見四章） | `python_project_path`（見下方）＋單一 task 的 `target_file`／`class_name`／`function_name`／`description`／`context`／`context_files` |
-| 是否呼叫本地模型 | **否**（見四章） | 是（qwen2.5-coder:32b via ollama，見七章） |
+| 輸入 | `python_project_path`（見下方）＋ `PythonStructure`（整包）＋ `db_models`（④ 自行取得的 DB schema 內容，見四章） | `python_project_path`（見下方）＋單一 task 的 `target_file`／`class_name`／`function_name`／`translator_backend`／`java_source`／`referenced_source`／`context`／`context_files`（見五章，`description` 不在其中——不是模型輸入，純供 log 用） |
+| 是否呼叫模型 | **否**（見四章） | 是——依 `translator_backend` 分派 qwen2.5-coder:32b（via ollama）或 Claude API，見七章 |
 | 寫入方式 | 從無到有建立檔案（整檔輸出） | 對既有檔案做 AST 精準插入（單一函式本體） |
 | git 動作 | 一次性 commit（見八章） | 逐 task commit（見八章） |
+
+`fill_function()` 依 `translator_backend` 分派 qwen（既有 ollama 路徑）或 Claude API（新路徑，見七章）。輸入契約是「`java_source`／`referenced_source`／`context`／`context_files`」，不是「`description`／`context`／`context_files`」——`description` 已降級成純機械模板、只供 log 用途（見 06a 五章），[P] 不再產生語意摘要，改成⑤（`implement_node.py`）用 javalang 抽取 Java 方法原始碼、依 [P] 算好的 `reference_targets` 座標讀出真實原始碼（Java 或已翻譯 Python），組成這兩個新引數傳進來——**這件事發生在 translator-cli 之外**，07a 只定義收到這兩個引數之後怎麼用，不做抽取本身（見五章「為什麼是 java_source／referenced_source」）。Claude 路徑的模型呼叫刻意不序列化（換取雙後端要的平行效能），寫入段因此改用八章「寫入段用細粒度鎖序列化」——只鎖讀檔／AST替換／寫入／commit 這一小段，模型呼叫本身不鎖：同一 phase 內平行執行沒問題，但 qwen 本地模型基於硬體限制仍須序列化。
 
 ### 新輸入：`python_project_path`
 
@@ -65,11 +67,16 @@ async def fill_function(
     target_file: str,
     class_name: str | None,
     function_name: str,
+    translator_backend: Literal["qwen", "claude"],
+    java_source: str,
+    referenced_source: list[ReferencedSourceItem],
     description: str,
     context: str,
     context_files: list[str],
 ) -> FillResult: ...
 ```
+
+`translator_backend`／`java_source`／`referenced_source` 完整設計見五章。
 
 **`task_id` 是必要引數**：對應 06a 八章 `TaskSpec.id`（`task_{:03d}` 格式，穩定、可重現），讓 `git log`（八章 commit 訊息格式）能精確對回 [P] Plan Agent 產出的具體 task，不需要每次靠 `class_name.function_name` 反推——尤其同一個 `(class_name, function_name)` 若因為某種原因被呼叫超過一次（見五章「冪等」），只有 `task_id` 才能唯一區分是哪一次呼叫留下的 commit。
 
@@ -77,7 +84,7 @@ async def fill_function(
 
 ### 與既有程式碼的介面異動
 
-本文件設計出的契約需要對 `graph/state.py`／`main.py`／`graph/nodes/scaffold_node.py`／`graph/nodes/implement_node.py` 做小幅異動（新增 `python_project_path` 欄位並在對應呼叫點傳遞）——這份異動清單已經全部套用完成，實際內容以 `07b_translator_cli_code.md` 九章「與既有程式碼的介面異動」為準，不在這裡重複列一份會跟著實作進度過期的清單。
+`python_project_path`／`translator_backend`／`java_source`／`referenced_source`／`context` 這幾項異動（`graph/state.py`／`main.py`／`graph/nodes/scaffold_node.py`／`graph/nodes/implement_node.py` 新增欄位並在對應呼叫點傳遞；`graph/java_source_extraction.py` 負責把 `java_method_id`／`reference_targets` 解析成真正的原始碼文字）已經全部套用完成。實際內容以 `07b_translator_cli_code.md` 十章「與既有程式碼的介面異動」為準，不在這裡重複列一份會跟著實作進度過期的清單。
 
 ---
 
@@ -212,11 +219,15 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
    - **來源三（新增）**：對 `db_models` 字典（見上方「`db_models`」一節，key 為 `app/models/{module}.py` 這類路徑，value 是④已產出的完整檔案內容字串）逐項 `ast.parse()` 取出頂層 `ClassDef` 名稱，`class_name → file_path`（= `db_models` 的 key）併入索引——這個 `ast.parse()` 不是新增的驗證負擔，上方「`db_models`」一節第 1 點已經對每個 `db_models[file_path]` 各自 `ast.parse()` 一次做語法驗證，這裡直接複用同一次解析結果取 `ClassDef`。**這一步是必要的，不是加強保險**：標註 `@Entity`／`@Embeddable`／`@MappedSuperclass` 的類別依 05a 三章「孤兒類別與資料容器占位」判斷優先序第 1 點，③直接跳過、不渲染任何 `InterfaceSpec`——這些 ORM class 因此從頭到尾不會出現在來源一（不在 Schema 定義段）或來源二（沒有對應 `InterfaceSpec.class_name`）裡，只存在於 `db_models` 的檔案內容字串中。Repository／Service 方法若回傳型別是這類 Model class（如 00 六章 `UserRepository.get_by_id()` 對應 `user.py` 這個 model 檔案，回傳型別依 05a 五章型別對應表就是裸名稱 `User`），沒有這個來源就會落入下方「兩層都比對不到時保守不加」，永遠補不上對應 import——這是每個有 DB 表的 module 都會踩到的常態情況，不是邊角案例
    - **來源三同時掃 `Table(...)` 變數賦值，不是只掃 `ClassDef`**：08a_scaffold_agent_architecture.md 八章「`@ManyToMany`：產生中介表定義」把多對多關聯的中介表渲染成 `user_roles = Table(...)`（`ast.Assign`），不是 class——這種中介表沒有對應的 Java entity，本來就不會有 `ClassDef`。⑤填空時若需要對這張表直接操作（新增／刪除一筆多對多關聯，08a 八章明講的既有動機），生成的程式碼會直接引用 `user_roles` 這個名稱；若只掃 `ClassDef`，這個名稱永遠進不了索引，會被下方「兩層都比對不到時保守不加」吞掉。因此來源三對 `db_models_valid` 的每個 `tree` 額外呼叫 `_table_assignment_names(tree)`（只認「單一目標、RHS 是呼叫 `Table(...)` 或 `xxx.Table(...)`」這個精確形狀，不誤收一般常數賦值），把找到的變數名一併併入索引
    
-   三個來源合併成一份索引（key 衝突時優先序為來源三／來源二＞來源一：前兩者是結構化資料或已驗證通過語法的實際檔案內容，精確度高於來源一的正則掃描文字；實務上三者對應的 class 集合本來就不重疊——來源一只收 API 邊界 Pydantic model／資料容器 dataclass，來源二只收有 `InterfaceSpec` 的一般類別，來源三只收被③排除在 `interfaces` 之外的 JPA entity class，衝突理論上不會發生，這裡只是定義一個明確的 tie-break 規則）。裸型別名稱的擷取用 AST，不用字串裁切／正則：`ast.parse(正規化後的 params／return_type 字串, mode="eval")` 後 `ast.walk()` 遍歷取出所有 `ast.Name` 節點的 `.id`，逐一比對這份索引，命中就加 `from {module_path} import {class_name}`（`module_path` 由 `file_path` 去掉 `.py`、`/` 換 `.` 得到）。用 AST 而非字串裁切是必要的，不是風格選擇——`ResponseResult[User]`、`dict[str, UserCreateRequest]` 這類巢狀泛型若用字串裁切／正則容易只抓到最外層（如 `ResponseResult`），漏掉內層真正需要 import 的型別（`User`），巢狀深度不固定時字串規則無法窮舉；`ast.walk()` 不論巢狀多深都能一次抓齊所有裸名稱。這些型別字串本來就已經在上方「型別字串正規化」一節保證能被 `ast.parse()` 合法解析，這裡不需要額外的容錯處理。
+   三個來源合併成一份索引（key 衝突時優先序為來源三／來源二＞來源一：前兩者是結構化資料或已驗證通過語法的實際檔案內容，精確度高於來源一的正則掃描文字；~~實務上三者對應的 class 集合本來就不重疊……衝突理論上不會發生~~——**這個假設不成立，見下方「來源一內部也會衝突」的真實案例，不是三個來源之間的衝突，是來源一自己內部、同名 class 被多個模組各自獨立定義時的衝突**）。裸型別名稱的擷取用 AST，不用字串裁切／正則：`ast.parse(正規化後的 params／return_type 字串, mode="eval")` 後 `ast.walk()` 遍歷取出所有 `ast.Name` 節點的 `.id`，逐一比對這份索引，命中就加 `from {module_path} import {class_name}`（`module_path` 由 `file_path` 去掉 `.py`、`/` 換 `.` 得到）。用 AST 而非字串裁切是必要的，不是風格選擇——`ResponseResult[User]`、`dict[str, UserCreateRequest]` 這類巢狀泛型若用字串裁切／正則容易只抓到最外層（如 `ResponseResult`），漏掉內層真正需要 import 的型別（`User`），巢狀深度不固定時字串規則無法窮舉；`ast.walk()` 不論巢狀多深都能一次抓齊所有裸名稱。這些型別字串本來就已經在上方「型別字串正規化」一節保證能被 `ast.parse()` 合法解析，這裡不需要額外的容錯處理。
 
 **兩層都比對不到時保守不加、不猜**：可能是 Python 內建型別（`int`／`str`／`bool`，本來就不需要 import），也可能是 ③ 的 LLM 步驟自由產生的複合寫法（如 `Annotated[User, Depends(get_current_user)]`，`User` 部分理論上會被第二層抓到，但更複雜的巢狀寫法可能抓不全）。這裡延續 04a／05a 反覆出現的「機械規則解決不了的部分不強行猜測」精神，但方向相反——那邊是「多連少排除」（保守多連結），這裡刻意選「少加不亂猜」，因為錯誤 import 一個不存在的名稱會讓整個檔案在 `import` 階段就炸掉（比缺 import 導致的 `NameError` 更早爆、更難定位、牽連同一個 `app/main.py` 底下的其他 router）。剩餘的 import 缺口交給 Harness 的 module 局部驗證（服務起不來會直接反映在驗證失敗）與 ⑦ Debug Agent 處理，不在骨架階段窮舉。
 
 **決策：自訂型別索引命中要再排除「正在組裝的這個檔案自己的 class」，否則會產生自我 import**：這是端對端驗證才暴露的既有缺陷，不是設計初期就預見的——真實案例 `exam-platform-api` 的 `app/services/common_service.py` 裡，`ResponseResult.error_4(self, code: ErrorCode)` 這個方法簽名引用了**同一個檔案裡稍後才定義**的另一個 class `ErrorCode`。上方「自訂型別索引」的三個來源都是全專案掃描，本來就會收錄「這個檔案自己定義的 class」，比對時若不排除，會產生一行 `from app.services.common_service import ErrorCode` 寫進 `common_service.py` 自己——這行 import 恆為 True（`ErrorCode` 確實在這個模組裡定義），語法完全合法，`ast.parse()` 抓不出來，但 Python 執行期 import 這個模組時會直接觸發自我引用的 `ImportError`，Harness 啟動服務階段才會炸。這類「同檔案跨 class 互相引用方法簽名」在 Java 靜態工具類（如 `ResponseResult` 這種集中定義多個工廠方法、內部引用同檔案其他 class 的樣式）很常見，不是邊角案例。修法：比對命中之餘，額外排除「正在組裝的這個檔案自己的全部 class 名稱」（`_render_interface_files()` 這一輪 `file_path` 分組下的 class 集合）——這批類別就在同一個檔案裡，本來就不需要 import。
+
+**來源一內部也會衝突：同名的具名回應包裝 class 被多個模組各自獨立定義（對應 `docs/refactor_bug_trace.md` #8）**：上面「三個來源合併」那段的假設是「三個來源對應的 class 集合本來就不重疊」，但這個假設只保證**跨來源**不衝突，沒有保證**來源一自己內部**不衝突。真實案例：`ResponseResult<String>` 這種專案自訂泛型，③ Design Agent 逐模組產生具名包裝 class（如 `ResponseResultString`）時，模組之間互不知道彼此定義了同名的東西——`exam`／`file` 兩個模組的 `schemas/{module}.py` 各自都定義了一份完全獨立、內容相同的 `ResponseResultString(BaseModel)`（`ResponseResultGetAllGradeRs` 在 `general`／`registration` 也是同一個模式）。原本的自訂型別索引是全域、只認 class 名稱的扁平 `dict[str, str]`，逐一掃描每個模組的 schema 檔案時對同名 class 直接覆寫（`index[node.name] = file_path`），最後只留得住迭代到最後那個模組的檔案路徑——`file_router.py` 引用自己模組定義的 `ResponseResultString` 時，查到的卻可能是 `exam.py` 的路徑，生出 `from app.schemas.exam import ResponseResultString`，即使 `file.py` 明明自己也定義了一份一模一樣的 class。
+
+修法：額外記錄「每個模組（`app/schemas/{module}.py` 的 `module` 段）自己的 schema 檔案定義了哪些 class 名稱」（`schema_classes_by_module`），並反推「正在組裝的這個檔案自己屬於哪個模組」（`_module_for_file_path()`，`app/{routers|services|repositories}/{module}_{layer_singular}.py` 這個既有檔名規則的反向操作，`utils`／`_global` 沒有 module 概念、回傳 `None`）。解析 import 時**優先**查「這個檔案自己所屬模組」的 schema 定義，命中就直接用同一個模組的路徑，不查可能已經被覆寫過的全域索引；查不到（`own_module` 是 `None`，或這個模組自己沒有定義這個 class 名稱）才退回既有的全域索引行為——這保留了「模組 A 的檔案合法引用模組 B 專屬 class」這種既有情境不受影響，只修正「兩個模組各自都有一份同名定義，卻被誤導到別的模組」這個特定衝突。
 
 **填空階段（⑤）有同一個問題的獨立實作，需要各自排除**：`fill_function()` 填入的函式本體是 qwen 自由生成的內容，可能引用簽名以外的名稱，因此有另一段「填空模式：本體 import 解析」（見下方）在骨架階段的兩層規則之外，針對填入的本體重新掃一次遺漏的 import——這段獨立邏輯一樣是全專案自訂型別掃描，一樣需要排除「正在解析的這個檔案自己的頂層符號」，否則重演同一種自我 import。兩處各自維護排除邏輯，是因為兩者的比對時機、資料來源（骨架階段用記憶體中的結構化資料；填空階段用已寫入磁碟的完整檔案 AST）都不同，沒有共用的中間狀態可以合併成一份實作。
 
@@ -252,13 +263,28 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
 
 ---
 
-## 五、填空模式：`fill_function(python_project_path, task_id, target_file, class_name, function_name, description, context, context_files)`
+## 五、填空模式：`fill_function(python_project_path, task_id, target_file, class_name, function_name, translator_backend, java_source, referenced_source, description, context, context_files)`
 
 ### 為什麼 `fill_function` 需要 `class_name`／`function_name`
 
 `InterfaceSpec.file_path` 是**每個函式各自的路徑，不是每個檔案各自唯一**——`app/routers/user_router.py` 這一個檔案底下正常會有多個 router 函式，對應多個不同的 `InterfaceSpec`／task。06a 三章「涵蓋率規則」訂為「每一個 `InterfaceSpec` 恰好對應一個 task（1:1）」，代表**多個 task 的 `target_files[0]` 會是同一個檔案路徑**——若 `fill_function()` 只拿到 `target_file`，沒有辦法知道這次要填的是檔案裡的哪一個函式。
 
 `TaskSpec` 因此攜帶 `class_name`／`function_name` 兩個欄位（見 06a 八章），translator-cli 執行期靠這個三元組定位函式；`depends_on`／`target_files` 組裝、涵蓋率驗證等 06a 其餘演算法不受影響，純粹多帶兩個欄位。
+
+### 為什麼是 `java_source`／`referenced_source`，不是 `description`
+
+00 六章、06a 一章已定調：舊版由 [P] 呼叫 Claude API 把 Java 業務邏輯整合成 `description` 語意摘要、⑤ 只吃這份摘要的設計已淘汰——摘要本身就是失真來源（傳值有各種可能失誤，看真實原始碼比較準）。新設計下 ⑤ 直接讀「呼叫鏈 + 完整真實原始碼」：
+
+- `java_source`：這個 task 自己對應的 Java 方法**所在的整個檔案**（未經任何 LLM 摘要，也不是只抽這一個方法）。
+- `referenced_source`：06a 六章 `reference_targets` 界定出的呼叫鏈範圍，逐項補上真實原始碼文字——`language="java"` 的項目讀真實 `.java` 原始碼，`language="python"` 的項目讀已翻譯完成的真實 `.py` 原始碼（該檔案在全域關卡保證下已由前一段翻譯完畢，見 06a 六章）。
+
+**這兩個欄位的組裝不屬於 translator-cli 的範圍**：把 `TaskSpec.java_method_id`／`reference_targets` 這兩個座標（06a 六章）解析成實際原始碼文字，需要讀取 Java 原始碼、或讀取目標 Python 檔案，這件事由呼叫方（⑤ `implement_node.py`，經 `graph/java_source_extraction.py`，見 09a）在呼叫 `fill_function()` 之前做完，`fill_function()` 收到的已經是組好的文字內容，不做任何抽取——維持二章「translator-cli 只定義被呼叫端契約」的邊界，也維持 `translator_cli/` 不 import `graph.state` 的既有獨立性（見十二章）。
+
+**`java_source` 是整個檔案，不是只抽這一個方法**：真實 `lang-exam-api-refactor` 專案的 90 個 `.java` 檔案，每個檔案恰好一個頂層 class，0 個例外——「整個 class」在這個專案裡就是「整個檔案」。`graph/java_source_extraction.py` 因此直接 `Path.read_text()` 讀整份，不用 javalang 定位起始行＋手動配對大括號去切出單一方法——後者是自訂解析邏輯，錯誤率無法保證是零；讀整個檔案不需要任何解析或配對，錯誤率趨近於零。附帶效果：⑤ 翻譯某個方法時，天然看得到同一個 class 內其他方法的真實原始碼，不依賴呼叫鏈有沒有正確解析出同 class 內的呼叫邊。`referenced_source`（可能有好幾筆，上限 `PLAN_AGENT_MAX_REFERENCE_TARGETS`）維持單方法抽取為主，總量超過門檻（`REFERENCED_SOURCE_TRIM_THRESHOLD_BYTES`，預設 13000 bytes，環境變數可調）才個別項目退回單方法抽取——這裡才是真的需要控制大小的地方，真實資料目前遠低於門檻（單一 task 最多 4 筆 reference_targets，最大 Java 檔案 16KB）。
+
+### `translator_backend`：依此分派 qwen 或 Claude API
+
+`TaskSpec.translator_backend`（06a 五章機械決定：repository 層固定 `"qwen"`，其餘固定 `"claude"`）原樣透傳進來，`fill_function()` 依這個值決定走哪一條模型呼叫路徑（見七章），下游的 AST 定位／替換／驗證／commit（六、八、九章）完全共用，跟 backend 無關。
 
 ### 輸入契約
 
@@ -269,10 +295,12 @@ normalized = raw_type.replace("<", "[").replace(">", "]")
 | `target_file` | `task.target_files[0]` | 相對路徑，如 `app/repositories/user_repository.py` |
 | `class_name` | `task.class_name` | `None` 代表 routers 層自由函式 |
 | `function_name` | `task.function_name` | 連同 `class_name` 唯一定位這次要填的函式（見上方說明） |
-| `description` | `task.description` | 業務邏輯描述——**不是原始 Java 原始碼**，是 [P] 的 LLM 已經整合過 Java method 業務邏輯後產出的任務描述（見 06a 五章），translator-cli 不需要、也不會拿到逐字的 `.java` 檔案內容。00 三章「Java 原始邏輯」這個措辭在這裡具體落地成這份已經被 Claude 消化過的自然語言描述，不是文字檔案內容——這樣才符合 00 六章「Context 控制策略」控制 context 大小的目的：塞整段原始 Java 方法本文只會放大 context，不會提高正確率，[P] 產生 `description` 時已經把「該做什麼」萃取出來了 |
-| `context` | `task.context` | 補充依賴關係／邊界條件文字（06a 五章），現況 `implement_node.py` 尚未傳遞這個欄位，需要補上（見二章「與既有程式碼的介面異動」第 2 項） |
-| `context_files` | `task.target_files` | 這次呼叫要讀進 prompt 的檔案清單（含 `target_files[0]` 自己＋06a 七章組裝進來的 referenced 檔案／schemas／models），控制 context 大小的關鍵（00 六章）。**讀取容錯見七章「User / System Prompt 組裝」** |
-| `referenced_functions`（選填） | `task.referenced_functions` | `(file_path, class_name, function_name)` 三元組清單，對應 06a 七章「`referenced_functions`：函式層級抽取」（`docs/09b_bug_trace.md` #37 修法）——`context_files` 裡「因引用而拉進來」的檔案，只抽取這裡指定的函式，不整份帶入，見七章「User / System Prompt 組裝」新增小節 |
+| `translator_backend` | `task.translator_backend` | `"qwen"` 或 `"claude"`，見上方「依此分派」，決定七章走哪條模型呼叫路徑 |
+| `java_source` | 呼叫方（⑤／`graph/java_source_extraction.py`）依 `task.java_method_id` 讀出的整個 Java 檔案內容 | 見上方「為什麼是 `java_source`／`referenced_source`」「`java_source` 是整個檔案」 |
+| `referenced_source` | 呼叫方（⑤／`graph/java_source_extraction.py`）依 `task.reference_targets` 逐項讀出的真實原始碼 | `list[ReferencedSourceItem]`（`translator_cli/types.py` 新增型別，見十一章），每項含 `file_path`／`class_name`／`function_name`／`language`／`source` |
+| `description` | `task.description` | 純機械模板字串（06a 五章：`"填入 {file_path} 的 {class_name}.{function_name}()"`），只供 log／除錯人眼辨識用途，**不送進模型 prompt**（見七章「Prompt 組裝」） |
+| `context` | `task.context` | 呼叫鏈原始碼展開涵蓋不到、但 [P] 能機械算出的補充事實（06a 五章，目前唯一內容：`config_field_mappings` 環境變數對應提示），現況 `implement_node.py` 尚未傳遞這個欄位，需要補上（見二章「與既有程式碼的介面異動」第 2 項） |
+| `context_files` | `task.target_files` | 這次呼叫要讀進 prompt 的檔案清單（`target_files[0]` 自己＋06a 八章組裝進來的 schema／model 檔案），控制 context 大小的關鍵（00 六章）。**不再包含「因引用而拉進來的跨檔案函式」**——那是 `referenced_source` 的職責，`context_files` 縮小回「這個函式所在檔案本身需要的結構性依賴」。**讀取容錯見七章「User / System Prompt 組裝」** |
 
 ### 輸出契約
 
@@ -293,7 +321,7 @@ class FillResult:
 
 ### 冪等：允許對已有內容的函式重新填空
 
-`fill_function()` 定位到的函式節點，body 可能是骨架階段的 `pass`（第一次填），也可能已經是先前一次成功呼叫留下的真實邏輯（同一個 task 因為某種原因被重新呼叫）。AST 定位＋替換（六章）不對 body 現有內容做任何假設，兩種情況處理方式完全一樣——直接整個替換。這不是為了目前已知的某個重試流程設計（⑤／⑦ 目前的重試語意留給 09a／10a 待建立文件定案），而是讓 translator-cli 自己的契約不論上游怎麼重跑都行為一致、不需要額外狀態判斷。
+`fill_function()` 定位到的函式節點，body 可能是骨架階段的 `pass`（第一次填），也可能已經是先前一次成功呼叫留下的真實邏輯（同一個 task 因為某種原因被重新呼叫）。AST 定位＋替換（六章）不對 body 現有內容做任何假設，兩種情況處理方式完全一樣——直接整個替換。這不是為了目前已知的某個重試流程設計（⑤／⑦ 的重試語意見 09a／10a），而是讓 translator-cli 自己的契約不論上游怎麼重跑都行為一致、不需要額外狀態判斷。
 
 ### 填空模式：本體 import 解析
 
@@ -339,10 +367,10 @@ class FillResult:
 ### 替換
 
 ```
-5. 呼叫 ollama（七章），取得 body_text（已通過 delimiter 抽取＋語法驗證，見七章）
-6. body_tree = ast.parse(body_text)   # body_text 是模型回傳的「未縮排」陳述式集合，見七章 delimiter 契約
-6a. 若 not body_tree.body（delimiter 標記之間只有空白／換行，沒有任何陳述式）→ 視為與 delimiter
-    抽取失敗同一類「模型輸出格式錯誤」，觸發七章「模型輸出格式錯誤的修正重試」，不進入步驟 7——
+5. 依 `translator_backend` 呼叫 qwen（經 ollama）或 Claude API（七章），取得 body_text
+6. body_tree = ast.parse(body_text)   # body_text 是模型回傳的「未縮排」陳述式集合，見七章「取得 body_text」
+6a. 若 not body_tree.body（回傳內容只有空白／換行，沒有任何陳述式）→ 視為與 body_text 格式
+    錯誤同一類，觸發七章「兩條路徑共用：body_text 格式修正重試」，不進入步驟 7——
     空 body 對 ast.parse(body_text) 本身是合法輸入（空字串／純空白等同一個空 module，body=[]），
     這裡不特別攔下的話，會一路走到步驟 7 把空清單指定給函式節點的 body，Python 函式節點不允許空
     body（至少要有一個陳述式），ast.unparse() 在這個情況下不會報錯，而是直接產出「有簽名、沒有
@@ -375,9 +403,9 @@ class FillResult:
 
 **`ast.unparse()` 會重新格式化整個檔案，不是只改動被替換的那個函式**：這是刻意接受的行為，不是需要避免的副作用——`generate_scaffold()` 產生的初始骨架也一律經過同一個 `ast.parse → ast.unparse` 流程產生（而不是像 `design_agent/layout.py` 那樣手動組字串），確保骨架階段與填空階段的格式化風格**天生一致**，同一顆 Python 版本下 `ast.unparse()` 對同一棵 AST 的輸出是確定性的，因此除了這次真正改動的函式，檔案其餘部分每次重新渲染都會得到一模一樣的文字，`git diff` 實際看到的改動範圍仍然乾淨、只集中在被填的那個函式。
 
-### delimiter 契約：模型回傳格式
+### 取得 `body_text`：qwen delimiter 契約／Claude Structured Outputs
 
-模型（qwen）透過 chat completion 回傳的是自然語言夾雜程式碼的文字，不能直接假設回傳內容剛好等於一段可以直接 `ast.parse()` 的函式本體（可能有解說文字、可能用 ` ```python ` fence 包、可能兩者都有或都沒有）。System prompt 固定要求模型把函式本體包在兩個字面 sentinel 之間，且**只**回傳這個區間內的內容作為程式碼：
+**qwen 路徑**：透過 chat completion 回傳的是自然語言夾雜程式碼的文字，不能直接假設回傳內容剛好等於一段可以直接 `ast.parse()` 的函式本體（可能有解說文字、可能用 ` ```python ` fence 包、可能兩者都有或都沒有）。System prompt 固定要求模型把函式本體包在兩個字面 sentinel 之間，且**只**回傳這個區間內的內容作為程式碼：
 
 ```
 <<<TRANSLATOR_CLI_BODY_START>>>
@@ -386,21 +414,50 @@ statement_2
 <<<TRANSLATOR_CLI_BODY_END>>>
 ```
 
-抽取邏輯：正則找兩個 sentinel 之間的文字。找不到 sentinel（模型沒有遵守格式）→ 視為「delimiter 契約違反」，見七章重試策略。
+抽取邏輯：正則找兩個 sentinel 之間的文字，得到 `body_text`。找不到 sentinel（模型沒有遵守格式）→ 視為「delimiter 契約違反」，見七章重試策略。
 
-**body 內容要求「未縮排」**：模型回傳的陳述式視為函式本體的第一層陳述式（如同它們是模組頂層程式碼），不要求模型自己判斷「這是被塞進一層 class 方法還是自由函式，該縮 4 格還是 8 格」——這個判斷模型容易出錯（尤其 routers／services/repositories 三層縮排深度不同）。抽取出來的文字直接 `ast.parse()`（等同解析成一個模組），取得的 `.body` 就是這個函式本體要用的陳述式清單，縮排完全由 `ast.unparse()` 在第 9 步依實際巢狀深度重新計算，不依賴模型自己的縮排是否正確。
+**Claude 路徑**：不需要 delimiter——七章「Claude 路徑：連線方式」的 JSON Schema 已經把輸出形狀鎖死成 `{"body_statements": "..."}`，`call_claude_for_json()` 回傳的物件直接取 `response["body_statements"]` 就是 `body_text`，沒有正則抽取、也沒有「找不到 sentinel」這種失敗模式。
+
+兩條路徑取得的 `body_text` 之後走同一套流程（步驟 6 起）。
+
+**body 內容要求「未縮排」**（兩條路徑的 system prompt 都這樣要求，見七章 System prompt 內容）：模型回傳的陳述式視為函式本體的第一層陳述式（如同它們是模組頂層程式碼），不要求模型自己判斷「這是被塞進一層 class 方法還是自由函式，該縮 4 格還是 8 格」——這個判斷模型容易出錯（尤其 routers／services/repositories 三層縮排深度不同）。`body_text` 直接 `ast.parse()`（等同解析成一個模組），取得的 `.body` 就是這個函式本體要用的陳述式清單，縮排完全由 `ast.unparse()` 在第 9 步依實際巢狀深度重新計算，不依賴模型自己的縮排是否正確。
 
 ---
 
-## 七、Ollama 連線與請求契約
+## 七、模型呼叫：qwen（Ollama）／Claude API 雙後端
 
-### 連線方式
+### 分派方式
+
+`fill_function()` 收到的 `translator_backend`（05a 沿用、06a 五章機械決定：repository 層固定 `"qwen"`，其餘固定 `"claude"`）決定走以下哪一條路徑取得 `body_text`（未縮排的函式本體陳述式文字）；取得 `body_text` 之後，六章步驟 6～11（AST 替換／6a 空本體檢查／6b 簽名重複輸出檢查／驗證／寫入）**完全共用同一套邏輯，不分 backend**——兩條路徑的差異只在「怎麼把 prompt 送出去、怎麼把回應抽成 `body_text`」，不影響下游。
+
+### qwen 路徑：Ollama 連線方式
 
 沿用 00 三、四、五章已定案的架構：translator-cli 不直接打 ollama，而是打 `.env` 的 `OLLAMA_BASE_URL`（指向另一台 Mac 上的 nginx，已含 `/v1` 路徑前綴），帶 `Authorization: Bearer {OLLAMA_API_KEY}`，nginx 驗證通過後才轉發給 ollama 本機的 `qwen2.5-coder:32b`。使用 `httpx.AsyncClient`（`requirements.txt` 已有此依賴，不需新增）呼叫 OpenAI 相容的 `POST {OLLAMA_BASE_URL}/chat/completions`。
 
-`model` 欄位固定填 `"qwen2.5-coder:32b"`（Python 常數，不經環境變數——00 三章「硬體限制」已經把模型選型釘死為單一選擇，不是每個 Agent 各自可調的東西，跟 `common/llm_client.py` 對 Claude 模型「呼叫端自己決定用哪個模型」的分工原則刻意不同：Claude 那邊有多個模型可選、多個 Agent 各自決定；qwen 這邊實體機器只跑得動一顆模型，沒有「選哪個」的問題）。
+`model` 欄位固定填 `"qwen2.5-coder:32b"`（Python 常數，不經環境變數——00 三章「硬體限制」已經把模型選型釘死為單一選擇，不是每個 Agent 各自可調的東西，跟 `common/llm_client.py` 對 Claude 模型「呼叫端自己決定用哪個模型」的分工原則刻意不同：Claude 那邊有多個模型可選、多個 Agent 各自決定；qwen 這邊實體機器只跑得動一顆模型，沒有「選哪個」的問題）。回應是自然語言夾雜程式碼的文字，靠 delimiter sentinel 抽取出 `body_text`（見下方「delimiter 契約」）。
 
-### Timeout 與重試策略
+`translator_cli/ollama_client.py` 內部的 `OLLAMA_MODEL_SEMAPHORE(1)` 只包住 qwen 這條路徑——實體機器只跑得動一顆 qwen 模型，同時間只能有一個 qwen 請求在飛（見八章「寫入段序列化」，這個號誌不是外部呼叫端包的，而是收在 translator-cli 內部自己管理）；Claude 路徑不受這個號誌限制，理由見下方「Claude 路徑」。
+
+### Claude 路徑：連線方式
+
+`translator_backend == "claude"` 時，直接呼叫既有的 `common/llm_client.py::call_claude_for_json()`（[③]／[P] 舊版已在用的同一支共用 wrapper，含 `llm_trace.py` 呼叫紀錄，見專案 `CLAUDE.md` 的 `llmlog` 查詢說明），不新增另一套 Claude 連線邏輯。使用 Structured Outputs（`output_config.format` 帶 JSON Schema constrained decoding），schema 固定為：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "body_statements": {"type": "string"}
+  },
+  "required": ["body_statements"],
+  "additionalProperties": false
+}
+```
+
+`body_statements` 就是六章要拿去 `ast.parse()` 的 `body_text`——不需要 qwen 路徑的 delimiter sentinel 正則抽取，schema constrained decoding 已經保證回應是這個形狀的合法 JSON，`response["body_statements"]` 直接可用（六章步驟 6a／6b 的空本體／簽名重複輸出檢查仍然套用，這兩項檢查的對象是 `body_text` 的內容本身，不是抽取機制）。
+
+Claude 路徑的**模型呼叫本身**不受 qwen 那種單模型限制——Claude API 是雲端服務，多個 task 平行呼叫模型不衝突，也是導入雙後端本來就要換到的效能收益（真實資料 67/78 task 走 Claude，若整體仍序列化，等於白導入雙後端）。**寫入磁碟／commit 這一小段仍然跨 backend 序列化**，理由與鎖機制設計見八章「寫入段序列化」——「模型呼叫平行、寫入序列化」是刻意分開的兩件事：平行的是慢、不碰共用狀態的部分（生成通常數秒到數十秒），序列化的是快、會動到同一個 git repo 的部分（AST 替換＋寫檔＋commit 通常次秒等級），不會因為序列化寫入段而抵銷平行呼叫模型帶來的效能收益。
+
+### qwen 路徑：Timeout 與重試策略
 
 本地模型單次生成可能需要數十秒到數分鐘（視函式複雜度），且 fill_function 每次呼叫都是單一函式、體積遠小於 [P]/[③] 那種一次處理整個 module 的 Claude 呼叫，重試策略因此比 04a/05a 的「5 分鐘後重試一次」更輕量、更快：
 
@@ -408,35 +465,60 @@ statement_2
 |---|---|---|
 | `TRANSLATOR_CLI_TIMEOUT_SECONDS` | `300`（環境變數可調） | 單次 HTTP 呼叫的 timeout，本地模型生成時間比雲端 API 長，需要比 Claude 呼叫更寬鬆的預設值 |
 | `TRANSLATOR_CLI_NETWORK_RETRIES` | `2`（環境變數可調） | HTTP 連線失敗／timeout 這類**傳輸層**錯誤的立即重試次數，固定間隔 `3` 秒——這是 LAN 內部連線的暫時抖動，不是 Claude API 那種需要等配額恢復的限流情境，不需要 5 分鐘等待 |
-| delimiter／語法驗證失敗重試 | 固定 `2` 次 | 見下方「模型輸出格式錯誤的修正重試」，跟網路層重試是不同的錯誤類型、不同的重試機制，不共用同一個計數器——對 context 檔案多、邏輯複雜的任務，第一次回應違反格式的機率不低，固定重試 1 次不夠 |
+| delimiter／語法驗證失敗重試 | 固定 `2` 次 | 見下方「兩條路徑共用：body_text 格式修正重試」，跟網路層重試是不同的錯誤類型、不同的重試機制，不共用同一個計數器——對 context 檔案多、邏輯複雜的任務，第一次回應違反格式的機率不低，固定重試 1 次不夠 |
 
-**模型輸出格式錯誤的修正重試**（跟 04a/05a 的「批次重試」不同性質，這裡是「針對這次錯誤，把錯誤內容回饋給模型，讓它自己修正」）：以下四種情況觸發**重新呼叫一次模型**，這次的 user prompt 額外附上「上一次回應違反格式／語法錯誤訊息是 ...，請重新產生，務必遵守 delimiter 格式」——
-1. 六章 delimiter 抽取失敗（找不到 sentinel）
-2. 抽取出來的 `body_text` 通不過 `ast.parse()`（`SyntaxError`）
-3. `body_text` 能 `ast.parse()`，但解析出的陳述式清單是空的（六章步驟 6a「空本體」——delimiter 標記之間只有空白／換行，沒有任何陳述式）——這個情況單獨列成第三種觸發條件，不能只看「`body_text` 通不過 `ast.parse()`」就以為涵蓋了它：空字串本身是合法的 Python（等同空 module），`ast.parse()` 不會報錯，只有把這個空 body 塞進函式節點、重新 `ast.unparse()` 再 `ast.parse()` 之後才會炸，若不單獨攔，這個錯誤會晚兩步才被發現、而且繞過了這裡的重試機制，見六章步驟 6a 完整說明
-4. `body_text` 解析出的陳述式清單裡任何一筆是與 `function_name` 同名的 FunctionDef／AsyncFunctionDef（六章步驟 6b「簽名重複輸出」——模型把整個函式簽名連同本體一起包進 delimiter，而不是只回傳本體陳述式；不限於「整段清單恰好只有這一筆」才算，見 `docs/09b_bug_trace.md #52` 放寬理由）——這在 AST 層級是合法的巢狀函式定義，不會被上面兩種檢查攔到，需單獨判斷，見六章步驟 6b 完整說明
+**qwen 路徑特有：delimiter 抽取失敗觸發重試**——找不到 sentinel（見下方「delimiter 契約：qwen 回應格式」）時，重新呼叫一次 qwen，user prompt 額外附上「上一次回應違反格式，請重新產生，務必遵守 delimiter 格式」。Claude 路徑不會遇到這種錯誤——Structured Outputs 的 schema constrained decoding 保證回應必然是合法 JSON、必然帶 `body_statements` 欄位，沒有「抽不到」這種失敗模式。
 
-兩次重試仍然失敗（不論是同一種錯誤還是不同錯誤）→ 放棄，`FillResult(success=False, error=...)`，不無限重試——固定重試次數（而非無限重試）的理由跟 04a 的「一次性的固定延遲已經夠用」同構：這是扛過模型偶發輸出品質不穩的緩衝，不是要取代 ⑦ Debug Agent 那種「業務邏輯寫錯了」層級的修正機制。次數從最初的 1 次調整為 2 次，是接上真實 qwen2.5-coder:32b 後的實測校準（見上方表格）。
+### 兩條路徑共用：`body_text` 格式修正重試
+
+不論 `body_text` 是怎麼取得的（qwen 的 delimiter 抽取，或 Claude 的 `response["body_statements"]`），六章對 `body_text` 內容本身的三項檢查完全共用，任一項命中都**重新呼叫一次模型**（同一個 backend，這次的 prompt 額外附上上一次的錯誤訊息，要求重新產生）：
+
+1. `body_text` 通不過 `ast.parse()`（`SyntaxError`）
+2. `body_text` 能 `ast.parse()`，但解析出的陳述式清單是空的（六章步驟 6a「空本體」）——這個情況單獨列成觸發條件，不能只看「`body_text` 通不過 `ast.parse()`」就以為涵蓋了它：空字串本身是合法的 Python（等同空 module），`ast.parse()` 不會報錯，只有把這個空 body 塞進函式節點、重新 `ast.unparse()` 再 `ast.parse()` 之後才會炸，若不單獨攔，這個錯誤會晚兩步才被發現、而且繞過了這裡的重試機制，見六章步驟 6a 完整說明
+3. `body_text` 解析出的陳述式清單裡任何一筆是與 `function_name` 同名的 FunctionDef／AsyncFunctionDef（六章步驟 6b「簽名重複輸出」——模型把整個函式簽名連同本體一起包進回應，而不是只回傳本體陳述式；不限於「整段清單恰好只有這一筆」才算，見 `docs/09b_bug_trace.md #52` 放寬理由）——這在 AST 層級是合法的巢狀函式定義，不會被上一項檢查攔到，需單獨判斷，見六章步驟 6b 完整說明
+
+兩次重試仍然失敗（不論是同一種錯誤還是不同錯誤，qwen 路徑的話連同「delimiter 抽取失敗」共用同一個計數器）→ 放棄，`FillResult(success=False, error=...)`，不無限重試——固定重試次數（而非無限重試）的理由跟 04a 的「一次性的固定延遲已經夠用」同構：這是扛過模型偶發輸出品質不穩的緩衝，不是要取代 ⑦ Debug Agent 那種「業務邏輯寫錯了」層級的修正機制。次數從最初的 1 次調整為 2 次，是接上真實 qwen2.5-coder:32b 後的實測校準（見上方表格），Claude 路徑沿用同一個上限，尚未有真實資料顯示需要另外校準。
 
 ### System / User Prompt 組裝
 
-System prompt 固定模板（不含業務內容，只定義輸出格式契約）：
+**核心指示「呼叫，不要內嵌」必須同時出現在兩條路徑的 system prompt**——06a 六章已定案：`referenced_source`（含 `java_source` 自身呼叫到的、以及呼叫鏈展開出的同層／已完成函式）給模型看是為了「知道該怎麼正確呼叫」，不是給模型「拿去合併改寫」；模型看了真實原始碼卻整段複製貼上而不是呼叫，一樣達不到「基底穩、上層調用」的目的，因此明確寫進兩條路徑各自的 system prompt，不能只在 06a 文件裡交代、不落地到實際 prompt 內容。
+
+**qwen 路徑** system prompt 固定模板：
 
 ```
 你是一個 Python 程式碼填空工具。你會收到一個已經定義好簽名的 Python 函式（骨架已建好，
-可能是空的 `pass`，也可能已有既有邏輯），以及這個函式應該做什麼的描述。
+可能是空的 `pass`，也可能已有既有邏輯），以及這個函式對應的真實原始碼、以及它呼叫到的其他
+函式的真實原始碼（Java 或已翻譯完成的 Python）。
 
-你的任務：只回傳這個函式的「本體」陳述式，不要重複函式簽名、不要重複裝飾器、不要加任何
-解說文字。回傳格式固定如下，只在這兩個標記之間寫程式碼，標記本身也要原樣附上：
+你的任務：把對應的 Java 邏輯改寫成正確的 Python 實作。你收到的其他函式原始碼是給你參考
+「該怎麼呼叫它」（參數、回傳型別、行為），不是要你把那些函式的邏輯合併或複製進來——你的
+實作應該真正呼叫（import + invoke）那些函式，就像原始 Java 程式碼本來就是這樣呼叫的一樣。
+
+只回傳這個函式的「本體」陳述式，不要重複函式簽名、不要重複裝飾器、不要加任何解說文字。
+回傳格式固定如下，只在這兩個標記之間寫程式碼，標記本身也要原樣附上：
 
 <<<TRANSLATOR_CLI_BODY_START>>>
 （函式本體陳述式，視為第一層縮排，不要自己加縮排）
 <<<TRANSLATOR_CLI_BODY_END>>>
 ```
 
-User prompt 組裝內容：函式目前的簽名（第六章第 3 步定位到的節點，取 `ast.unparse()` 只渲染這個函式的 `decorator_list`＋簽名列，不含 body，讓模型知道自己在填什麼形狀的函式）、`description`、`context`（若非空）、`context_files` 逐檔案列出「路徑 + 完整內容」。
+**Claude 路徑** system prompt 固定模板（不需要 delimiter 段落，Structured Outputs 已保證輸出形狀）：
 
-**`context_files` 讀取容錯**：`context_files`（=`task.target_files` 全部清單）逐項 `open()` 讀取時，除了 `target_file` 本身（= `context_files[0]`，六章第 1 步已經確認存在，不會在這裡才踩到）以外，其餘項目**不保證檔案一定存在**——06a 七章對 services／repositories 層的 task 無條件把該 module 的 `models/{module}.py` 加進 `target_files`，但這個檔案只在④透過上方「`db_models` 併入」機制實際產出時才存在；沒有對應 DB 表的模組（純外部 API 串接）、或該筆 `db_models` 因型別驗證失敗被跳過（見四章 `skipped_db_models`），都會讓這個路徑合法地不存在。因此組裝這段內容時，逐項 `open()` 遇到 `FileNotFoundError` → **記一筆警告（含 task 識別資訊與該路徑），跳過這個檔案，繼續組裝其餘 `context_files`**，不是讓作業系統例外直接中斷整個 `fill_function()` 呼叫——這不是「隱藏錯誤」，被跳過的檔案本來就不該存在於這次任務的合理輸入裡；真正需要修 bug 的情況（`target_file` 本身不存在）由六章第 1 步的既有檢查把關，不會被這條容錯規則吞掉。
+```
+你是一個 Python 程式碼填空工具。你會收到一個已經定義好簽名的 Python 函式（骨架已建好，
+可能是空的 `pass`，也可能已有既有邏輯），以及這個函式對應的真實原始碼、以及它呼叫到的其他
+函式的真實原始碼（Java 或已翻譯完成的 Python）。
+
+你的任務：把對應的 Java 邏輯改寫成正確的 Python 實作。你收到的其他函式原始碼是給你參考
+「該怎麼呼叫它」（參數、回傳型別、行為），不是要你把那些函式的邏輯合併或複製進來——你的
+實作應該真正呼叫（import + invoke）那些函式，就像原始 Java 程式碼本來就是這樣呼叫的一樣。
+
+只回傳這個函式的「本體」陳述式，不要重複函式簽名、不要重複裝飾器、不要加任何解說文字。
+```
+
+兩條路徑的 User prompt 組裝內容相同：函式目前的簽名（第六章第 3 步定位到的節點，取 `ast.unparse()` 只渲染這個函式的 `decorator_list`＋簽名列，不含 body，讓模型知道自己在填什麼形狀的函式）、`java_source`（標明「這是這個函式對應的原始 Java 方法」）、`referenced_source` 逐項列出「`file_path` / `class_name` / `function_name` / `language` + 原始碼內容」（標明每項是 Java 還是已翻譯 Python）、`context`（若非空）、`context_files` 逐檔案列出「路徑 + 完整內容」。**`description` 不放進 prompt**（見五章，純 log 用途）。
+
+**`context_files` 讀取容錯**：`context_files`（=`task.target_files` 全部清單）逐項 `open()` 讀取時，除了 `target_file` 本身（= `context_files[0]`，六章第 1 步已經確認存在，不會在這裡才踩到）以外，其餘項目**不保證檔案一定存在**——06a 八章對 services／repositories 層的 task 無條件把該 module 的 `models/{module}.py` 加進 `target_files`，但這個檔案只在④透過上方「`db_models` 併入」機制實際產出時才存在；沒有對應 DB 表的模組（純外部 API 串接）、或該筆 `db_models` 因型別驗證失敗被跳過（見四章 `skipped_db_models`），都會讓這個路徑合法地不存在。因此組裝這段內容時，逐項 `open()` 遇到 `FileNotFoundError` → **記一筆警告（含 task 識別資訊與該路徑），跳過這個檔案，繼續組裝其餘 `context_files`**，不是讓作業系統例外直接中斷整個 `fill_function()` 呼叫——這不是「隱藏錯誤」，被跳過的檔案本來就不該存在於這次任務的合理輸入裡；真正需要修 bug 的情況（`target_file` 本身不存在）由六章第 1 步的既有檢查把關，不會被這條容錯規則吞掉。
 
 ---
 
@@ -444,21 +526,24 @@ User prompt 組裝內容：函式目前的簽名（第六章第 3 步定位到�
 
 translator-cli 對 git 的使用須滿足 00 三章的要求：「寫入前後搭配 git snapshot 與語法驗證，確保每個 task 的異動可追蹤、可回滾。」本章（顆粒度）負責「可追蹤、可回滾」，九章（衝突偵測）負責防止 working tree 假設跟磁碟實際狀態不一致時靜默覆蓋掉別人的東西——這是 Harness 的功能驗證完全不涵蓋的另一種風險（改了什麼、何時改的、有沒有意外覆蓋人工修正）。
 
-### 決策：每個 task 一個 commit，不需要鎖機制
+### 決策：每個 task 一個 commit，寫入段用細粒度鎖序列化
 
 **顆粒度**（所有 `git` 指令一律以呼叫端傳入的 `python_project_path` 為 repo 根目錄，如 `git -C {python_project_path} add -A`，不是 translator-cli 自己執行時的 cwd）：
 - `generate_scaffold()` 成功寫入所有骨架檔案（含 `db_models` 併入的內容，見四章）後，`git add -A && git commit -m "scaffold: initial skeleton from python_structure"` 一次性 commit，作為後續所有 `fill_function()` commit 的共同基礎
 - `fill_function()` 每次成功寫入後，`git add {target_file} && git commit -m "implement: {task_id} fill {class_name}.{function_name} in {target_file}"`（`class_name` 為 `None` 時省略該段，寫成 `fill {function_name} in {target_file}`）——`task_id` 現在是必要引數（見五章「輸入契約」），不再是「有就用、沒有退回 class_name.function_name」的 fallback；同時保留 `class_name.function_name` 是為了讓 `git log` 一眼看出這個 commit 改的是哪個函式，不需要另外反查 `task_id` 對應什麼。**只 add 這次實際寫入的那一個檔案**，不用 `-A`：即使working tree因為某種原因存在其他未預期的變更（理論上不該發生，見九章），也不會被這次 commit 意外一起帶走
 - `FillResult.diff`（見五章輸出契約）在 `git add` 之前擷取：`git -C {python_project_path} diff -- {target_file}`——此時檔案已寫入磁碟但尚未進 staging area，working tree 依九章 precondition 保證動筆前是乾淨的，這個 diff 精確反映這次 `fill_function()` 造成的變更。固定順序為：寫入 target_file → 擷取 diff → `git add` → `git commit`；顛倒成先 commit 再擷取，working tree 會回到與 HEAD 一致，`git diff` 只會拿到空字串
 
-**不需要鎖機制**：實際檢視現有排程設計，**這個系統結構上不存在並行寫入的可能**：
+**為什麼不能只靠「結構上不存在並行寫入」這個論證**：Claude 路徑刻意讓模型呼叫可以平行（見七章「Claude 路徑：連線方式」，這是雙後端要換到的效能收益——同一 phase 內平行執行沒問題，但 qwen 本地模型不可以平行，實體機器硬體撐不住），代表**同一 phase 內多個 Claude task 可能同時執行到 `fill_function()`**——雖然大多數情況下同一 phase 內的 task 落在不同檔案（`target_file` 不同），彼此寫入不衝突，但 06a 三章「涵蓋率規則」明訂同一個檔案可以對應多個 task（如同一個 router 檔案有多個端點函式），這種情況下確實存在「兩個 task 同時讀到同一份舊內容、各自 AST 替換後寫回、其中一個的改動被覆蓋」的真實 race condition，不能只靠「系統結構上任何時刻最多一個 `fill_function()` 呼叫在跑」帶過。
 
-1. `graph/nodes/implement_node.py`（01 六章已實作）用 `MODEL_SEMAPHORE = asyncio.Semaphore(1)` 包住每一次 `translator_cli.fill_function()` 呼叫——排程層 `get_ready_tasks()` 可以一次回傳多個就緒 task，但 `asyncio.gather()` 底下真正執行到 `fill_function()` 內部（含寫入磁碟＋commit）這一段，永遠只有一個 coroutine 在跑，其餘在等 semaphore
-2. `generate_scaffold()`（④）與 `fill_function()`（⑤）不會同時執行：01 五章「平行分支：① → (② ∥ ③) → ([P] ∥ ④) → ⑤」的圖結構保證 `scaffold` 必須完成（連同 `plan`）才會進入 `implement`，兩者是先後關係，不是並行關係
+**決策：鎖機制縮小到只包住寫入段，模型呼叫段不鎖**：
 
-因此 translator-cli **不需要**自己再實作一層檔案鎖／分散式鎖——上游（LangGraph 排程層）已經從結構上保證任何時刻最多一個呼叫端在寫入這個 git repo，這個情境下鎖機制沒有對應的併發場景需要保護，硬加一層只會是不會被觸發的死代碼（呼應 00 二章）。
+1. `translator_cli` 內部有一個模組層級的寫入鎖（`git_ops.WRITE_LOCK = asyncio.Lock()`），`fill_function()` 依序執行：(a) 組 prompt、呼叫模型取得 `body_text`（六、七章，**不持鎖**——這段是慢、不碰共用磁碟狀態的部分，qwen／Claude 皆然）→ (b) `await` 取得寫入鎖 → (c) 六章步驟 1～11（讀檔、AST 定位／替換、`ast.unparse()`、驗證、寫入、八章 commit）全程持鎖，做完才釋放。**不分 backend**，qwen／Claude 呼叫都走同一把鎖——這段快（次秒等級），序列化不影響整體吞吐量，換來的是「同一時刻只有一個呼叫在動這個 git repo」這件事。
+2. qwen 實體機器單模型的序列化收在 `translator_cli/ollama_client.py` 內部自己管理（`OLLAMA_MODEL_SEMAPHORE`，只包住 qwen 路徑實際打 ollama 的那段呼叫），不是外部呼叫端包一層號誌——`implement_node.py` 呼叫 `fill_function()` 不需要知道背後有這個限制，序列化責任完全收進 translator-cli 內部（1. 的寫入鎖＋這裡的模型號誌）。
+3. `generate_scaffold()`（④）與 `fill_function()`（⑤）不會同時執行：01 五章「平行分支：① → (② ∥ ③) → ([P] ∥ ④) → ⑤」的圖結構保證 `scaffold` 必須完成（連同 `plan`）才會進入 `implement`，兩者是先後關係。
 
-若未來排程設計改變（例如讓多個本地模型實例平行跑，見 00 三章「硬體限制」目前排除這個可能性），需要重新評估這裡的假設是否還成立——這個決策奠基在 `MODEL_SEMAPHORE(1)` 與 scaffold/implement 先後順序這兩個具體保證上。
+`generate_scaffold()` 本身不需要鎖——04a／08a 既有邊界下它是 pipeline 唯一一次性呼叫（見二章），不存在多個 coroutine 同時呼叫 `generate_scaffold()` 的情境。
+
+若未來排程設計改變（例如讓多個本地模型實例平行跑，見 00 三章「硬體限制」目前排除這個可能性），qwen 模型號誌需要重新評估是否還要固定 `1`；寫入鎖本身不受這個假設影響——不論 qwen 是否平行，寫入段一律序列化的決策都成立。
 
 ---
 
@@ -466,7 +551,7 @@ translator-cli 對 git 的使用須滿足 00 三章的要求：「寫入前後�
 
 00 三章原文承諾「衝突偵測」，八章已經說明這不是併發鎖的情境；這裡的衝突偵測指的是另一種風險：**translator-cli 對 working tree 目前狀態的假設，跟磁碟上實際狀態不一致**。可能成因：人工不小心手動編輯了目標專案裡的檔案、上一輪執行中途被強制中斷、留下未 commit 的殘留寫入（理論上五章「呼叫失敗時不寫入任何內容」已經保證正常失敗路徑不會留殘留，但例如程序被 kill -9 這種非正常中斷仍可能留下部分寫入）。
 
-**機制：每次寫入前的 precondition 檢查**——`generate_scaffold()`／`fill_function()` 動筆寫任何檔案之前，先跑 `git -C {python_project_path} status --porcelain`（同八章，一律以呼叫端傳入的 `python_project_path` 為 repo 根目錄）：
+**機制：每次寫入前的 precondition 檢查**——`generate_scaffold()`／`fill_function()` 動筆寫任何檔案之前，先跑 `git -C {python_project_path} status --porcelain`（同八章，一律以呼叫端傳入的 `python_project_path` 為 repo 根目錄）：**`fill_function()` 這個檢查要在取得八章「寫入段」的鎖之後才執行**，不能在拿到鎖之前就先查——鎖之前查完、鎖之後才寫，中間仍有另一個 coroutine 插隊寫入的空隙，這個檢查存在的意義就是「確保開始寫的當下 working tree 真的跟預期一致」，必須跟寫入動作在同一段critical section 裡才有效。
 
 - 輸出為空（working tree 乾淨，跟最後一次 commit 完全一致）→ 正常繼續
 - 輸出非空 → **不寫入任何內容**，直接回傳失敗（`generate_scaffold()` 回傳 `{"success": False, "error": "..."}`；`fill_function()` 回傳 `FillResult(success=False, error="working tree 不乾淨，拒絕寫入：{git status 輸出}")`），交由人工核對這份意外的變更是什麼
@@ -502,20 +587,22 @@ class LanguageAdapter(Protocol):
 ```
 refactor-project/
 └── translator_cli/
-    ├── client.py           # 對外唯一入口：generate_scaffold()、fill_function()
-    ├── types.py            # FillResult（既有）
+    ├── client.py           # 對外唯一入口：generate_scaffold()、fill_function()，依 translator_backend 分派
+    ├── types.py            # FillResult（既有）、ReferencedSourceItem（新增，見五章）
     ├── python_adapter.py   # 十章 LanguageAdapter 的 Python 實作：ast 定位／替換／渲染／語法驗證
     ├── scaffold.py         # 四章：directory_tree 解析、interfaces 分組渲染、import 解析、db_models 併入
-    ├── ollama_client.py    # 七章：httpx 呼叫 ollama（經 nginx）、delimiter 抽取、修正重試
-    ├── prompts.py          # 七章 system/user prompt 模板
-    ├── git_ops.py          # 八、九章：commit、git status 衝突偵測
+    ├── ollama_client.py    # 七章 qwen 路徑：httpx 呼叫 ollama（經 nginx）、delimiter 抽取、修正重試、
+    │                       # 模組層級 asyncio.Semaphore(1)（實體機器單模型限制，見八章）
+    ├── claude_client.py    # 七章 Claude 路徑（新增）：串接 common/llm_client.py::call_claude_for_json()
+    ├── prompts.py          # 七章 system/user prompt 模板（兩條路徑共用「呼叫，不要內嵌」核心指示）
+    ├── git_ops.py          # 八、九章：commit、git status 衝突偵測、模組層級 asyncio.Lock()（寫入段序列化，見八章）
     └── exceptions.py       # 內部例外型別（比照 design_agent/exceptions.py 既有慣例）
 ```
 
 | 職責 | 說明 |
 |---|---|
 | 骨架生成（無模型呼叫） | 對應四章，`scaffold.py` |
-| 填空（呼叫 ollama） | 對應五、七章，`client.py` 串接 `ollama_client.py` |
+| 填空（依 `translator_backend` 分派 qwen／Claude） | 對應五、七章，`client.py` 依 backend 分別串接 `ollama_client.py` 或 `claude_client.py` |
 | AST 定位／替換／渲染 | 對應六、十章，`python_adapter.py` |
 | git snapshot／commit／衝突偵測 | 對應八、九章，`git_ops.py` |
 | 對外唯一入口 | 供 `graph/nodes/scaffold_node.py`／`graph/nodes/implement_node.py` 呼叫，兩個 node 本身不直接碰觸上述任何細節 |
@@ -526,8 +613,8 @@ refactor-project/
 
 沿用 01 四章已經定案的 node 對應，不需要新增或調整 node／edge 結構：
 
-- `scaffold`（④）：`await translator_cli.generate_scaffold(state["python_project_path"], state["python_structure"], db_models=db_models)`，回傳 `{"scaffold_done": result["success"]}`（`scaffold_done=False` 時 `implement`→`run_tests` 之間的 conditional edge 會直接分流到 `give_up`，不進 `debug` 重試迴圈，見 01 五章「scaffold 失敗時的收尾路徑」——07a 只保證 `generate_scaffold()` 本身在失敗時清楚回報 `error`，分流邏輯屬於 01／`graph/nodes/implement_node.py` 的範圍）。`db_models` 這個字典本身怎麼組出來（查詢 Postgres 測試 DB 或解析 Java entity 原始碼，見四章「`db_models`：④ 自行取得的 DB schema 內容如何併入」）屬於 08a（骨架實作 Agent 詳細設計，待建立）的範圍，07a 只定義這個參數送進 `generate_scaffold()` 之後的處理契約。**`result["skipped_interfaces"]`／`result["skipped_db_models"]`（見四章）目前也還沒有管道往 `RefactorState` 寫**——`scaffold_node.py` 現在的回傳只有 `scaffold_done` 這個布林值，沒有欄位可以承接這兩份清單；短期內至少要記進日誌供人工事後查閱，State 是否需要新增對應欄位讓 [P]／⑦ Debug Agent 之類的下游也讀得到，留給 08a 評估，不在本文件範圍內決定（[P] 因平行分支結構上看不到這份清單的既知缺口，另見 `00_refactor_architecture.md` 十章待決定事項）
-- `implement`（⑤）：`_run_one_task()` 在 `MODEL_SEMAPHORE(1)` 內呼叫 `translator_cli.fill_function(python_project_path=state["python_project_path"], task_id=task["id"], ...)`，見二章「與既有程式碼的介面異動」需要補上的引數
+- `scaffold`（④）：`await translator_cli.generate_scaffold(state["python_project_path"], state["python_structure"], db_models=db_models)`，回傳 `{"scaffold_done": result["success"]}`（`scaffold_done=False` 時 `implement`→`run_tests` 之間的 conditional edge 會直接分流到 `give_up`，不進 `debug` 重試迴圈，見 01 五章「scaffold 失敗時的收尾路徑」——07a 只保證 `generate_scaffold()` 本身在失敗時清楚回報 `error`，分流邏輯屬於 01／`graph/nodes/implement_node.py` 的範圍）。`db_models` 這個字典本身怎麼組出來（查詢 Postgres 測試 DB 或解析 Java entity 原始碼，見四章「`db_models`：④ 自行取得的 DB schema 內容如何併入」）屬於 08a（骨架實作 Agent 詳細設計）的範圍，07a 只定義這個參數送進 `generate_scaffold()` 之後的處理契約。`result["skipped_interfaces"]`／`result["skipped_db_models"]`（見四章）的 State 寫入管道由 08a 補上（`RefactorState` 新增對應欄位，`scaffold_node.py` 合併寫入，見 08b 八章）。
+- `implement`（⑤）：`_run_one_task()` 呼叫 `translator_cli.fill_function(python_project_path=state["python_project_path"], task_id=task["id"], translator_backend=task["translator_backend"], java_source=..., referenced_source=..., ...)`——`java_source`／`referenced_source` 由呼叫端（⑤，經 `graph/java_source_extraction.py`）解析 `task["java_method_id"]`／`task["reference_targets"]` 組出，見五章「為什麼是 `java_source`／`referenced_source`」。呼叫端不需要自己包一層 `MODEL_SEMAPHORE` 號誌——qwen 的實體機器序列化、寫入磁碟的序列化都收進 `translator_cli` 內部管理，見八章「寫入段序列化」，`implement_node.py` 只需要單純呼叫 `fill_function()`，可以用 `asyncio.gather()` 對同一 phase 內多個就緒 task 平行發起呼叫，不需要自己判斷 backend 或包號誌
 
 translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼叫端組好的顯式引數——這是刻意的邊界：`translator_cli/` 套件不 import `graph.state`，維持跟 `refactor_harness/`／`spec_collection_agent/` 一致的獨立性（01 二章「設計原則」）。
 
@@ -537,8 +624,8 @@ translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼�
 
 比照 04a 九章／05a 十二章的邊界：`retry_count` 迴圈只包住 `implement → run_tests → debug`，translator-cli 本身的呼叫失敗不直接觸發這個迴圈，而是反映成 `FillResult(success=False)` 或 `generate_scaffold()` 的 `{"success": False}`，由呼叫端（`implement_node.py`／`scaffold_node.py`）決定後續（task 標記失敗、module 局部驗證會抓到、進而觸發 `debug`）。translator-cli 自己只負責：
 
-- 網路層錯誤：七章「Timeout 與重試策略」的固定次數重試，重試仍失敗才回報 `success=False`
-- 模型輸出格式／語法錯誤：七章「修正重試」固定重試 2 次，仍失敗才回報 `success=False`
+- 網路層錯誤（僅 qwen 路徑）：七章「qwen 路徑：Timeout 與重試策略」的固定次數重試，重試仍失敗才回報 `success=False`
+- 模型輸出格式／語法錯誤（兩條路徑共用）：七章「兩條路徑共用：body_text 格式修正重試」固定重試 2 次，仍失敗才回報 `success=False`
 - AST 定位失敗（scaffold/task 資料不一致）：不重試，直接回報——這是輸入端資料問題，見六章
 - working tree 不乾淨（九章）：不重試，直接回報——需要人工介入核對，不是可以自動化解的暫時性錯誤
 - `generate_scaffold()` 單一 `InterfaceSpec` 的型別字串驗證失敗（正規化後仍不合法）：**不中止、不重試**，跳過這一個函式並記進 `skipped_interfaces`，其餘介面正常繼續（見四章「語法驗證與寫入」）——這點跟 05a／06a「單一 module／單一批次失敗就中止整條 run」的既有先例刻意不同：05a／06a 中止是因為那些失敗會讓**下游對著不完整規格工作**（`python_structure`／`task_list` 本身就是缺角的），但 `generate_scaffold()` 這裡失敗的粒度是單一函式，其餘介面的骨架完全不受影響，沒有理由讓一個函式的問題拖垮整個 `python_structure` 的骨架產出
@@ -549,6 +636,8 @@ translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼�
 ## 十四、待決定事項
 
 - [ ] **`MultipartFile`（Java 型別）沒有被 `map_java_type()` 轉換成 `UploadFile`，導致四章「已知關鍵字表」比對不到**：真實 Java 專案（93 個檔案、70 個 interfaces）實測時發現，其餘型別關鍵字表命中正常（`skipped_interfaces` 全部為空）；這是 05a 型別對應範圍的缺口，不是這裡的關鍵字表本身缺項，留給 05a 之後處理
+- [ ] **Claude 路徑的併發上限尚未定案**：qwen 路徑有 `OLLAMA_MODEL_SEMAPHORE(1)`（實體機器單模型的硬限制），Claude 路徑目前只是「不受這個號誌限制」，沒有另外設計自己的併發控制——`common/llm_client.py` 本身是否已有跨呼叫方共用的速率限制/併發上限（[③]／舊版 [P] 既有呼叫是否曾經撞過 429）需要查證，若沒有，⑤ 一次可能同時對多個 phase 2 task 發起 Claude 呼叫，要不要另外加一層併發上限（如另一個較大的 semaphore）留給實作階段依真實 API 限流表現決定，不在本文件先驗定案
+- [ ] **Claude 路徑的格式修正重試次數（固定 2 次，見七章）沿用 qwen 校準值，尚未有真實資料驗證是否適用**：qwen 的 2 次是接上真實 qwen2.5-coder:32b 才校準出來的（見七章），Claude 走 Structured Outputs、天生不會有 delimiter／JSON 格式錯誤，剩下的 `ast.parse()` 語法錯誤／空本體／簽名重複輸出三類錯誤發生機率是否與 qwen 相近，需要接上真實 Claude API 端到端跑過才能確認，屆時視實測結果再調整
 
 ---
 
@@ -558,7 +647,7 @@ translator-cli 本身**不**依賴 `RefactorState` 其餘欄位，只需要呼�
 
 **決策**：`app/core/exception_handlers.py` 用精確比對（不是前綴），獨立於三層目錄的前綴判斷之外處理。渲染規則比照 routers 層（`class_name=None` 自由函式），但**不**包 `APIRouter` 樣板（`from fastapi import APIRouter`／`router = APIRouter()`）——這不是真正的路由檔案，函式不會被 `@router.xxx` 裝飾（`http_method` 恆為 `None`，這批函式本來就不是 API 端點）。
 
-實作細節見 `07b_translator_cli_code.md` 七章。單元測試見 `tests/translator_cli/test_scaffold.py::test_build_files_renders_global_advice_file_without_api_router_boilerplate`。
+實作細節見 `07b_translator_cli_code.md` 八章（`scaffold.py`）。單元測試見 `tests/translator_cli/test_scaffold.py::test_build_files_renders_global_advice_file_without_api_router_boilerplate`。
 
 **真實環境驗證**：對真實 `../lang-exam-api-refactor` 完整跑過 ①③[P]④⑤⑥，`app/core/exception_handlers.py` 正確產生（不再進 `skipped_interfaces`），容器內確認 Python 服務能正常 import 啟動，且 Starlette 的例外處理中介層確實會呼叫到這個檔案裡⑤翻譯出的函式。
 

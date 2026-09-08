@@ -103,6 +103,42 @@ def test_method_without_http_mapping_annotation_has_none_http_method(tmp_path):
     assert sig.http_method is None
 
 
+def test_scan_extracts_package_name(tmp_path):
+    """Phase 1／Phase 2 分階段翻譯設計新增，見 05a 三章「Utils 特例」：
+    `JavaClassSignature.package` 供 `layout.is_utils_package()` 判斷。
+    """
+    (tmp_path / "ValidationUtil.java").write_text(
+        """
+        package com.teachLanguage.utils;
+        public class ValidationUtil {
+            public static boolean isValidField(String str) { return true; }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    result = scan_java_files(["ValidationUtil.java"], str(tmp_path))
+
+    assert result["ValidationUtil"].package == "com.teachLanguage.utils"
+
+
+def test_scan_package_is_none_for_default_package(tmp_path):
+    """沒有 package 宣告（Java 專案裡極罕見的 default package）時，
+    `package` 保持 `None`，不應該拋例外或誤判成 utils package。
+    """
+    (tmp_path / "NoPackage.java").write_text(
+        """
+        public class NoPackage {
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    result = scan_java_files(["NoPackage.java"], str(tmp_path))
+
+    assert result["NoPackage"].package is None
+
+
 def test_multiple_annotations_are_all_captured_not_just_stereotype():
     from design_agent.signature_scan import _annotation_names
     import javalang
