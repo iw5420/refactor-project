@@ -71,10 +71,12 @@ refactor_harness/                  ← Python 套件（程式碼）
 
 對**正在運行的 Java 服務**執行**兩份** Postman collection（readonly ＋ mutation），把每一支 API 的 response 標準化後存成 golden output。兩份都要錄製：若只有 readonly 有 golden，寫入操作（POST/PUT/DELETE）就只能靠 status code 把關，測不出 body 內容是否正確。
 
+> **這個 Java 服務是 `record_golden_output()` 自己啟動的，不是沿用 [A] Spec Agent 那個實例**：[A]（`parse` 之前）啟動的 `JavaServiceProcess` 只活到 `parse` 結束就 `stop()`（見 `03a_spec_collection_agent_architecture.md` 二章「與 Agent ② 共用的邊界」），`record_tests` 與 `parse` 之間還隔著平行分支，不能假設 `JAVA_BASE_URL` 這時候還有服務在聽。`record_golden_output()` 因此自己另開一個 `JavaServiceProcess`（context manager，`env_overrides` 帶 `SPRING_DATASOURCE_*` 指向測試 DB，見十四章），錄製完兩份 collection 後自動關閉，不依賴外部先手動啟動好 Java 服務。
+
 ### 執行流程
 
 ```
-① 確認 Java 服務健康（health check）
+① 啟動並確認 Java 服務健康（自己開的 JavaServiceProcess，見上方）
 ② 錄製 readonly：apply_seed 一次 → newman 跑完整份 collection_readonly.json
 ③ 錄製 mutation：逐「頂層 folder」循環——每個 folder 開跑前 apply_seed
    → newman run --folder（reset 粒度與驗證端一致，見六）
@@ -472,7 +474,7 @@ Collection 是根據 OpenAPI Spec 自動產生的。若 Java API 有變動，只
 
 **這份 mapping 由 Agent ③（架構設計 Agent）自動產生**，在設計 Python 專案結構的同時一併輸出，寫入 `config/harness.yaml`，不需人工填寫。
 
-> `config/harness.yaml` 同一次由③寫入時，還有一個**共用下面同一套 key 格式**的姊妹表 `route_to_module_mapping`，供 `get_module()`（十三章）判斷 module 分區用——差別只在值：`route_to_file_mapping` 存 `related_files` 清單，`route_to_module_mapping` 存單一 `module` 字串（即 `ApiMapping.module`）。兩者是同一次機械組裝的兩個輸出，不是各自獨立的產出流程，細節見 `05a_design_agent_architecture.md` 八章。
+> `config/harness.yaml` 同一次由③寫入時，還有一個**共用下面同一套 key 格式**的姊妹表 `route_to_module_mapping`，供 `RouteMapper.resolve_module()`（見下方新增小節、十三章）判斷 module 分區用——差別只在值：`route_to_file_mapping` 存 `related_files` 清單，`route_to_module_mapping` 存單一 `module` 字串（即 `ApiMapping.module`）。兩者是同一次機械組裝的兩個輸出，不是各自獨立的產出流程，細節見 `05a_design_agent_architecture.md` 八章。
 
 ### Key 格式
 
@@ -500,7 +502,13 @@ GET /api/v1/users/123/profiles → GET_api_v1_users_{id}_profiles
 
 > **fallback 前綴匹配須取最長 pattern**：若某條路由沒有被 Agent ③ 精確列在 `route_to_file_mapping` 裡（fallback 才會被觸發的前提），可能同時有多個既有 key 都是該 URL 的前綴（例如 `GET_api_v1_users` 和 `GET_api_v1_users_{id}` 都是 `GET_api_v1_users_{id}_profiles_photos` 的前綴）。此時必須取字串最長、也就是最精確的那個 pattern，不能依「哪個先出現在 `harness.yaml`」決定，否則命中結果會隨 yaml 撰寫順序而變、可能挑到較不精確的 mapping，跟本節「避免巢狀資源被前綴假匹配」的目的矛盾。
 
-→ 設定見：`config/harness.yaml`（`route_to_file_mapping` 段）；實作見：`core/route_mapper.py`（`RouteMapper.normalize_path_key`、`RouteMapper.resolve_related_files`，`02b_harness_code.md`）
+### module 對照的競態保護：`record_tests`／`run_tests` 不讀 `config/harness.yaml` 的 `route_to_module_mapping`
+
+`route_to_file_mapping`（本節主題）只影響 Debug Agent 事後定位檔案，查不到頂多回傳空清單、不影響驗證正確性，因此照原設計讀 `config/harness.yaml` 即可。但 `route_to_module_mapping`（決定 golden 該歸進 `fixtures/golden/{module}/` 哪個子目錄，見十三章）是排程與驗證正確性直接依賴的關鍵資料，且 `record_tests`（②）跟 `design`（③，`config/harness.yaml` 的寫入方）是 `01_langgraph_architecture.md` 五章的平行分支——② 讀檔當下③不保證已經寫完（甚至 `run_tests` 在 `debug ↔ implement` 重試迴圈裡重複呼叫時，③根本不會重新跑），若兩個 node 各自讀到不同版本的 yaml，同一個 route 會被解出不同 module，golden 寫錯資料夾、永遠讀不到。
+
+**解法**：`record_golden_output()`／`run_postman_tests()`（`langgraph_nodes/test_nodes.py`）不透過 `RouteMapper` 讀檔取得 module 對照，改用 `design_agent/route_mapping.py::build_route_to_module_mapping(state["api_to_python_target"])` 就地算出這輪真正的對照（`route_to_module_mapping` 的值本來就等於 `ApiMapping.module` 本尊，只需要①的輸出就能算，不依賴③才有的 `interfaces`），再以 `RouteMapper(module_mapping_override=...)` 傳入，跳過讀檔這一步；`route_to_file_mapping` 沒有這個競態風險，`RouteMapper` 仍照原設計讀 `config/harness.yaml`。`partial_verify.py`（完全跳過①，見 `00_refactor_architecture.md` 十一章）與既有單元測試沒有 `state` 可用，`module_mapping_override` 留 `None` 時 `RouteMapper` fallback 回讀檔，行為與此前一致。
+
+→ 設定見：`config/harness.yaml`（`route_to_file_mapping` 段）；實作見：`core/route_mapper.py`（`RouteMapper.normalize_path_key`、`RouteMapper.resolve_related_files`、`RouteMapper.resolve_module`）、`design_agent/route_mapping.py::build_route_to_module_mapping()`（`02b_harness_code.md`）
 
 ---
 
@@ -559,7 +567,7 @@ Agent ⑤ 逐 task 呼叫 translator-cli 寫入單一函式，但**驗證不是�
 
 > **前提**：每個 task 必須含有 `module` 欄位（對應 `fixtures/golden/` 的子目錄名稱）；`module` 欄位由 [P] Plan Agent 在產生 task list 時填入，逐字沿用 `ModuleInfo.module`（原因見 `06a_plan_agent_architecture.md` 四章），格式見主架構文件 `00_refactor_architecture.md` 第八節。
 >
-> **module 詞彙表的權威來源**：golden 子目錄名稱由 `core/postman_runner.py` 的 `get_module()` 決定——優先查 `config/harness.yaml` 的 `route_to_module_mapping` 段（③ 產出，見 `05a_design_agent_architecture.md` 八章，key 正規化方式與 `route_to_file_mapping` 相同，值即 `ApiMapping.module`），查得到就採用；查不到（該 endpoint 落在①③解析範圍外，如 04a 十一章列出的已知限制，或屬於 skip 呼叫鏈已排除的端點）才 fallback 回「URL 第一個非版本路徑段」的字串猜測，並記警告。fallback 路徑保留，只是不再是唯一機制（十六章「Module 詞彙一致性」待實作清單已同步更新）。
+> **module 詞彙表的權威來源**：golden 子目錄名稱由 `RouteMapper.resolve_module()`（十一章）決定——優先查 `config/harness.yaml` 的 `route_to_module_mapping` 段（③ 產出，見 `05a_design_agent_architecture.md` 八章，key 正規化方式與 `route_to_file_mapping` 相同，值即 `ApiMapping.module`；`record_tests`／`run_tests` 實際上不讀這份 yaml、改用 ①的 `api_to_python_target` 就地算出同一份對照，見十一章「module 對照的競態保護」），查得到就採用；查不到（該 endpoint 落在①③解析範圍外，如 04a 十一章列出的已知限制，或屬於 skip 呼叫鏈已排除的端點）才 fallback 回 `core/postman_runner.py::get_module()`「URL 第一個非版本路徑段」的字串猜測，並記警告。
 
 ### 兩層驗證，觸發時機不同
 
@@ -596,7 +604,7 @@ module 被標記 `verified` 之後，若後續其他 task 寫入的檔案剛好�
 
 **關鍵原則**：局部驗證 pass 只代表「這個 module 目前沒壞」；一旦有新的改動觸及已驗證 module 的檔案，該 module 需要重新過局部驗證才能維持 `verified` 狀態；全量驗證 pass 才代表「整體沒有連帶傷害」。三個條件都滿足才能放行進入下一階段。
 
-→ 排程與觸發邏輯的具體實作（`ModuleScheduler`、`MODEL_SEMAPHORE`、`check_upstream_regression`）見 `01_langgraph_architecture.md` 六章；Report 與比對邏輯本身見本文件三～九章。
+→ 排程與觸發邏輯的具體實作（`ModuleScheduler`、`check_upstream_regression`、依 backend 分流的併發限制）見 `01_langgraph_architecture.md` 六章；Report 與比對邏輯本身見本文件三～九章。
 
 ---
 
@@ -688,7 +696,8 @@ PostgreSQL Server
         └── Agent ⑦（Debug Agent）
                 │ 輸入：report.json + related_files 的程式碼
                 │ 分析 failure_type + debug_hint
-                └──→ 輸出修正指令給 Agent ⑤
+                └──→ 直接寫出並套用修正後的程式碼（fixed_body／file_fixes）
+                     ——不是輸出指令交給 ⑤ 重新翻譯，⑤ 完全退出這個除錯迴圈
 ```
 
 ---

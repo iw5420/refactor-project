@@ -28,6 +28,7 @@ refactor-project/
 │   ├── builder.py                # StateGraph 組裝（node 註冊、edge 連接，見五）
 │   ├── scheduler.py              # ⑤ 的 module 依賴圖排程器（見六）
 │   ├── stream_watchdog.py        # main.py 用 astream() 觀察進度、偵測卡住的輔助工具（見九）
+│   ├── java_source_extraction.py # 把 [P] 算好的呼叫鏈座標解析成真正的 Java／已翻譯 Python 原始碼文字（見 00 六章、09a/09b）
 │   └── nodes/
 │       ├── __init__.py
 │       ├── spec_node.py          # [A] Spec Agent，薄封裝，邏輯在 spec_collection_agent/（見 03a/03b）
@@ -52,7 +53,8 @@ refactor-project/
 │   ├── chunking.py               # chunk_by_char_budget()
 │   ├── openapi_ref_resolver.py   # resolve_refs()
 │   ├── java_type_mapping.py      # map_java_type()／camel_to_snake()
-│   └── java_annotations.py       # DATA_CLASS_ANNOTATIONS／JPA_ENTITY_ANNOTATIONS
+│   ├── java_annotations.py       # DATA_CLASS_ANNOTATIONS／JPA_ENTITY_ANNOTATIONS
+│   └── jpa_base_repository.py    # BaseRepository[T]、JPA 衍生查詢方法名對應（見 04a/05a/07a，docs/refactor_bug_trace.md #10/#16）
 │
 ├── llmlog/                      # `python -m llmlog` CLI：llm_traces.db 查詢層，與 ⑦ Debug Agent 共用同一組函式（見 11a 十一章、11b）
 │
@@ -60,7 +62,7 @@ refactor-project/
 ├── parse_agent/                 # 見 04a / 04b（① 解析 Agent 核心邏輯）
 ├── design_agent/                 # 見 05a / 05b（③ 架構設計 Agent 核心邏輯）
 ├── plan_agent/                   # 見 06a / 06b（[P] Plan Agent 核心邏輯）
-├── translator_cli/              # 見 07a / 07b（Agent ④/⑤ 呼叫本地模型／骨架生成模式）
+├── translator_cli/              # 見 07a / 07b（Agent ④/⑤ 呼叫本地模型 qwen 或 Claude API／骨架生成模式；`client.py` 依 `translator_backend` 分派到 `ollama_client.py` 或 `claude_client.py`）
 ├── scaffold_agent/               # 見 08a / 08b（④ db_models 組裝核心邏輯，呼叫 translator_cli 骨架生成模式）
 ├── debug_agent/                  # 見 10a / 10b（⑦ Debug Agent 核心邏輯）
 ├── refactor_harness/            # 見 02a / 02b（Agent ②/⑥ 與共用核心）
@@ -262,18 +264,66 @@ class InterfaceSpec(TypedDict):
     # 的地方不需要跟著補這兩個欄位。
     http_method: NotRequired[str | None]
     route_path: NotRequired[str | None]
+    # Phase 1（entity/dto/repository/utils）／Phase 2（controller/service）
+    # 分階段翻譯設計新增，見 refactor_plan.md 一、二章、05a 三章「層級
+    # 判定」、九章「phase 欄位」。NotRequired：理由同 http_method／
+    # route_path，既有建構 InterfaceSpec 的地方（測試 fixture 等）不需要
+    # 跟著補這個欄位；design_agent 產出的每一筆 InterfaceSpec 都會設定。
+    phase: NotRequired[Literal[1, 2]]
+    # 這個 interface 對應的 Java 方法識別碼，格式逐字沿用①既有的
+    # parse_agent/types.py::method_id()（"{java_file_path}::{class_name}::
+    # {method_name}"，不含參數型別，跟①的呼叫圖同一種 key 格式，可以
+    # 直接查表）。供 [P] 六章「呼叫鏈範圍查找」用，見 06a_plan_agent_
+    # architecture.md 六章、05a_design_agent_architecture.md 對應章節。
+    # NotRequired 理由同 phase。
+    java_method_id: NotRequired[str]
+    # 這個 InterfaceSpec 所屬的 class 若繼承了 Spring Data 基底介面
+    # （JpaRepository/CrudRepository），這裡存它的 entity 型別簡單名稱，
+    # 供 translator_cli/scaffold.py 決定要不要把這個 class 的宣告改成
+    # 繼承 BaseRepository[Entity]。見 common/jpa_base_repository.py、
+    # docs/refactor_bug_trace.md #10／#16。NotRequired 理由同 phase。
+    jpa_base_entity: NotRequired[str | None]
+
+
+class JavaIndexEntry(TypedDict):
+    file_path: str
+    class_name: str | None
+    function_name: str
+    phase: Literal[1, 2]
 
 
 class PythonStructure(TypedDict):
     directory_tree: str             # 目錄結構的文字表示，供 ④ 建立骨架時參照
     interfaces: list[InterfaceSpec] # [P] target_files 與 ④ 骨架簽名的唯一權威來源
+    # java_method_id → Python 對應資訊，[P] 六章「呼叫鏈範圍查找」查表用
+    # ——把③內部本來就算過、跑完即丟的 Java↔Python 對應關係正式落地保留，
+    # 不需要 [P]／⑤ 各自重新實作一次③的 camelCase／多載消歧邏輯。見
+    # 05a_design_agent_architecture.md 對應章節。NotRequired 理由同
+    # config_field_mappings：既有建構 PythonStructure 字面值的地方（測試）
+    # 不需要跟著補，design_agent 產出的每一筆都會設定。
+    java_index: NotRequired[dict[str, JavaIndexEntry]]
     # ③ design_agent.global_infra.render_config_py() 機械組出，對應
-    # Java @Value("${key}") 屬性注入欄位 → app/core/config.py 環境變數常數。
-    # key 是 Java 檔案的 file_path，value 是
-    # {java_field_name: "app.core.config.CONSTANT_NAME"}，供 [P]（plan_agent）
-    # 組 task.context 時折入一段提示文字，見 06a 對應章節。NotRequired：
-    # 沒有任何 @Value 欄位的專案完全不需要這個 key。
+    # docs/09b_bug_trace.md #45（Java @Value("${key}") 屬性注入欄位 →
+    # app/core/config.py 環境變數常數）。key 是 Java 檔案的 file_path，
+    # value 是 {java_field_name: "app.core.config.CONSTANT_NAME"}，供 [P]
+    # （plan_agent）組 task.context 時折入一段提示文字，讓 ⑤ 翻譯到這個
+    # 欄位時有明確依據可用，不用瞎猜（見 06a 對應章節）。NotRequired：
+    # 沒有任何 @Value 欄位的專案完全不需要這個 key，既有建構 PythonStructure
+    # 字面值的地方（如測試）不需要跟著補，比照 InterfaceSpec.http_method
+    # 的既有慣例。
     config_field_mappings: NotRequired[dict[str, dict[str, str]]]
+    # ③ design_agent.global_infra.render_config_py() 同一次呼叫機械組出，
+    # 對應 docs/09b_bug_trace.md #46（@Value 屬性注入機制只設計了「怎麼
+    # 命名／怎麼讀」，沒有設計「值從哪裡來」）。每筆 {"property_key":
+    # "language.code", "constant_name": "LANGUAGE_CODE"}——property_key
+    # 是 Java application-{profile}.properties 裡的原始 key，供
+    # python_service（⑤，見 09a 對應章節）啟動容器前讀取 Java 端實際
+    # 屬性值、解析出 {constant_name: value} 當額外 -e 環境變數注入。跟
+    # config_field_mappings 是同一份 value_fields 算出來的兩種不同用途
+    # 的投影，不是重複資料——那個是給 [P] 折進 task.context 的「哪個
+    # Python 檔案該引用哪個常數」，這個是給容器啟動時「這個常數該填什麼
+    # 值」。NotRequired 理由同 config_field_mappings。
+    config_env_vars: NotRequired[list[dict[str, str]]]
 
 
 # ── Agent ⑤ 輸出：task 失敗根因（見 09a 六章）──
@@ -287,16 +337,17 @@ class TaskFailure(TypedDict):
     error: str
 
 
-# 06a 七章設計（referenced_interfaces 函式層級抽取）：target_files 裡
-# 「因為引用才被拉進來」的檔案，只需要送這個函式實際引用到的那幾支方法，
-# 不是整份檔案（見 docs/09b_bug_trace.md #37 根因）。
+# 06a 七章新設計（referenced_interfaces 函式層級抽取，見
+# docs/09b_bug_trace.md #37 根因）：target_files 裡「因為引用才被拉進來」
+# 的檔案，只需要送這個函式實際引用到的那幾支方法，不是整份檔案。
 class ReferencedFunctionRef(TypedDict):
     file_path: str
     class_name: str | None
     function_name: str
 
 
-# ── Agent ⑦ 輸出：task 級修正後程式碼與每輪除錯記錄（見 10a 六、八、十二章）──
+# ── Agent ⑦ 輸出：task 級修正後程式碼與每輪除錯記錄（見 10a 六章、
+# 八章「⑦ 直接產生修正後程式碼」、十二章「phase 2：檔案層級修正」）──
 class FileFix(TypedDict):
     task_id: str
     target_file: str
@@ -307,7 +358,20 @@ class FileFix(TypedDict):
 class TaskFix(TypedDict):
     task_id: str
     diagnosis: str
-    fixed_body: str | None   # None：這個 task 的函式本體不需要改（只有 file_fixes 需要套用）
+    # 對應 docs/refactor_bug_trace.md #9：⑦ 沒有這個 task 對應的真實
+    # Java 原始碼可以核對（見 debug_agent/analysis.py 的 source_files
+    # 只讀 python_project_path），自己憑症狀猜寫 fixed_body 的可靠度
+    # 天生比不上⑤（真的看得到 java_source／referenced_source）——這個
+    # task 的函式本體邏輯有問題（不論是從沒成功翻譯過，還是翻過但邏輯
+    # 錯）時，優先設 True、交還給⑤用真實 Java 原始碼重新翻譯，diagnosis
+    # 會被當成這次重新翻譯的提示一併附上（見 graph/nodes/implement_node.py
+    # 的 pending_retranslate_tasks）。NotRequired：既有建構 TaskFix 的
+    # 測試 fixture 不用跟著補，預設視為 False（沿用既有 fixed_body 行為）。
+    retranslate: NotRequired[bool]
+    # None：這個 task 的函式本體不需要改（只有 file_fixes 需要套用，或
+    # 已由 retranslate=True 處理）。只在 retranslate 是 False（或缺省）
+    # 時才可能非 None——兩者互斥，見 debug_agent/prompts.py 說明。
+    fixed_body: str | None
     file_fixes: list[FileFix]
 
 
@@ -321,24 +385,92 @@ class DebugRound(TypedDict):
     unfixable_reasons: list[str]
 
 
+# 06a 六章「呼叫鏈範圍查找」：[P] 用①的呼叫圖 + java_index 機械算出的
+# 參照座標，只有座標與語言標記，不含原始碼文字——把座標實際讀成文字是
+# ⑤ 的工作（見 refactor_plan.md 一章「新增能力與歸屬」）。
+class ReferenceTarget(TypedDict):
+    # 三個欄位的命名空間都跟著 language 走，不是固定的 Python 或 Java 側
+    # ——language="java" 時三者是①呼叫圖 method_id 拆出來的 Java 原始座標
+    # （原始檔案路徑／Java class 名稱／Java 方法名稱，camelCase，可能跟
+    # Python 側的檔名／snake_case 名稱不同）；language="python" 時三者是
+    # java_index 投影過的 Python 側事實（已翻譯 .py 檔案路徑／Python class
+    # 名稱／Python function_name）。見 plan_agent/call_chain.py::
+    # build_reference_targets() 依 language 分別組裝的邏輯。
+    file_path: str
+    class_name: str | None
+    function_name: str
+    language: Literal["java", "python"]
+
+
 # ── [P] Plan Agent 輸出：task list ────────────────────
 class TaskSpec(TypedDict):
     id: str
     module: str
+    # Phase 1（entity/dto/repository/utils）／Phase 2（controller/service）
+    # 分階段翻譯設計新增，見 refactor_plan.md 一、二章、06a_plan_agent_
+    # architecture.md 五章。[P] 直接複製對應 InterfaceSpec.phase 的值，
+    # 不重新判斷。NotRequired 理由同 InterfaceSpec.phase：既有建構
+    # TaskSpec 字面值的地方（測試 fixture、01 文件 stub 範例）不需要
+    # 跟著補這個欄位；plan_agent 產出的每一筆都會設定。
+    phase: NotRequired[Literal[1, 2]]
+    # 雙後端分工設計新增，見 refactor_plan.md 三章、06a 五章：依這個
+    # task 所屬層級機械決定（repository → qwen，其餘 → claude），不需要
+    # LLM 判斷。NotRequired 理由同上。
+    translator_backend: NotRequired[Literal["qwen", "claude"]]
+    # 這個 task 自己對應的 Java 方法識別碼（格式沿用①的 method_id()，逐字
+    # 等於 InterfaceSpec.java_method_id）——⑤抽取「這個函式自己」的 Java
+    # 原始碼文字時的座標，跟 reference_targets（呼叫到的其他函式的座標）
+    # 是同一種資訊、但描述的對象不同，兩者合起來才是⑤這次呼叫的完整輸入
+    # （見 07a_translator_cli_architecture.md、refactor_plan.md 一章「新增
+    # 能力與歸屬」）。NotRequired 理由同 phase／translator_backend。
+    java_method_id: NotRequired[str]
     description: str
     target_files: list[str]        # 必須是 python_structure.interfaces 中已存在的 file_path
+    # 06a 六章「呼叫鏈範圍查找」新增，見上方 ReferenceTarget。NotRequired
+    # 理由同 phase／translator_backend。
+    reference_targets: NotRequired[list[ReferenceTarget]]
+    # 六章「上限被觸發時：截斷可見化」——只在 reference_targets 因為觸及
+    # PLAN_AGENT_MAX_REFERENCE_TARGETS 上限而被截斷時才設為 True，未截斷
+    # 的 task 不設這個 key（缺席即代表「沒有這回事」，不需要額外的 False
+    # 分支）。供人工事後檢視／未來 09a／⑦ Debug Agent 查「這個函式翻譯
+    # 品質可疑是不是因為呼叫鏈被砍過」，不用大海撈針翻 log。
+    reference_targets_truncated: NotRequired[bool]
     context: str
     depends_on: list[str]
     # 對回 target_files[0] 這個 InterfaceSpec 的 (class_name, function_name)，
     # 供 translator-cli 的 fill_function() 在同一個檔案有多個函式時精準定位
-    # 要填的是哪一個（見 07a 五章）。NotRequired，理由同 InterfaceSpec。
+    # 要填的是哪一個（見 07a_translator_cli_architecture.md 五章「為什麼
+    # fill_function 需要 class_name／function_name」）。NotRequired 讓既有
+    # 建構 TaskSpec 字面值的地方（如 01 文件 stub 範例）不需要跟著補這兩個
+    # 欄位，比照 InterfaceSpec.http_method／route_path 的既有慣例。
     class_name: NotRequired[str | None]
     function_name: NotRequired[str]
-    # target_files 裡因 referenced_interfaces 而被拉進來的檔案，各自精確
-    # 引用到哪些 (class_name, function_name)——translator-cli 讀取這些
-    # 檔案時只抽取這裡列出的函式，不整份帶入（見 06a 七章、
-    # docs/09b_bug_trace.md #37）。NotRequired，理由同上。
+    # 舊版：target_files 裡，因 referenced_interfaces 而被拉進來的檔案，
+    # 各自精確引用到哪些 (class_name, function_name)，translator-cli
+    # 讀取這些檔案時只抽取這裡列出的函式，不整份帶入（見
+    # docs/09b_bug_trace.md #37）。**Phase 1/2 分階段翻譯設計後，[P] 不
+    # 再產生 referenced_interfaces，因此也不再填這個欄位**——同樣的功能
+    # 現在由⑤自己的呼叫圖查找取代（一開始就只抽取被呼叫到的那個函式，
+    # 見 refactor_plan.md 一章、06a_plan_agent_architecture.md 七章）。
+    # 欄位定義暫時保留（不是移除）：`translator_cli/client.py`／
+    # `graph/nodes/implement_node.py` 仍會讀取這個欄位（`task.get(
+    # "referenced_functions", [])`，缺席時安全退化成空清單）——[P] 已經
+    # 不再產生這份資料，這個欄位現在永遠是空清單，但貿然刪除型別定義
+    # 會影響這兩個既有模組目前仍在讀取它的程式碼，見 06a 八章說明。
     referenced_functions: NotRequired[list[ReferencedFunctionRef]]
+    # 對應 docs/refactor_bug_trace.md #46：逐字複製 InterfaceSpec.
+    # return_type（見 05a 五章「ResponseEntity<T> 覆寫」、
+    # design_agent/type_mapping.py::resolve_api_boundary_signature()）——
+    # ③在這個函式原始 Java 簽名是 ResponseEntity<...>（依情境動態回傳不同
+    # status／body，如 file_router.py 的 voice／image GET）時，機械地把
+    # 這裡覆寫成字面字串 "Response"，不經過 LLM。⑤填空階段需要這個信號
+    # 才能精準判斷「這個函式的錯誤分支也該用 JSONResponse 包成專案統一的
+    # code／msg／data 格式，不能只回傳裸文字」（見
+    # graph/nodes/implement_node.py::_RAW_RESPONSE_ERROR_JSON_NOTICE），
+    # 不能只看檔案路徑這種跟原因無關的替代訊號。NotRequired 理由同
+    # phase／java_method_id：既有建構 TaskSpec 的地方（測試 fixture 等）
+    # 不需要跟著補這個欄位；plan_agent 產出的每一筆都會設定。
+    return_type: NotRequired[str]
 
 
 # ── 整體 State ─────────────────────────────────────────
@@ -347,39 +479,45 @@ class RefactorState(TypedDict):
     java_project_path: str
     # 這次 pipeline 執行的唯一識別碼，main.py 用 common/run_context.py::
     # new_run_id() 產生一次，貫穿一般 log 與 llm_traces.db 兩邊（見
-    # 11a_logging_architecture.md 六章、本文件九章）。
+    # 11a_logging_architecture.md 六章）。implement_node.py 透過
+    # translator_cli.fill_function(run_id=...) 往下傳。
     run_id: str
     # translator-cli 寫入目標的 Python 專案根目錄，對應 .env 的
-    # PYTHON_PROJECT_PATH（見二、07a 二章「新輸入：python_project_path」）
-    # ——與 refactor-project/、java_project_path 同層、各自獨立的 git
-    # repo，scaffold_node.py／implement_node.py 呼叫
-    # translator_cli.generate_scaffold()／fill_function() 時顯式傳入。
+    # PYTHON_PROJECT_PATH（見 07a_translator_cli_architecture.md 二章
+    # 「新輸入：python_project_path」）——與 refactor-project/、
+    # java_project_path 同層、各自獨立的 git repo，scaffold_node.py／
+    # implement_node.py 呼叫 translator_cli.generate_scaffold()／
+    # fill_function() 時顯式傳入，translator_cli 本身不 import
+    # graph.state（見 07a 十二章）。
     python_project_path: str
 
-    # 環境設定（main.py 從 .env 讀入，見九；implement node 需要）
+    # 環境設定（main.py 從 .env 讀入，見九；implement node 需要，之前遺漏未列入 State）
     test_dsn: str          # 對應 .env 的 TEST_DB_DSN，Orchestrator 直接連 DB 用
     python_base_url: str   # 對應 .env 的 PYTHON_BASE_URL，Orchestrator 打 API 用
     # 註：.env 的 DATABASE_URL 不放進這個 State——那是 Python 服務進程自己讀的環境變數，
-    # Orchestrator 不會用到，只需確保啟動 Python 服務容器時有繼承 .env。
+    # Orchestrator 不會用到，只需確保啟動 Python 服務的 subprocess 有繼承 .env。
 
     # Agent ①
     module_list: list[ModuleInfo]
     api_to_python_target: list[ApiMapping]
-    # 使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」（見
-    # 03a「Decision.SKIP 的語意」）。同名不同 HTTP method 的多載會共用
-    # 同一個 method_id，這裡另外存 HTTP method 精確的排除清單，供③在
-    # 重新掃描出每個多載各自的 http_method 後排除用（見 04a 五章、
-    # 05a 四章）。
+    # 使用者填 skip，是人工判斷「這個 endpoint 整段不進翻譯流程」，不只是
+    # 跳過自動化測試（見 docs/03a_spec_collection_agent_architecture.md
+    # 「Decision.SKIP 的語意」）。同名不同 HTTP method 的多載（如
+    # FileController 的 voice/image）在 method_id 層級會共用同一個 id，
+    # 排除不了單一個多載，這裡改用 HTTP method 精確的
+    # (class_name, method_name, http_method) 三元組清單，供
+    # design_agent/design.py 在重新掃描出每個多載各自的 http_method 之後
+    # 把該排除的多載從資料裡濾掉（見 parse_agent/skip_filter.py::
+    # compute_skip_excluded_overloads()）。
     skip_excluded_overloads: list[tuple[str, str, str]]
 
     # Agent A / B
     openapi_spec: dict
     collection_readonly_path: str
     collection_mutation_path: str
-    # [B] 尚未被人工解決（既沒填值、也沒標記 skip）的 endpoint 清單，
-    # 供 gen_manual_fill_templates／gen_collection 兩個節點後的條件邊
-    # 判斷要不要暫停等人工處理（見五「人工填值關卡」、03a 三章「人工
-    # 填值機制」）。空清單＝全部解決。
+    # [B] 填值失敗、且尚未被人工解決（補值或明確 skip）的 endpoint 清單，
+    # 供 gen_collection 後的條件邊判斷要不要暫停等人工處理（見 01 五「人工
+    # 補值關卡」、03c 二 2.6 章 `manual_fill.py`）。空清單＝全部解決。
     collection_manual_fill_pending: list[str]
 
     # Agent ②
@@ -398,8 +536,10 @@ class RefactorState(TypedDict):
     # Agent ④：generate_scaffold() 回傳的 skipped_interfaces／
     # skipped_db_models（見 07a 四章、08a 十二章），單次寫入的快照，不
     # 逐次累加，不需要 reducer——scaffold 不在 retry_count 迴圈內，只會
-    # 執行一次。下游（⑤／⑦）用這份資料判斷 task 失敗是不是骨架缺口
-    # 造成，不是翻譯品質問題。
+    # 執行一次。skipped_db_models 固定是 {file_path, class_name, error}
+    # 三欄位 schema（class_name 為 None 代表 07a 檔案級失敗，非 None 代表
+    # 08a entity 級失敗，見 08a 十二章），下游（09a／⑦ Debug Agent）不需要
+    # 分辨兩種來源各自的欄位形狀。
     skipped_interfaces: list[dict]
     skipped_db_models: list[dict]
 
@@ -407,56 +547,86 @@ class RefactorState(TypedDict):
     completed_tasks: Annotated[list[str], operator.add]
     failed_tasks: Annotated[list[str], operator.add]
     partial_reports: Annotated[list[dict], operator.add]   # 每個 module 局部驗證結果（含 regression 重驗），逐次累加供 ⑦ 回溯
-    # task 失敗時的錯誤訊息與根因分類（"scaffold_skipped" vs "fill_failed"
-    # vs "file_fix_failed"），供 ⑦ Debug Agent 不需要重新比對
-    # skipped_interfaces 就能分辨失敗種類。歷史累積，不因後續重試成功而
-    # 移除，見 09a 六章。
+    # task 失敗時的錯誤訊息與根因分類（"scaffold_skipped" vs "fill_failed"），
+    # 供 ⑦ Debug Agent（10a，待建立）不需要重新比對 skipped_interfaces 就能
+    # 分辨兩種失敗。歷史累積，不因後續重試成功而移除——一筆 task 若第一次
+    # 失敗、重試後成功，這筆記錄仍保留（同時 task_id 也會出現在
+    # completed_tasks），供除錯追溯。見 09a 六章。
     task_failures: Annotated[list[TaskFailure], operator.add]
 
     # Agent ⑤：每次呼叫重新計算的「當下完整快照」，不是累加事件，故不掛 reducer
     blocked_modules: list[str]    # 因上游 module 未驗證通過而從未進入就緒佇列的 module
     failed_modules: list[str]     # 確實執行過、驗證過、但沒通過的 module（含 regression 造成的失敗）
+    # 對應 docs/refactor_bug_trace.md #13：blocked_modules／failed_modules
+    # 只涵蓋 "pending"／"failed" 兩種狀態，一個 module 卡在 "in_progress"
+    # 永遠到不了終態時兩者都不會列到它，會被 common/run_report.py 誤判成
+    #「沒出現在壞掉清單裡＝修好了」。這裡明確列出真正 "verified" 的
+    # module，讓「確認修好」的判斷可以用正面訊號（真的驗證通過），不必
+    # 從兩份不完整的負面清單去推論。
+    verified_modules: list[str]
     # 純附加診斷資訊，不是排程判斷依據：blocked_modules 裡每個 module
     # 對回它 depends_on 裡狀態還不是 "verified" 的直接上游 module 名稱
-    # 清單，供人工／⑦ Debug Agent 不需要反查 module_list.depends_on
+    # 清單，供人工／未來 ⑦ Debug Agent 不需要反查 module_list.depends_on
     # 就能直接讀出「這個 module 被誰卡住」。見 docs/09b_bug_trace.md #29。
     blocked_reasons: dict[str, list[str]]
 
     # Agent ⑥
     test_results: dict
-    # Agent ⑥：⑥ 判定 Python 服務不可達時，連同 test_results 一起寫入
-    # 這個欄位——容器崩潰當下的 docker log（見
-    # python_service/manager.py::get_diagnostics()）。不掛 reducer，每輪
-    # 覆寫。⑦（debug_agent/）全程只讀這個欄位，不呼叫任何跨節點函式，
-    # 見 10a 八章「診斷資料改走 State」。
+
+    # Agent ⑥：⑥ 判定 Python 服務不可達時（見
+    # refactor_harness/langgraph_nodes/test_nodes.py::run_postman_tests()
+    # 前置健康檢查），連同 test_results 一起寫入這個欄位——容器崩潰
+    # 當下的 docker log（見 python_service/manager.py::get_diagnostics()）。
+    # 不掛 reducer，每輪覆寫，跟 test_results 本身的既有覆寫語意一致。
+    # ⑦（debug_agent/）全程只讀這個欄位，不呼叫任何跨節點函式，見 10a
+    # 八章「診斷資料改走 State」。
     service_diagnostics: str | None
 
     # Agent ⑦（逐輪累積寫入，需要 reducer）：每一輪 debug 對每個分析過
     # module 的完整記錄，含未呼叫 LLM 的 blocked／scaffold_gap 機械判斷，
-    # 見 10a 十二章。
+    # 供人工事後查看、也是未來評估「要不要讓 LLM 看到上一輪建議」的既有
+    # 資料來源，見 10a 十二章。
     debug_rounds: Annotated[list[DebugRound], operator.add]
+
     # Agent ⑦：這一輪產出的 task 級修正後程式碼，key 是 task_id、value
-    # 是完整函式本體。不掛 reducer，整包覆寫。implement_node._run_one_task()
-    # 讀取這份資料，有值的 task 直接把程式碼傳給
-    # translator_cli.fill_function() 的 fixed_body 參數，跳過 ⑤ 本地模型
-    # （見 10a 八章「⑦ 直接產生修正後程式碼」）。
+    # 是完整函式本體。不掛 reducer，整包覆寫——這是「這一輪的修正」，不是
+    # 累加事件，見 10a 六章。implement_node._run_one_task() 讀取這份資料，
+    # 有值的 task 直接把這份程式碼傳給 translator_cli.fill_function() 的
+    # fixed_body 參數，完全跳過 ⑤ 本地模型（見 10a 八章「⑦ 直接產生
+    # 修正後程式碼」）。
     pending_fixed_bodies: dict[str, str]
+
+    # Agent ⑦（對應 docs/refactor_bug_trace.md #9）：這一輪判定「函式
+    # 本體邏輯需要重新翻譯」的 task，key 是 task_id、value 是 ⑦ 的
+    # diagnosis（作為重新翻譯的提示）。不掛 reducer，整包覆寫，跟
+    # pending_fixed_bodies 同一種「這一輪的修正」語意。implement_node.py
+    # 讀取這份資料時**不**把它當成 fixed_body 使用——這個 task 走跟⑤
+    # 首輪翻譯完全相同的路徑（解析真實 java_source／referenced_source、
+    # 呼叫 fill_function() 的真實模型呼叫），只是把 diagnosis 疊加進
+    # context，讓模型知道上一輪錯在哪。跟 pending_fixed_bodies 互斥：
+    # 同一個 task_id 不會同時出現在兩份清單裡（見 debug_agent/analysis.py
+    # 的建構邏輯）。
+    pending_retranslate_tasks: dict[str, str]
+
     # Agent ⑦：這一輪產出的檔案層級修正（見 10a 八章「phase 2」）——
     # fixed_body／fill_function() 的 AST 函式定位機制只能碰函式本體，
     # import 敘述這類模組層級的修正走這裡，由
-    # translator_cli.apply_file_fix() 用精確字串替換套用。不掛 reducer，
-    # 整包覆寫，語意同 pending_fixed_bodies。
+    # translator_cli.apply_file_fix() 用精確字串替換套用，不經過排程器
+    # （這些修正不對應任何要重新生成的函式本體）。不掛 reducer，整包
+    # 覆寫，語意同 pending_fixed_bodies。
     pending_file_fixes: list[FileFix]
+
     # Agent ⑦：這一輪分析後，若確認這一輪所有 root_cause module 都無法
     # 修，設為 True，供 debug_node.should_retry_or_give_up() 路由到
-    # give_up，不進 implement 浪費一輪重試（見 10a 七章、五章）。每輪
-    # 覆寫，不掛 reducer。
+    # give_up，不進 implement 浪費一輪重試（見 10a 七章）。每輪覆寫，
+    # 不掛 reducer。
     give_up_early: bool
+
     # Agent ⑦：這一輪 origin=="root_cause" 的 module 裡，Claude API 呼叫
     # （含批次重試）仍然失敗、被視為「未分析」的 module 名稱（見 10a
     # 4.4、七章）。只有這一輪的快照，不掛 reducer——give_up_node.py 在
-    # retry_count 用盡那個分支讀取，提示人工這一輪可能是 Claude API 本身
-    # 的問題，不是 ⑦ 判斷錯誤。
+    # retry_count 用盡那個分支讀取，若非空就提示人工這一輪可能是 Claude
+    # API 本身的問題，不是 ⑦ 判斷錯誤，見 give_up_node.py。
     unanalyzed_root_cause_modules: list[str]
 
     # Orchestrator
@@ -480,7 +650,7 @@ class RefactorState(TypedDict):
 | `parse` | ① 解析 Agent | Claude API，薄封裝 | `graph/nodes/parse_node.py` → `parse_agent.run_parse_agent()`（見 04a：排在 `gen_collection` 之後，因為 skip 呼叫鏈排除需要讀 [B] 已定案的 `unfilled_endpoints.json`） |
 | `record_tests` | ② 測試 Agent | 程式邏輯（Harness） | `refactor_harness/langgraph_nodes/test_nodes.py`（見 02b；與 `design` 平行執行，見五章「平行分支」） |
 | `design` | ③ 架構設計 Agent | Claude API，薄封裝 | `graph/nodes/design_node.py` → `design_agent.run_design_agent()`（不依賴 `golden_output`，與 `record_tests` 平行執行，見 05a 十一章、五章「平行分支」） |
-| `plan` | [P] Plan Agent | Claude API，薄封裝 | `graph/nodes/plan_node.py` → `plan_agent.run_plan_agent()` |
+| `plan` | [P] Plan Agent | 純機械邏輯（不呼叫 LLM），薄封裝 | `graph/nodes/plan_node.py` → `plan_agent.run_plan_agent()`（見 06a：`phase`／`translator_backend` 打標籤＋呼叫鏈範圍查找，不呼叫 Claude API） |
 | `scaffold` | ④ 骨架實作 Agent | 程式邏輯（scaffold_agent）＋ translator-cli（骨架生成模式） | `graph/nodes/scaffold_node.py` → `scaffold_agent.build_db_models()` ＋ `translator_cli.client` |
 | `implement` | ⑤ 功能改寫 Agent | translator-cli（填空模式）＋ 排程器＋ Harness 局部驗證，非薄封裝 | `graph/nodes/implement_node.py`（本檔案即主要邏輯所在，見六） |
 | `run_tests` | ⑥ 測試執行 Agent | 程式邏輯（Harness） | `refactor_harness/langgraph_nodes/test_nodes.py`（見 02b） |
@@ -686,7 +856,7 @@ def should_await_manual_fill_or_continue(state: RefactorState) -> str:
 
 ### 設計決策：為什麼不用 LangGraph 的 `Send` API 做 task 級平行節點
 
-LangGraph 的 `Send` API 可把一個 node 動態展開成多個平行子節點，但這裡刻意不用：本地模型併發數鎖死為 1，`Send` 的「多個子節點同時跑」在生成階段仍會被同一個資源瓶頸收斂成序列，只增加圖的複雜度（reducer、子節點失敗回報）換不到平行效益。因此 `implement` 維持**單一 node**，內部用輕量排程器＋`asyncio.Semaphore(1)` 分離「就緒佇列」與「實際呼叫序列化」。
+LangGraph 的 `Send` API 可把一個 node 動態展開成多個平行子節點，但這裡刻意不用：qwen（僅 repository 層）的併發數鎖死為 1，`Send` 的「多個子節點同時跑」在這條路徑上仍會被同一個資源瓶頸收斂成序列，只增加圖的複雜度（reducer、子節點失敗回報）換不到平行效益；Claude API 那條路徑則本來就不需要序列化。因此 `implement` 維持**單一 node**，內部用輕量排程器決定「哪些 task 就緒」，`asyncio.gather()` 一次送出全部就緒 task——實際的併發限制不在 `implement_node.py` 這一層，而是依 backend 各自下沉到 `translator_cli` 內部（見下方）。
 
 ### 排程器
 
@@ -699,12 +869,40 @@ LangGraph 的 `Send` API 可把一個 node 動態展開成多個平行子節點�
 # graph/scheduler.py
 from graph.state import ModuleInfo, TaskSpec
 
+# 對應 refactor_plan.md 一章「三層全域關卡」：全專案 Phase 1（entity/dto/
+# repository/utils）全部完成（成功或永久失敗，見 _tier_barrier_satisfied()）
+# 才釋放任何 module 的 service task；全專案 service 全部完成才釋放任何
+# module 的 controller/router task。跟 translator_cli/scaffold.py 的
+# _LAYER_PREFIX 是同一種各自维护的機械慣例（見該檔案註解），這裡不 import
+# plan_agent，避免 graph 套件對 plan_agent 產生新的 import-time 依賴。
+_LAYER_PREFIX = {"app/services/": "services", "app/routers/": "routers"}
+
+
+def _global_tier(task: TaskSpec) -> int:
+    """task 屬於三層全域關卡的第幾層：0=Phase 1、1=service、2=controller/
+    router。`phase` 缺席（NotRequired，見 graph/state.py TaskSpec 註解）
+    時視同 Phase 1（tier 0）——這是限制最少的預設值，只有 fixture／測試
+    才會缺這個欄位，plan_agent 產出的每一筆都會設定。`phase == 2` 但
+    `target_files[0]` 不落在 services／routers 任何一個前綴下（理論上
+    不會發生，phase_for_layer() 只對 services／routers 回傳 2，見
+    design_agent/layout.py）時，保守視為最外層（tier 2），不假設它一定
+    安全、可以提早釋放。
+    """
+    if task.get("phase", 1) != 2:
+        return 0
+    layer = next((v for prefix, v in _LAYER_PREFIX.items() if task["target_files"][0].startswith(prefix)), None)
+    return 1 if layer == "services" else 2
+
 
 class ModuleScheduler:
     """
     依 module_list 的 depends_on 做 topological 排程：
     - 只有「所有依賴 module 都已通過局部驗證」的 module，其 task 才會進入就緒佇列
     - 同一 module 內，task 依 depends_on 序列化（repository → service → router）
+    - 全專案三層全域關卡（見上方 _global_tier()）：Phase 1 全部完成才放行任何
+      module 的 service task，service 全部完成才放行任何 module 的
+      controller/router task——這是跨 module 的全域關卡，跟前兩條同 module
+      內部的排序規則是互不取代的兩層機制（見 get_ready_tasks()）
 
     task 級 depends_on 由 [P] Plan Agent 產出，若同 module 內漏填，順序會退化成
     依賴 asyncio.gather 的排程細節（未定義行為）。初始化時做防呆：沒有被引用、
@@ -725,7 +923,19 @@ class ModuleScheduler:
         是回頭呼叫同一個 node，若每次從零建立 scheduler，module_status 會被重置成全部
         pending，regression 偵測（見 check_upstream_regression）就抓不到已驗證過的 module。
 
-        `already_failed_modules`：對應 docs/09b_bug_trace.md #41，理由見本節上方說明。
+        `already_failed_modules`：對應 docs/09b_bug_trace.md #41。module 一旦
+        底下所有 task 都已完成（成功或失敗），且不在 `already_verified_modules`
+        （通過）裡，就必須明確標成 "failed"，不能放著讓它預設落回 "pending"
+        ——這種 module 已經沒有剩餘的 task 可以再排進 `get_ready_tasks()`，
+        重建後的 scheduler 不會再把它排進 `touched_modules`，`module_status`
+        會永遠停在建構時的初始值。放著預設值 "pending" 會讓它被
+        `implement_node.py` 誤判成 `blocked_modules`（等上游修好會自然釋放
+        的語意），但它從來不是被上游卡住，是真的驗證沒過——`debug_node.py`
+        只在 `failed_modules` 非空時才遞增 `retry_count`，這個誤判會讓
+        `retry_count` 停止遞增，`should_debug_or_done()` 的 `if not
+        failed_modules: return "debug"` 分支沒有上限檢查，形成不會終止的
+        `debug ↔ implement` 迴圈（真實環境重跑量到：`partial_reports` 等
+        `operator.add` accumulator 每繞一圈疊加一筆，最終 `MemoryError`）。
         """
         self.modules = {m["module"]: m for m in module_list}
         self.tasks_by_module: dict[str, list[TaskSpec]] = {}
@@ -733,9 +943,10 @@ class ModuleScheduler:
             self.tasks_by_module.setdefault(task["module"], []).append(task)
 
         # module 名下擁有哪些檔案，用來偵測「後續寫入是否波及已驗證過的上游 module」（見下方 check_upstream_regression）。
-        # 從 task_list 的 target_files 彙整，而不是 module_list 的檔名——① 的檔名只是猜測，
-        # ③ 可能整個改寫；task_list.target_files 必須是 python_structure.interfaces 中已存在的
-        # file_path，才是這個時間點真正權威的檔案路徑來源（見 04a 六章）。
+        # 從 task_list 的 target_files 彙整，而不是 Agent ① module_list 的檔名——
+        # ① 的檔名只是猜測，③ 架構設計 Agent 可能整個改寫；task_list.target_files
+        # 必須是 python_structure.interfaces 中已存在的 file_path（見 graph/state.py
+        # TaskSpec 註解），才是這個時間點真正權威的檔案路徑來源。
         # 只取 target_files[0]：這是 translator-cli 實際寫入的唯一目標檔案，target_files 其餘
         # 元素只是唯讀 context（referenced_interfaces、跨 module 的 schemas/models，見 06a 七章），
         # 若整份 target_files 都算「擁有」，會把只是讀取過的其他 module 檔案誤判成這個 module 名下，
@@ -745,6 +956,10 @@ class ModuleScheduler:
             self.module_owned_files[module] = {t["target_files"][0] for t in tasks}
 
         self._backfill_missing_task_deps()
+
+        # 全域三層關卡（見上方 _global_tier()）：task_id → tier，跟 module
+        # 邊界無關，一次算好供 get_ready_tasks() 逐輪查詢。
+        self._task_tier: dict[str, int] = {t["id"]: _global_tier(t) for t in task_list}
 
         # module 狀態：pending → in_progress → verified / needs_reverify / failed
         self.module_status = {m: "pending" for m in self.modules}
@@ -775,9 +990,15 @@ class ModuleScheduler:
         """由 ⑦ Debug Agent 產生的 pending_fixed_bodies 指向一個
         "verified"／"failed" module 底下的 task 時呼叫（見 10a 八章）：
         把該 module 打回 "pending"，並把 `task_ids` 從 `task_done`／
-        `task_failed` 移除，讓 `get_ready_tasks()` 重新排到它們。只重開
-        `task_ids` 指名的 task，同一 module 底下其他已完成的 task 維持
-        完成狀態，不會被誤重新排程。
+        `task_failed` 移除，讓 `get_ready_tasks()` 重新排到它們。
+
+        只重開 `task_ids` 指名的 task，同一 module 底下其他已完成的
+        task 維持完成狀態，不會被誤重新排程——`get_ready_tasks()` 對
+        `task_id in self.task_done` 的檢查跟 `module_status` 是各自獨立
+        的兩道關卡，只把 module_status 改回 "pending"（不動
+        task_done／task_failed）並不足以讓已完成的 task 重新被排到，這
+        跟 `flag_for_reverify()` 的 "needs_reverify"（那個狀態只觸發重新
+        跑驗證，本來就不影響 get_ready_tasks()）是不同的機制。
         """
         self.module_status[module] = "pending"
         self.task_done -= task_ids
@@ -921,9 +1142,11 @@ class ModuleScheduler:
         return all(s in ("verified", "failed") for s in self.module_status.values())
 ```
 
-### `implement` node：串接排程器、Semaphore(1)、局部驗證
+### `implement` node：串接排程器、依 backend 分流的併發限制、局部驗證
 
-`graph/nodes/implement_node.py` 是 ⑤ 唯一的節點函式，也是全部節點裡少數不是薄封裝、直接把排程邏輯寫在 node 本身的檔案（見四章備註）。09a 落地後這個檔案（535 行）遠比下面展示的骨架複雜：多了 Python 服務 Docker 容器的啟停與熱重載同步等待（見 09a 三章、python_service/）、task 失敗根因分類（`task_failures`，見三章 State 定義）、⑦ Debug Agent 直接產生的修正程式碼套用（`pending_fixed_bodies`／`pending_file_fixes`，見 10a 八章）、scaffold 缺口的提前排除、上游模型服務異常的提早熔斷。**完整的、與程式碼同步的版本一律以 `graph/nodes/implement_node.py` 本身與 `09a_implement_agent_architecture.md`／`09b_implement_agent_code.md` 為準**；這裡只保留 LangGraph 排程層面的核心骨架，說明「排程可平行、執行序列化」這條原則怎麼落地：
+`graph/nodes/implement_node.py` 是 ⑤ 唯一的節點函式，也是全部節點裡少數不是薄封裝、直接把排程邏輯寫在 node 本身的檔案（見四章備註）。09a 落地後這個檔案（超過 1100 行）遠比下面展示的骨架複雜：多了 Python 服務 Docker 容器的啟停與熱重載同步等待（見 09a 三章、python_service/）、task 失敗根因分類（`task_failures`，見三章 State 定義）、⑦ Debug Agent 直接產生的修正程式碼套用（`pending_fixed_bodies`／`pending_file_fixes`／`pending_retranslate_tasks`，見 10a 八章）、scaffold 缺口的提前排除、上游模型服務異常的提早熔斷。**完整的、與程式碼同步的版本一律以 `graph/nodes/implement_node.py` 本身與 `09a_implement_agent_architecture.md`／`09b_implement_agent_code.md` 為準**；這裡只保留 LangGraph 排程層面的核心骨架，說明「排程可平行、依 backend 各自決定要不要序列化」這條原則怎麼落地：
+
+**併發限制不在 `implement_node.py` 這一層，而是下沉到 `translator_cli` 內部、依 backend 各自處理**：`implement_node.py` 對這一輪所有就緒 task 直接 `asyncio.gather()`，不持有任何 semaphore；qwen task 呼叫模型時，會在 `translator_cli/ollama_client.py::OLLAMA_MODEL_SEMAPHORE`（`asyncio.Semaphore(1)`）排隊序列化，Claude task 的模型呼叫不受這個限制、可以真正平行；不論哪個 backend，「讀檔→AST 替換→寫入→commit」這段收尾都會在 `translator_cli/git_ops.py::WRITE_LOCK`（`asyncio.Lock()`）底下序列化——這段快（次秒等級），序列化不影響整體吞吐量，但避免多個 task 同時寫同一個 git repo 的 race condition（見 07a 七、八章）。
 
 ```python
 # graph/nodes/implement_node.py（節錄核心骨架，Harness 局部驗證／
@@ -934,16 +1157,16 @@ from graph.scheduler import ModuleScheduler
 from translator_cli import client as translator_cli
 from translator_cli.types import FillResult
 
-MODEL_SEMAPHORE = asyncio.Semaphore(1)  # 對應硬體限制：本地模型併發數＝1（見 00 三）
-
 
 async def _run_one_task(task: dict) -> FillResult:
-    async with MODEL_SEMAPHORE:
-        return await translator_cli.fill_function(
-            target_file=task["target_files"][0],
-            description=task["description"],
-            context_files=task["target_files"],
-        )
+    # backend 分流（qwen 序列化／Claude 平行）與寫入段的 WRITE_LOCK 都在
+    # translator_cli 內部處理，這裡不需要知道、也不持有任何 semaphore。
+    return await translator_cli.fill_function(
+        translator_backend=task["translator_backend"],
+        target_file=task["target_files"][0],
+        description=task["description"],
+        context_files=task["target_files"],
+    )
 
 
 async def run(state: RefactorState) -> RefactorState:
@@ -971,7 +1194,10 @@ async def run(state: RefactorState) -> RefactorState:
         already_completed=set(state.get("completed_tasks", [])),
         already_failed=already_failed,
         already_verified_modules=set(),
-        already_failed_modules=set(),       # 見六章「已知修正」
+        # 簡化：這裡應從上一輪 partial_reports 算出真正的 verified／failed
+        # module 集合，不是寫死空集合——否則就是上方 already_failed_modules
+        # 說明的那個 bug 本身。實際計算見 graph/nodes/implement_node.py。
+        already_failed_modules=set(),
     )
 
     while not scheduler.all_done():
@@ -979,8 +1205,8 @@ async def run(state: RefactorState) -> RefactorState:
         if not ready:
             break  # 沒有可執行的 task：全部做完、卡在失敗的上游 module，或還有 needs_reverify 待處理
 
-        # 排程層可以同時把多個就緒 task 丟進 gather，
-        # 但 MODEL_SEMAPHORE(1) 保證同一時間只有一個真的在呼叫本地模型。
+        # 排程層可以同時把多個就緒 task 丟進 gather——qwen task 會在
+        # translator_cli 內部序列化，Claude task 可以真正平行（見上方）。
         results = await asyncio.gather(*(_run_one_task(t) for t in ready))
 
         for task, result in zip(ready, results):
@@ -1019,7 +1245,7 @@ async def run(state: RefactorState) -> RefactorState:
 
 **對應 00 三章的兩條規則**：
 - `_module_deps_satisfied` 保證下游 module 不會在上游通過局部驗證前被排進就緒佇列，避免疊在錯誤程式碼上的產物
-- `MODEL_SEMAPHORE = asyncio.Semaphore(1)` 是「排程可平行、執行序列化」的具體實作：`get_ready_tasks()` 可一次回傳多個就緒 task，但實際呼叫仍被 Semaphore 收斂成一個個跑
+- 「排程可平行、依 backend 各自決定要不要序列化」的具體實作：`get_ready_tasks()` 可一次回傳多個就緒 task，`asyncio.gather()` 全部送出；qwen 的實際生成請求被 `translator_cli/ollama_client.py::OLLAMA_MODEL_SEMAPHORE` 收斂成一個個跑，Claude 的模型呼叫不受這個限制
 
 > **Python 服務改跑在 Docker 容器內，不直接在 Orchestrator 所在機器上跑**：`uvicorn --reload` 在 Windows 上經常無法真正完成重啟（見八），09a 落地時改成 `python_service/process.py` 用 `docker run` 啟動容器（`python_project_path` bind mount 進容器，見二）。容器在整條 graph run 第一次進入 `implement` 時啟動，`implement`／`run_tests`／`debug → implement` 重入期間持續共用同一個容器，由 `main.py` 在整條 graph 執行結束時統一呼叫 `implement_node.stop_python_service()` 關閉（見九）——這是原始設計沒有的一層基礎設施，`refactor_harness`（⑥）健康檢查失敗時也讀取同一個容器的診斷資料（`state["service_diagnostics"]`，見三章）。
 
@@ -1109,7 +1335,7 @@ async def run(state: RefactorState) -> dict:
 
 ## 九、執行與觀察
 
-`main.py` 是整條 pipeline 的進入點：組裝 graph、初始化 `run_id`／一般 log（11a）、用 `astream()` 逐 node 執行並外接卡住偵測（`graph/stream_watchdog.py`）、收尾時關閉 Python 服務容器並寫入整條 run 的制式報告（`common/run_report.py`）。
+`main.py` 是整條 pipeline 的進入點：組裝 graph、初始化 `run_id`／一般 log（11a）、用 `astream()` 逐 node 執行並外接卡住偵測（`graph/stream_watchdog.py`）、收尾時關閉 Python 服務容器並寫入整條 run 的制式報告（`common/run_report.py`）。實際的 graph 組裝與執行拆到 `_run_pipeline()`，`main()` 本身只包一層 `reset_python_project_dir()`／`rollback_python_project_dir()`（`translator_cli/git_ops.py`，對應 `docs/refactor_bug_trace.md` #28／#29／#31）：每輪開始前把上一輪的 `python_project_path` 殘留整個改名備份、重新建立乾淨的空目錄＋`git init`，避免不同輪之間 Reduce 模組切法不同造成的殘留檔案累積；若 `_run_pipeline()` 拋出未接住的例外（代表這一輪連 `write_run_report()` 都沒跑到），`except` 區塊會把這次的半成品刪掉、把剛剛搬走的上一輪內容還原回來，避免下一輪誤把半成品當成有效產物、或讓真正有意義的舊產物被越埋越深。
 
 ```python
 # main.py
@@ -1133,34 +1359,59 @@ from graph.builder import build_graph
 from graph.nodes import implement_node
 from graph.stream_watchdog import STUCK_REPORT_SECONDS, dump_self_stack, pump_graph_stream
 from python_service.reload_probe import ensure_reload_probe_infra
+from translator_cli.git_ops import reset_python_project_dir, rollback_python_project_dir
 
 logger = logging.getLogger(__name__)
 
 
 async def main():
-    graph = build_graph()
-
-    # 一般 log 與 llm_traces.db 共用同一個 run_id（見 11a_logging_
-    # architecture.md 六章）：必須在 configure_logging() 之前產生，才能把
-    # 它閉包進 log 的 _ContextFilter，讓這條 pipeline 執行期間每一行 log
-    # 都能對回這次 run。
+    # 一般 log 與 llm_traces.db 共用同一個 run_id（見
+    # 11a_logging_architecture.md 六章）：必須在 configure_logging() 之前
+    # 產生，才能把它閉包進 _ContextFilter，讓這條 pipeline 執行期間每一行
+    # log 都能對回這次 run。
     run_id = new_run_id()
     configure_logging(run_id=run_id, file_handler=True)
 
     python_project_path = os.environ["PYTHON_PROJECT_PATH"]
-    # 一次性前置準備：必須在 scaffold（④）第一次執行之前完成（見
-    # python_service/reload_probe.py docstring、09b 二章）。冪等，
-    # main.py 每次啟動都呼叫。
+    # 對應 docs/refactor_bug_trace.md #28／#29：每輪開始前先把上一輪的
+    # 殘留內容整個改名備份、重新建立全新的空目錄＋git init，避免不同輪
+    # 之間 Reduce 模組切法不同造成的殘留檔案累積。必須在 ensure_reload_
+    # probe_infra() 之前執行——後者要在一個全新的 git repo 裡做初始
+    # commit（見該函式 docstring）。
+    backup_path = reset_python_project_dir(python_project_path, run_id)
+    try:
+        await _run_pipeline(python_project_path, run_id)
+    except BaseException:
+        # 對應 docs/refactor_bug_trace.md #31：走到這裡代表這一輪 pipeline
+        # 整個沒跑完（連 write_run_report() 都沒執行到，例如真實案例
+        # `20260906_060030_4019f4` 的 API 額度不足）——reset_python_
+        # project_dir() 這次建立的新目錄只是半成品，不該留著取代上一輪
+        # 的真實產物，也不該讓下一輪把這個半成品又搬進備份堆、真正有
+        # 意義的舊產物反而被越埋越深。刪掉這次的半成品，把剛剛搬走的
+        # 上一輪內容（如果有）還原回來，讓下一輪重新開始時看到的仍是
+        # 上一輪的真實產物。跑完整個流程、有寫出報告的情況（不論成功
+        # 或 give_up）不會走到這裡，維持現狀。
+        rollback_python_project_dir(python_project_path, backup_path)
+        raise
+
+
+async def _run_pipeline(python_project_path: str, run_id: str) -> None:
+    graph = build_graph()
+
+    # 一次性前置準備：必須在 scaffold（④）第一次執行之前完成，見
+    # python_service/reload_probe.py docstring、
+    # 09b_implement_agent_code.md 二章。冪等，main.py 每次啟動都呼叫。
     ensure_reload_probe_infra(python_project_path)
 
     initial_state = {
         "run_id": run_id,
         "java_project_path": os.environ["JAVA_PROJECT_PATH"],  # ① 解析 Agent 讀取用，見 00 五章「環境建立」
-        "python_project_path": python_project_path,  # translator-cli 寫入目標，見二、07a 二章
+        "python_project_path": python_project_path,  # translator-cli 寫入目標，見 07a 二章
         "test_dsn": os.environ.get("TEST_DB_DSN", ""),   # implement node 用
         "python_base_url": os.environ.get("PYTHON_BASE_URL", "http://localhost:8000"),  # implement node 用
         "module_list": [],
         "api_to_python_target": [],
+        "skip_excluded_overloads": [],
         "openapi_spec": {},
         "collection_readonly_path": "",
         "collection_mutation_path": "",
@@ -1178,11 +1429,13 @@ async def main():
         "partial_reports": [],
         "blocked_modules": [],
         "failed_modules": [],
+        "verified_modules": [],
         "blocked_reasons": {},
         "test_results": {},
         "service_diagnostics": None,
         "debug_rounds": [],
         "pending_fixed_bodies": {},
+        "pending_retranslate_tasks": {},
         "pending_file_fixes": [],
         "give_up_early": False,
         "unanalyzed_root_cause_modules": [],
@@ -1224,31 +1477,32 @@ async def main():
         print(f"Failed Tasks: {final_state.get('failed_tasks')}")
         print(f"Retry Count: {final_state.get('retry_count')}")
 
-        # debug_rounds／task_failures 這些逐輪累積的歷史，沒有 checkpointer
-        # 的情況下 process 一結束就會消失，上面幾行 print 也沒印出
-        # debug_rounds——這裡落地成一份人工事後看得到的制式報告，不論
-        # 成功或 give_up 都寫。JSON 給程式／未來工具解析，Markdown 是給人
-        # 直接看的總覽，見 common/run_report.py。
+        # 見 common/run_report.py：debug_rounds／task_failures 這些逐輪
+        # 累積的歷史，沒有 checkpointer 的情況下 process 一結束就會消失，
+        # 上面幾行 print 也沒有印出 debug_rounds——這裡落地成一份人工
+        # 事後看得到的制式報告，不論成功或 give_up 都寫。兩份各自獨立：
+        # JSON 給程式／未來工具解析，Markdown 是給人直接看的總覽。
         report_path = write_run_report(final_state)
         summary_path = write_human_readable_report(final_state)
         print(f"Run Report (JSON): {report_path}")
         print(f"Run Summary (Markdown): {summary_path}")
     finally:
         # Docker 容器不會隨 Python process 結束自動清理，不論
-        # graph 執行成功或拋出例外都要收尾，見六、09a 三章「Python 服務
-        # 只啟動一次」、graph/nodes/implement_node.py::stop_python_service()。
+        # graph 執行成功或拋出例外都要收尾，見 09a 三章
+        # 「Python 服務只啟動一次」、graph/nodes/implement_node.py
+        # stop_python_service()。
         await implement_node.stop_python_service()
 
 
 if __name__ == "__main__":
-    # Windows 上避免事件迴圈關閉錯誤（見八）
+    # Windows 上避免事件迴圈關閉錯誤（見 01_langgraph_architecture.md 八）
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
     asyncio.run(main())
 ```
 
-**跟七章的極簡 stub 慣例不同，`initial_state` 把 `RefactorState` 全部欄位都顯式初始化**（不是只列進入點必要的那幾個）：LangGraph 的 `TypedDict` state 沒有強制要求每個 key 一開始就存在，但缺欄位的 state 傳給某個提早讀取該欄位的 node（例如平行分支 node 之間互相不知道彼此進度）容易得到不直觀的 `KeyError`，顯式全部初始化成空值／預設值，讓每個 node 隨時能安全用 `.get()` 或直接索引讀取。三章 State 定義新增的每個欄位（`run_id`／`python_project_path`／`skipped_interfaces`／`task_failures`／`service_diagnostics`／`debug_rounds`／`pending_fixed_bodies`／`pending_file_fixes`／`give_up_early`／`unanalyzed_root_cause_modules`）都必須同步補進這裡，否則第一個讀到該欄位的 node 會直接 `KeyError`（見三章結尾備註）。
+**跟七章的極簡 stub 慣例不同，`initial_state` 把 `RefactorState` 全部欄位都顯式初始化**（不是只列進入點必要的那幾個）：LangGraph 的 `TypedDict` state 沒有強制要求每個 key 一開始就存在，但缺欄位的 state 傳給某個提早讀取該欄位的 node（例如平行分支 node 之間互相不知道彼此進度）容易得到不直觀的 `KeyError`，顯式全部初始化成空值／預設值，讓每個 node 隨時能安全用 `.get()` 或直接索引讀取。三章 State 定義新增的每個欄位（`run_id`／`python_project_path`／`skip_excluded_overloads`／`skipped_interfaces`／`task_failures`／`service_diagnostics`／`verified_modules`／`debug_rounds`／`pending_fixed_bodies`／`pending_retranslate_tasks`／`pending_file_fixes`／`give_up_early`／`unanalyzed_root_cause_modules`）都必須同步補進這裡，否則第一個讀到該欄位的 node 會直接 `KeyError`（見三章結尾備註）。
 
 ### `ainvoke()` → `astream()`：卡住偵測
 
