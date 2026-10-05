@@ -20,3 +20,24 @@ local_uploads/
 # 人工填值模板產生過程的執行期備份，跟 logs/ 同一類「不進 git 的執行期
 # 產物」，之前漏加進來。
 backups/
+
+# 環境變數檔：.env 以外的變體（.env.local 等）也不進 git
+.env.*
+
+# Claude Code 的本機設定（含本機路徑與個人的指令允許清單）
+.claude/settings.local.json
+
+# 工具快取、編輯器設定、其他執行期產物
+.ruff_cache/
+.idea/
+.vscode/
+node_modules/
+*.db
+*.sqlite
+
+# partial_verify.py 的暫存 collection（正常跑完會自己刪除，中途中斷才會殘留）
+postman/partial_verify_*.json
+
+# 臨時比對輸出與個人試驗用資料夾
+regress_check*.txt
+scratch_demo/
