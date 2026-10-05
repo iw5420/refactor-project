@@ -2,6 +2,26 @@
 
 **English** | [繁體中文](README.md)
 
+> **79 functions, 10 agents, translated from Java to Python automatically and verified by the same test suite. Best run: 20 of 25 tests passed.**
+> Three versions, dozens of runs, with success rates, cost, and hours all published, including what it can't do.
+
+## Highlights
+
+- **Multi-agent division of labor.** 10 independent agents wired into a directed graph by LangGraph; parsing and recording, design and planning run in parallel. Code controls the flow and the LLM is used only where judgment is needed; half of the agents never call AI.
+- **Tests wrapped around the refactor.** Record the Java service's responses first; the Python service counts as correct only if it passes the same tests.
+- **Auto-generated spec + hand-filled collection, test scope aligned with translation scope.** The OpenAPI spec comes from the running Java service, and write cases are filled with real data by a human; for the 9 APIs a human marked as not tested, the 18 methods used only by them are excluded from translation automatically, and all other 24 APIs have a test case (24/24).
+- **Found and removed the real bottleneck.** Version 3 lets Claude read the Java source directly, and the average success rate of the top three runs reaches **76%**.
+- **Three gates, in order.** Foundation parts → business logic → top-level entry points; later layers read the already-translated Python.
+- **Map-reduce for large Claude jobs.** When the input is too big for one prompt, it is split along natural boundaries (controllers, API groups), analyzed in parallel, then merged for cross-boundary decisions; concurrency is computed from the CPU core count minus one.
+- **Cloud + local models, automatic fallback.** When the local `qwen2.5-coder:32b` fails, it switches to Claude and the pipeline keeps going.
+- **Every AI call is traceable.** A `running` record is written before the call goes out, then completed under the same `trace_id` with the response, tokens, and latency, so a hung or timed-out call still leaves its prompt behind. One SQLite database with an FTS5 full-text index records both Claude and the local model; `llmlog` searches it and tags hallucinations and format errors.
+- **Verify in 1–2 minutes after an edit.** Docker hot reload, and `partial_verify.py` skips rerunning the whole pipeline.
+- **An honest experiment log.** About 372 hours, about NT$100 per run, about NT$3,700 in total, with the failures written down too.
+
+---
+
+## About the Project
+
 A multi-agent pipeline that automatically translates a Java Spring Boot backend into a Python FastAPI backend, and uses "tests wrapped around the refactor" to verify the translated service behaves like the original.
 
 This is an experiment. The goal is to find out how far fully automated AI refactoring can actually go, and how much time and money it costs. The conclusions are in the last section.
