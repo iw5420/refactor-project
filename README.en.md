@@ -13,7 +13,7 @@
 - **Found and removed the real bottleneck.** Version 3 lets Claude read the Java source directly, and the average success rate of the top three runs reaches **76%**.
 - **Three gates, in order.** Foundation parts → business logic → top-level entry points; later layers read the already-translated Python.
 - **Map-reduce for large Claude jobs.** When the input is too big for one prompt, it is split along natural boundaries (controllers, API groups), analyzed in parallel, then merged for cross-boundary decisions; concurrency is computed from the CPU core count minus one.
-- **Cloud + local models, automatic fallback.** When the local `qwen2.5-coder:32b` fails, it switches to Claude and the pipeline keeps going.
+- **Cloud + local models, automatic fallback.** Repository-layer (database query) functions go to the local `qwen2.5-coder:32b`; if it fails, the pipeline switches to Claude and keeps going.
 - **Every AI call is traceable.** A `running` record is written before the call goes out, then completed under the same `trace_id` with the response, tokens, and latency, so a hung or timed-out call still leaves its prompt behind. One SQLite database with an FTS5 full-text index records both Claude and the local model; `llmlog` searches it and tags hallucinations and format errors.
 - **Verify in 1–2 minutes after an edit.** Docker hot reload, and `partial_verify.py` skips rerunning the whole pipeline.
 - **An honest experiment log.** About 372 hours, about NT$100 per run, about NT$3,700 in total, with the failures written down too.
@@ -40,7 +40,7 @@ Core principle: **record the responses of the running Java service first (golden
 |---|---|---|
 | Orchestration | LangGraph 1.2.6 | Wires the agents into a directed graph with parallel branches, a retry loop, and a manual-fill gate |
 | Cloud model | Claude API (`anthropic` 0.117.0, `claude-sonnet-4-6` in practice) | Parsing, design, translation (the vast majority of functions), debugging |
-| Local model | ollama + `qwen2.5-coder:32b` (behind an nginx token-auth proxy) | Originally translated everything; the current design reserves it for the repository layer only, and in practice it now falls back to Claude |
+| Local model | ollama + `qwen2.5-coder:32b` (behind an nginx token-auth proxy) | Translates repository-layer (database query) functions; falls back to Claude on failure |
 | Java parsing | `javalang` | Parses Java source, builds the call graph, extracts method source |
 
 ### Testing and verification
@@ -133,7 +133,7 @@ Java project
 | **③ Design Agent** | Designs the Python project's directories, files, and each function's signature | Yes (Claude) |
 | **[P] Plan Agent** | Orders the translation work and finds, for each function, the other code it uses | No (purely mechanical) |
 | **④ Scaffold Agent** | Creates directories and empty functions from the design, and generates table models from Java entities | No (purely mechanical) |
-| **⑤ Implement Agent** | Translates each function to Python from the Java source; three gates, the next gate starts only after the previous one fully completes | Yes (Claude; the repository layer is designed for the local model) |
+| **⑤ Implement Agent** | Translates each function to Python from the Java source; three gates, the next gate starts only after the previous one fully completes | Yes (Claude; the repository layer uses the local model, falling back to Claude on failure) |
 | **⑥ Test-Run Agent** | Runs the same tests against the Python service, compares with golden output, produces a report | No |
 | **⑦ Debug Agent** | Reads the failure report and the code, finds the cause, writes and applies the fix directly | Yes (Claude) |
 

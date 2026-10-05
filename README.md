@@ -13,7 +13,7 @@
 - **找到並拿掉真正的瓶頸。** 第三版直接讓 Claude 看 Java 原始碼翻譯，最高三次平均成功率高達 **76%**。
 - **三關依序翻譯。** 基礎零件 → 業務邏輯 → 最上層入口，後面的層直接讀前面已翻好的 Python。
 - **大批次 Claude 任務用 map-reduce。** 輸入太大、不能整包塞進 prompt 時，依自然邊界（Controller、API 分組）切批平行分析，再彙整做跨邊界判斷；並行數依 CPU 核心數 − 1 動態計算。
-- **雲端＋本地模型，失敗自動退回。** 本地 `qwen2.5-coder:32b` 出錯時自動切到 Claude，流程不中斷。
+- **雲端＋本地模型，失敗自動退回。** repository 層（資料庫查詢）的函式交給本地 `qwen2.5-coder:32b` 翻譯，出錯時自動切到 Claude，流程不中斷。
 - **每次 AI 呼叫都可追溯。** 呼叫前先寫入 `running` 紀錄，結束後以同一個 `trace_id` 補上回應、token、耗時，卡死或逾時的呼叫也留得下 prompt。SQLite＋FTS5 全文索引統一記錄 Claude 與本地模型，`llmlog` 可搜尋，標記幻覺、格式錯誤。
 - **改完 1～2 分鐘驗證。** Docker 熱重載，`partial_verify.py` 免重跑整條流程。
 - **誠實的實驗紀錄。** 約 372 小時、每輪約 NT$100、累計約 NT$3,700，連做不到的部分也寫明。
@@ -38,7 +38,7 @@
 |---|---|---|
 | 流程編排 | LangGraph 1.2.6 | 把各 Agent 串成有向圖，含平行分支、重試迴圈、人工填值關卡 |
 | 雲端模型 | Claude API（`anthropic` 0.117.0，實際使用 `claude-sonnet-4-6`） | 解析、設計、翻譯（絕大部分函式）、除錯 |
-| 本地模型 | ollama + `qwen2.5-coder:32b`（前面掛 nginx 做 token 驗證） | 原本負責全部翻譯；現行設計僅留給 repository 層，實測已退回 Claude |
+| 本地模型 | ollama + `qwen2.5-coder:32b`（前面掛 nginx 做 token 驗證） | 翻譯 repository 層（資料庫查詢）的函式；出錯時自動退回 Claude |
 | Java 解析 | `javalang` | 解析 Java 原始碼、建立呼叫圖、抽取方法原始碼 |
 
 ### 測試與驗證
@@ -129,7 +129,7 @@ Java 專案
 | **③ 架構設計 Agent** | 設計 Python 專案的目錄、檔案、每個函式的簽名 | 是（Claude） |
 | **[P] Plan Agent** | 排好翻譯順序，替每個函式找出它會用到的其他程式 | 否（純機械） |
 | **④ 骨架實作 Agent** | 依設計建立目錄和空函式，並從 Java entity 產生資料表模型 | 否（純機械） |
-| **⑤ 功能改寫 Agent** | 照 Java 原始碼把每個函式翻成 Python；分三關，上一關全完成才進下一關 | 是（Claude；repository 層設計上用本地模型） |
+| **⑤ 功能改寫 Agent** | 照 Java 原始碼把每個函式翻成 Python；分三關，上一關全完成才進下一關 | 是（Claude；repository 層用本地模型，失敗退回 Claude） |
 | **⑥ 測試執行 Agent** | 對 Python 服務跑同一份測試，比對 golden output，產出報告 | 否 |
 | **⑦ Debug Agent** | 看失敗報告與程式碼，找出原因，直接寫出並套用修正 | 是（Claude） |
 
