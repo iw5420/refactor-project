@@ -8,40 +8,49 @@
 ## 一、整體流程概覽
 
 ```
+【啟動前】main.py：把上一輪的 python_project_path 整個改名備份（.bak-{run_id}）→ 建全新空目錄＋git init
+          → 佈署 _reload_probe_wrapper.py／.gitignore（見五章）
+     ↓
 [Java 專案]
      ↓
 [A] Spec Agent       → 啟動 Java 服務，取得 OpenAPI 3.0 JSON
      ↓
-[B] Collection Agent → 將 OpenAPI 轉換為兩份 Postman Collection
-     ↓                 （collection_readonly + collection_mutation；人工填值/skip 關卡在此定案，見 03a）
+[B] Collection Agent → 階段一：產生人工填值模板  ── 仍有待填／待 skip 的 endpoint ──▶ 暫停（await_manual_fill，
+     ↓                 階段二：鏈式依賴偵測、套用人工填值         人工填完後重跑；階段二後還有一道防禦性關卡）
+     ↓                 產出 collection_readonly + collection_mutation（見 03a）
 ① 解析 Agent         → 輸出：模組清單 + 業務邏輯文件 + API 對應表（skip 呼叫鏈排除需讀取上一步已定案的 skip 清單，見 04a）
      ↓
   ┌──┴──────────────────────────┐  ← 可平行執行（② 不依賴③的輸出，③ 不依賴 golden_output，兩者互不相依，見 05a 十一章）
 ② 測試 Agent                   ③ 架構設計 Agent
-（Harness 錄製端，對 Java       （輸出：Python 專案結構，技術棧採用
- 服務執行 Postman，記錄          已定案的 FastAPI+SQLAlchemy，
- golden output）                 + 模組 interface + route_to_file_mapping）
+（Harness 錄製端，自己啟動       （輸出：Python 專案結構，技術棧採用
+ Java 服務執行 Postman，         已定案的 FastAPI+SQLAlchemy，
+ 記錄 golden output）            + 模組 interface + java_index + route_to_file_mapping）
   └──────────┬───────────────────┘
-             ↓
+             ↓  ② 與 ③ 都完成才往下（圖上單一合流點）
   ┌──┴──────────────────┐  ← 可平行執行
 [P] Plan Agent          ④ 骨架實作 Agent
- （產出 task list，       （建立目錄與骨架）
-  含分層與翻譯後端標記）
+ （機械：phase／backend    （建立目錄與骨架；失敗 → 直接 give_up，
+  標記 + 呼叫鏈座標）       不進重試迴圈）
   └──────────┬──────────┘
-             ↓
+             ↓  [P] 與 ④ 都完成才往下
 ⑤ 功能改寫 Agent     → 直接餵「呼叫鏈 + 完整 Java 原始碼」翻譯，不經 LLM 語意摘要（見六章、`refactor_plan.md`），
-                        分三層全域關卡執行：
-                        Phase 1（entity/dto 機械產生不需模型；repository 用 qwen；utils 用 Claude API）
-                          全部完成、通過語法驗證後才釋放 service
-                        service（Claude API；呼叫鏈遇到 Phase 1 已完成層直接讀真實 Python 原始碼）
-                          全部完成後才釋放 controller/router
-                        controller/router（Claude API；呼叫鏈遇到 service 直接讀真實 Python 原始碼）
-             ↓
-⑥ 測試執行 Agent     → 【Harness 驗證端】對 Python 服務執行 Postman，比對 golden output
-             ↓
-⑦ Debug Agent        → 讀取 Harness report，分析 diff，定位問題，直接寫出並套用修正後的程式碼（⑤ 完全退出這個迴圈，見 10a）
-             ↓
-            ✅ 完成
+   ↑                    分三層全域關卡執行：
+   │                    Phase 1（entity/dto 機械產生不需模型；repository 設計上用 qwen；utils 用 Claude API）
+   │                      全部完成、通過語法驗證後才釋放 service
+   │                    service（Claude API；呼叫鏈遇到 Phase 1 已完成層直接讀真實 Python 原始碼）
+   │                      全部完成後才釋放 controller/router
+   │                    controller/router（Claude API；呼叫鏈遇到 service 直接讀真實 Python 原始碼）
+   │         ↓        （整個 ⑤／⑥ 期間，目標 Python 服務跑在同一個 Docker 容器內，見四章）
+   │  ⑥ 測試執行 Agent → 【Harness 驗證端】對 Python 服務執行 Postman，比對 golden output
+   │         ↓
+   │      全部通過 ───────────────────────────────────▶ ✅ 完成
+   │         ↓ 有失敗、且 retry_count 未達上限（MAX_RETRY=1）
+   └──  ⑦ Debug Agent → 讀取 Harness report，分析 diff，定位問題，直接寫出並套用修正後的程式碼，
+                         回到 ⑤ 套用後再由 ⑥ 重驗（⑤ 不重新翻譯，見 10a）
+             ↓ 超過重試上限／⑦ 判定所有問題都不可修
+          give_up（通知人工，目前僅印出訊息）
+
+【結束時】main.py：寫整條 run 的報告（logs/reports/）、關閉 Docker 容器；整輪失敗時還原上一輪的備份目錄
 ```
 
 **核心原則**：「測試夾住重構」— 先記錄 Java 服務的現有行為（golden output），重構完成後驗證 Python 服務的行為與之一致。
@@ -72,7 +81,7 @@
 5. **[P] Plan Agent（06）**：依賴 ① ＋ ③ 的輸出，拆解 Agent ⑤ 的 task list
 6. **translator-cli（07）**：與 3～5 沒有直接資料相依（介面契約不需要真實函式簽名就能設計），可平行開發；但完整驗證填空契約是否設計對，要等 ③ 的真實輸出穩定後才能做，建議排在 ④／⑤ 開始前的最後一步收斂
 7. **④ 骨架實作 Agent（08）＋ ⑤ 功能改寫 Agent（09）**：兩者都直接呼叫 translator-cli，且 ⑤ 的輸入是 [P] 的 task list，要等 3～6 都就緒才能真正跑起來
-8. **⑦ Debug Agent（10）**：放最後做，這塊目前完全沒有 prompt 雛型，需要最多來回調整與測試——④／⑤ 的呼叫介面（translator-cli）已在步驟 6 穩定，不會出現「一邊調 Debug prompt 一邊還在改底層工具介面」的互相干擾
+8. **⑦ Debug Agent（10）**：放最後做，prompt 需要最多來回調整與測試——④／⑤ 的呼叫介面（translator-cli）已在步驟 6 穩定，不會出現「一邊調 Debug prompt 一邊還在改底層工具介面」的互相干擾
 9. **LangGraph 整合測試**：`01` 七章的 stub-first 策略，確認整張圖的節點、平行分支、retry 迴圈都接對，再逐一把 stub 換成真實實作
 
 ---
@@ -157,19 +166,25 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 
 ```
 你的電腦（Orchestrator 所在機器）
-├── LangGraph Orchestrator（輕量 Python 流程控制）
-├── Claude API 呼叫（雲端，解析/設計/Debug Agent）
-├── Java 服務（本機直接執行：[A] Spec Agent 啟動的 java -jar）
+├── LangGraph Orchestrator（輕量 Python 流程控制）＋ logs/（orchestrator.log、llm_traces.db、reports/）
+├── Claude API 呼叫（雲端）：① 解析、③ 設計、[B] 鏈式依賴偵測、⑦ Debug，
+│                            以及 ⑤ 絕大部分函式的翻譯（`translator_backend="claude"`，經 translator-cli）
+├── Java 服務（本機 `java -jar`，連測試 DB；[A] 與 ② 各自用 JavaServiceProcess 啟動，用完即關）
+├── Node.js 工具：openapi-to-postmanv2、newman（Harness 與 [B] 用）
+├── PostgreSQL 測試 DB `<名稱>_TEST`（Java 服務、Python 服務、Harness 的 seed／truncate 都連這顆）
 ├── Python 服務（Docker 容器內執行，非本機直接跑——見下方備註）
+│     └── bind mount：python_project_path（獨立 git repo，容器內路徑 /srv；translator-cli 寫入、容器熱重載）
 └── translator-cli（Python 套件，in-process 呼叫，非獨立子行程——見 11a 六章「run_id：執行模型查證」對實際程式碼的核對）
       ├── 骨架生成模式（④）：純機械組裝，全程留在這台機器，不發出任何請求
-      └── 填空模式（⑤）：HTTP（帶 Authorization: Bearer <token>）→ 另一台 Mac
-                            └── nginx（反向代理，驗證 token）
-                                 └── ollama（僅接受來自 nginx 的本機轉發）
-                                      └── qwen2.5-coder:32b（程式碼實作）
+      └── 填空模式（⑤）：依每個 task 的 `translator_backend` 分派
+            ├── "claude"：呼叫上方 Claude API（utils／service／controller，以及 qwen 失敗時的退回）
+            └── "qwen"（設計上僅 repository 層）：HTTP（帶 Authorization: Bearer <token>）→ 另一台 Mac
+                  └── nginx（反向代理，驗證 token）
+                       └── ollama（僅接受來自 nginx 的本機轉發）
+                            └── qwen2.5-coder:32b（程式碼實作）
 ```
 
-> 本地模型機器對外只曝露 nginx 的 port，ollama 自己的 port（預設 `11434`）不對外開放，只接受 nginx 轉發進來的請求；translator-cli 端的 `OLLAMA_BASE_URL` 因此指向的是 nginx，而不是 ollama 本身。這條連線只有填空模式會用到，骨架生成模式不涉及。
+> 本地模型機器對外只曝露 nginx 的 port，ollama 自己的 port（預設 `11434`）不對外開放，只接受 nginx 轉發進來的請求；translator-cli 端的 `OLLAMA_BASE_URL` 因此指向的是 nginx，而不是 ollama 本身。這條連線只有填空模式中 `translator_backend="qwen"` 的 task 會用到，骨架生成模式與 Claude 路徑都不涉及；沒有任何 qwen task 時，`implement` 不會探測這條連線。
 >
 > **Python 服務改跑在 Docker 容器內，不是「日後同樣跑在這台機器」**：這是 09a／09b 落地 ⑤ 時才定案、比最初規劃更晚確定的環境依賴。原因是 `uvicorn --reload` 在 Windows 上經常無法真正完成重啟（Windows 的 `CTRL_C_EVENT` 送達機制不可靠，已用真實環境重現），⑤ 局部驗證依賴的熱重載同步屏障因此在 Windows 上不穩定；改成容器內的 Linux 環境後，uvicorn 走穩定的 POSIX `SIGTERM` 重啟路徑，不受這個限制影響。`python_service/process.py` 的 `PythonServiceContainer` 用 `docker run` 啟動，把 `python_project_path` bind mount 進容器（容器內固定路徑 `/srv`），由 `implement_node.run()` 在整條 graph run 第一次進入 `implement` 時啟動、`main.py` 收尾時統一關閉——不需要人工手動啟停。完整設計見 `09a_implement_agent_architecture.md` 三章「熱重載競態」、`09b_implement_agent_code.md`。
 
@@ -183,7 +198,7 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 - Python 虛擬環境，安裝 `langgraph` 和 `anthropic`（Claude API 呼叫走 `anthropic` SDK 直接呼叫，不經 `langchain`，見 `01_langgraph_architecture.md` 二章）
 - Node.js 環境，安裝 `openapi-to-postmanv2` 和 `newman`（全域安裝）
 - Claude API 金鑰，設定在環境變數
-- PostgreSQL client 工具（`psql`），用於 Harness 的 DB seed 操作
+- PostgreSQL client 工具（`pg_dump`／`psql`），只用於一次性的 schema 同步（`DbEnvironment.sync_schema()`）；Harness 每次驗證前的 seed／truncate 是直接用 `psycopg2` 連線執行，不依賴 `psql`（見 `02a_harness_architecture.md` 十四章）
 - **Docker**（Docker Desktop 或等價的 Docker Engine）：⑤ 執行期間目標 Python 服務跑在 Docker 容器內，不是本機直接 `uvicorn`，見四章備註、下方「Python 服務端」、`09a_implement_agent_architecture.md` 三章
 
 **另一台 Mac（程式碼實作機器）**
@@ -194,7 +209,7 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 
 **你的電腦（額外）**
 - translator-cli（自製工具）與其依賴（AST 處理套件、git）
-- Python 目標專案（translator-cli 寫入目標）：與 `refactor-project/`、Java 專案複製版同層、獨立的第三個資料夾，有自己的 `.git`（`git init` 過、沒有任何 commit），`.env` 新增 `PYTHON_PROJECT_PATH` 指向這個目錄——完整目錄配置與一次性準備步驟見 `07a_translator_cli_architecture.md` 二章「新輸入：python_project_path」
+- Python 目標專案（translator-cli 寫入目標）：與 `refactor-project/`、Java 專案複製版同層、獨立的第三個資料夾，`.env` 新增 `PYTHON_PROJECT_PATH` 指向這個目錄。**這個目錄不用手動準備**：`main.py` 每輪開始前會把上一輪的內容整個改名成 `{目錄名}.bak-{run_id}` 備份（不刪除），再建立全新的空目錄並 `git init`（`translator_cli/git_ops.py::reset_python_project_dir()`）——完整目錄配置見 `07a_translator_cli_architecture.md` 二章「新輸入：python_project_path」
 - 確認 `.env` 的 `OLLAMA_API_KEY` 與另一台 Mac 上 nginx 設定的 token 一致
 
 → translator-cli 的安裝與設定細節見 `07a_translator_cli_architecture.md`。
@@ -211,10 +226,10 @@ Agent ④／⑤ 共用的自製工具，取代通用的 chat 式編輯工具（�
 - 啟動方式：**直接 `java -jar` 執行已打包的 jar**，不需 Maven build（加入上述依賴後需先重新 `mvn package` 一次，之後才是單純 `java -jar`）
 - `fixtures/seed.sql`：**已完成**，手動撰寫的可重複套用 INSERT 腳本（非 `pg_dump` 匯出格式），供 Harness 每次驗證前 truncate + 重灌用
 
-**Python 服務端（一次性準備，Docker 容器）**
+**Python 服務端（Docker 容器，全自動）**
 - 不需要人工手動啟動 Python 服務——`python_service/process.py`（`PythonServiceContainer`）由 `implement_node.run()` 在整條 graph run 第一次進入 `implement` 時自動 `docker run` 啟動，`main.py` 收尾時統一關閉，見四章備註、`09a_implement_agent_architecture.md` 三章
-- `python_project_path` 底下需要先完成一次性準備，且必須排在 `generate_scaffold()`（④）第一次執行之前：新增 `.gitignore`（至少含 `_reload_probe_wrapper.py`／`_reload_token.py` 兩個檔名）並 `commit` 一次，再放入 `_reload_probe_wrapper.py`（固定樣板，掛載真正的 `app.main.app` 並額外提供 `/__reload_probe__` 熱重載同步探測端點，不需要人工編寫內容）——順序顛倒會讓 translator-cli 的 precondition 檢查（`git status --porcelain` 非空即拒絕寫入）在骨架階段就直接失敗；完整機制見 09a 三章「熱重載競態」「這兩個檔案必須排除在衝突偵測之外」
-- 容器內只安裝已知的最小基線套件集合（`fastapi`／`uvicorn[standard]`／`sqlalchemy`／`psycopg2-binary`，見 `python_service/process.py::BASELINE_PACKAGES`）——**目前仍是待解決缺口**：若目標專案實際還需要更多依賴（如 `alembic`），還沒有機制能自動偵測、安裝進容器，見 `09b_implement_agent_code.md` 九章
+- `python_project_path` 的前置準備由 `main.py` 在 `graph` 執行前自動完成，且必須排在 `generate_scaffold()`（④）第一次執行之前：新增 `.gitignore`（含 `_reload_probe_wrapper.py`／`_reload_token.py`／`__pycache__/`）並 `commit` 一次，再放入 `_reload_probe_wrapper.py`（固定樣板，掛載真正的 `app.main.app` 並額外提供 `/__reload_probe__` 熱重載同步探測端點，不需要人工編寫內容；`python_service/reload_probe.py::ensure_reload_probe_infra()`，冪等）——順序顛倒會讓 translator-cli 的 precondition 檢查（`git status --porcelain` 非空即拒絕寫入）在骨架階段就直接失敗；完整機制見 09a 三章「熱重載競態」「這兩個檔案必須排除在衝突偵測之外」
+- 容器內只安裝已知的最小基線套件集合（`fastapi`／`uvicorn[standard]`／`sqlalchemy`／`psycopg2-binary`／`python-multipart`，見 `python_service/process.py::BASELINE_PACKAGES`）——**目前仍是待解決缺口**：若目標專案實際還需要更多依賴（如 `alembic`），還沒有機制能自動偵測、安裝進容器，見 `09b_implement_agent_code.md` 九章
 - 容器啟動指令固定 `uvicorn _reload_probe_wrapper:wrapper_app --reload`，不是直接 `uvicorn app.main:app --reload`——見上一項的 wrapper 檔案
 
 **測試 DB 準備（獨立於正式/開發 DB）**
@@ -340,6 +355,15 @@ Python（FastAPI + SQLAlchemy）服務統一讀環境變數 `DATABASE_URL`（值
 
 - `common/java_annotations.DATA_CLASS_ANNOTATIONS`：`@Entity`／`@Embeddable`／`@MappedSuperclass`／`@Data`／`@Value`／`@Getter`／`@Setter`／`@Builder`／`@NoArgsConstructor`／`@AllArgsConstructor`／`@RequiredArgsConstructor` 的聯集，只是「大概率是資料容器」的觸發訊號，不是最終判斷依據——各自呼叫端仍需要自己的方法清單／欄位／`InterfaceSpec` 覆蓋範圍等資訊才能下最終判斷
 - `common/java_annotations.JPA_ENTITY_ANNOTATIONS`：`DATA_CLASS_ANNOTATIONS` 的子集（`@Entity`／`@Embeddable`／`@MappedSuperclass`），只有 ③ 需要單獨判斷——DB schema 欄位層級規格不是③的職責（見 05a 九章），偵測到這個子集時③直接跳過、不渲染，交由④直接從 DB 取得；① 不需要這個區分（04a 只需要「大概率是資料容器」這個粗粒度判斷）
+
+### Spring Data 基底 repository 對應（共用工具）
+
+Java 的 repository 介面只要繼承 `JpaRepository<Entity, ID>`／`CrudRepository`／`PagingAndSortingRepository`，就自動擁有 `findAll`／`findById`／`save`／`deleteById`／`delete`／`count`／`existsById` 這幾個方法，原始碼裡沒有方法本體。① 的呼叫圖（要辨識「呼叫到的是繼承來的方法」）、③ 的設計（決定哪個 repository 類別該繼承基底類別、把繼承來的方法登記進 `java_index`）、④ 的骨架生成（`translator_cli/scaffold.py` 決定要不要把類別宣告成 `BaseRepository[Entity]`）三處必須用**同一份**方法名稱對照與同一個合成座標格式，兩邊稍有出入就對不上，因此集中到 `common/jpa_base_repository.py`：
+
+- `BaseRepository[T]`：Python 端對應 Java `JpaRepository<T, ID>` 的泛型基底類別（生成專案固定路徑 `app/core/base_repository.py`，機械產生、不經 LLM），repository 類別繼承它並指定 `model`，就自動擁有 `find_all`／`find_by_id`／`save`／`delete_by_id`／`delete`／`count`／`exists_by_id`
+- `JPA_BASE_METHOD_NAME_MAP`：Java 方法名稱 → Python 方法名稱的固定對照（Spring Data 這幾個基底介面的公開方法是固定清單，不隨專案而異）
+- `detect_jpa_base_entity()`／`synthetic_java_method_id()`：偵測繼承並取得 entity 型別、組出沒有真實 Java 檔案位置的繼承方法的合成座標
+- 對應 `docs/refactor_bug_trace.md` #10／#16；`InterfaceSpec.jpa_base_entity` 把這個資訊帶給 ④
 
 ### 檔案讀寫編碼慣例
 
@@ -519,9 +543,12 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 | `02a_harness_architecture.md` | Harness 詳細設計：Recorder / Verifier、Masker、DiffEngine、Report 格式、DB 環境、Route Mapping 演算法 |
 | `02b_harness_code.md` | Harness 各模組的實際程式碼實作 |
 | `03a_spec_collection_agent_architecture.md` | [A] Spec Agent / [B] Collection Agent 詳細設計：Java 服務啟動與 `/v3/api-docs` 擷取步驟、OpenAPI → Postman Collection 轉換流程、LLM 填值邏輯、鏈式依賴處理 |
-| `03b_spec_agent_code.md` | [A] Spec Agent / [B] Collection Agent 的實際程式碼實作 |
+| `03b_spec_agent_code.md` | [A] Spec Agent 的實際程式碼實作，以及 [A]／[B] 共用的套件總覽、`types.py`／`exceptions.py` |
+| `03c_collection_agent_code.md` | [B] Collection Agent 的實際程式碼實作 |
+| `03_spent_bug_log.md`／`03_spent_cost_estimate.md` | 03b／03c 開發期間的 bug 記錄與 Claude API 成本估算 |
 | `04a_parse_agent_architecture.md` | ① 解析 Agent 詳細設計：模組拆分邏輯、業務邏輯摘要產出方式、依賴關係判定 |
 | `04b_parse_agent_code.md` | ① 解析 Agent 的實際程式碼實作 |
+| `04b_parse_agent_code_flow.md` | ① 解析 Agent 的執行流程速覽（呼叫誰 → 做什麼 → 產出什麼） |
 | `05a_design_agent_architecture.md` | ③ 架構設計 Agent 詳細設計：Python 專案結構、interface 定義規格（檔案相對路徑＋函式簽名層級）、route_to_file_mapping 產出邏輯 |
 | `05b_design_agent_code.md` | ③ 架構設計 Agent 的實際程式碼實作 |
 | `06a_plan_agent_architecture.md` | [P] Plan Agent 詳細設計：task list 拆解演算法、方法清單覆蓋率檢查、依賴排序 |
@@ -538,6 +565,9 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 | `11b_logging_code.md` | 全域 log 機制的實際程式碼實作，含 `llmlog` CLI |
 | `refactor_call_chain_implement_prompt.md` | ⑤ 改用「呼叫鏈＋完整原始碼」取代 `[P]` LLM 摘要的原始交接文件：問題診斷、新方案構想、既有基礎設施盤點 |
 | `refactor_plan.md` | 承接上一份文件的定案設計：三層全域關卡分階段翻譯、呼叫鏈邊界規則、Agent 職責分工、qwen／Claude API 雙後端分工（含真實案例實測數據）、驗證閘門取捨。已落地進 `06a`／`07a`／`09a`／`01`（`08a` 因④職責不變而未動），剩餘未收斂項目見該文件六章 |
+| `refactor_bug_trace.md` | 新設計（呼叫鏈＋三層關卡）真實重跑後的 bug 追蹤表 |
+| `09b_bug_trace.md` | 舊設計（09a／09b）端對端驗證的 bug 追蹤表 |
+| `refactor_result.md`／`refactor_result_detail.md` | 重構成果報告：白話版（改了什麼、結果、花費、心得）與細節版（三個版本對照、逐輪數字、結構圖） |
 
 ---
 
@@ -552,7 +582,7 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 | 進入點 | `python main.py` | `python partial_verify.py` |
 | 涵蓋範圍 | ①～⑦ 全部 Agent，`postman/collection_readonly.json`／`collection_mutation.json` 全量 endpoint | 只有 ⑥（Harness 驗證），跳過 ①～⑤／⑦；只驗證從完整 collection 動態挑出的子集（`--list`／`--items`／`--batch`／`--collection`，見下方「怎麼挑案例」） |
 | 驗證的是什麼 | 整條 pipeline（含這次 ⑤／⑦ 的生成／修正品質）是否正確 | `python_project_path` 底下**目前已經存在**的程式碼，對「挑選出來的這幾個 case」是否正確——不驗證程式碼是怎麼來的 |
-| 耗時 | 約 2.5 小時（真實量測） | 約 1～2 分鐘（容器啟動 + 少量 golden 比對） |
+| 耗時 | 約 2.5 小時（舊流程 qwen 翻譯時期的真實量測，現行 Claude 翻譯未重新量測） | 約 1～2 分鐘（容器啟動 + 少量 golden 比對） |
 | 能不能驗證 Orchestrator 自己的修正（如 #52／#54 這類排程器／`test_nodes.py` 層級的修正） | 能——這些修正只在**重新生成／重新跑一輪 debug 迴圈**時才會被真正執行到 | **不能**——這類修正只有在重新跑 ①～⑤／⑦ 時才會被觸發，局部真實測試完全跳過這幾步，程式碼是舊的就是舊的 |
 | 能不能驗證直接手動修正目標專案檔案（如 #53／#55 這類） | 能，但要等整條 pipeline 跑完 | 能，而且快——這正是它存在的目的 |
 
@@ -569,7 +599,7 @@ Agent 之間的資料透過 LangGraph 的 State 傳遞：從 ① 讀取 `java_pr
 
 ### 怎麼挑案例：`--list`／`--items`／`--batch`
 
-`postman/collection_readonly_full_backup.json` 是 `collection_readonly.json` 的完整備份（2026-08-28 建立，動 partial collection 之前的安全副本）——`collection_readonly.json`／`collection_mutation.json` 本身維持原樣，完整真實測試不受影響，`partial_verify.py` 的所有選案例模式都是從這份完整 collection 動態挑選，不需要另外維護一份固定的 partial 檔案。
+`partial_verify.py` 的所有選案例模式都是從 `postman/collection_readonly.json`（完整 collection）動態挑選，不需要另外維護一份固定的 partial 檔案；`collection_readonly.json`／`collection_mutation.json` 本身不會被動到，完整真實測試不受影響。
 
 ```bash
 python partial_verify.py --list          # 列出完整 collection 全部 case 的編號與名稱，不執行驗證
